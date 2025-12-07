@@ -28,11 +28,8 @@ pip install zen-mode
 
 ### Option B: The Scripts (For Hackers)
 Best if you want to modify the agent's internal logic.
-```bash
-# Copy scripts to your project
-zen.py
-zen_lint.py
-```
+
+Download `zen.py` and `zen_lint.py` from the [scripts folder](https://github.com/HakAl/zen/tree/main/scripts) to your project root.
 
 ---
 
@@ -52,7 +49,6 @@ Create a simple text file (e.g., `task.md`) describing what you want:
 ### 3. Run the Agent
 ```bash
 zen task.md
-# or: python zen.py task.md
 ```
 The agent will loop through four phases:
 1.  **Scout:** Maps relevant code (writes to `.zen/scout.md`).
@@ -89,8 +85,4 @@ export ZEN_RETRIES=2              # Max retries per step
 ```
 
 ### Upgrade After Eject
-After ejecting, you're on your own for updates. To see what changed:
-```bash
-# Compare your local version against the latest
-diff zen.py <(curl -s https://raw.githubusercontent.com/zen-mode/zen/main/scripts/zen.py)
-```
+After ejecting, you're on your own for updates. Compare your local files against the [scripts folder](https://github.com/HakAl/zen/tree/main/scripts) to see what changed.
