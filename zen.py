@@ -184,7 +184,6 @@ def _parse_steps(plan: str) -> List[Tuple[str, str]]:
     return [(m[0] or m[1], m[2].strip()) for m in pattern.findall(plan + "\n")]
 
 
-
 def phase_3_implement() -> None:
     plan_content = read_file(PLAN_FILE)
     steps = _parse_steps(plan_content)
@@ -195,34 +194,34 @@ def phase_3_implement() -> None:
 
     log(f"\n[IMPLEMENT] Found {len(steps)} steps.")
 
+    # -------------------------------------------------------------------------
+    # RESUME LOGIC
+    # -------------------------------------------------------------------------
     completed_steps = set()
     if LOG_FILE.exists():
         log_content = read_file(LOG_FILE)
-
-        # 1. Trust explicit "[COMPLETE] Step X" markers
+        # 1. Trust explicit markers
         explicit_matches = re.findall(r"\[COMPLETE\] Step\s+(\d+)\b", log_content)
         completed_steps.update(int(m) for m in explicit_matches)
 
-        # 2. Heuristic: If "[STEP X]" is in the log, assume all steps < X are done.
+        # 2. Heuristic: If we see "[STEP 10]", assume 1..9 are done
         started_matches = re.findall(r"\[STEP\s+(\d+)\]", log_content)
         if started_matches:
-            started_indices = sorted([int(m) for m in started_matches])
-            max_started = started_indices[-1]
-
-            # Assume everything before the very last started step is complete
+            max_started = max(int(m) for m in started_matches)
+            # We assume the *last* started step failed, so we resume from it.
+            # Mark everything before it as done.
             for i in range(1, max_started):
                 completed_steps.add(i)
 
-        if completed_steps:
-            print(f"  [RESUME] Skipping steps: {sorted(list(completed_steps))}")
+    # -------------------------------------------------------------------------
 
     for idx, (step_num, step_text) in enumerate(steps, 1):
-        if int(step_num) in completed_steps:  # Use step_num, not idx
+        if idx in completed_steps:
+            # Quietly skip
             continue
 
-        log(f"\n[STEP {step_num}] {step_text[:80]}...")  # Use step_num
-
-        prompt = f"""TASK: Implement Step {step_num}  # Use step_num
+        log(f"\n[STEP {idx}] {step_text[:80]}...")
+        prompt = f"""TASK: Implement Step {idx}
 STEP: {step_text}
 FULL PLAN: {plan_content}
 
@@ -242,7 +241,25 @@ End with: STEP_COMPLETE or STEP_BLOCKED: <reason>
             output = run_claude(prompt, model=MODEL_HANDS, timeout=TIMEOUT_EXEC) or ""
 
             if "STEP_COMPLETE" in output:
+                # -------------------------------------------------------------
+                # LINTING BLOCK (FIXED)
+                # -------------------------------------------------------------
                 lint_path = PROJECT_ROOT / "zen_lint.py"
+
+                # Fallback: Check if linter is in the same folder as this script
+                if not lint_path.exists():
+                    script_dir = Path(sys.argv[0]).resolve().parent
+                    possible_path = script_dir / "zen_lint.py"
+                    if possible_path.exists():
+                        lint_path = possible_path
+
+                if not lint_path.exists():
+                    log("[WARN] zen_lint.py not found. Skipping validation.")
+                    # We accept the step because we can't check it
+                    log(f"[COMPLETE] Step {idx}")
+                    break
+
+                # Run Linter and Capture STDERR
                 lint_res = subprocess.run(
                     [sys.executable, str(lint_path)],
                     capture_output=True,
@@ -251,19 +268,27 @@ End with: STEP_COMPLETE or STEP_BLOCKED: <reason>
                 )
 
                 if lint_res.returncode != 0:
-                    log(f"[LINT FAIL] Step {step_num} introduced bad patterns.")  # Use step_num
-                    prompt += f"\n\nERROR: Your code failed linting:\n{lint_res.stdout}\nFix it."
-                    continue
+                    # Capture both Stdout and Stderr to see crashes/errors
+                    error_msg = (lint_res.stdout + "\n" + lint_res.stderr).strip()
 
-                log(f"[COMPLETE] Step {step_num}")  # Use step_num
+                    log(f"[LINT FAIL] Step {idx} validation failed.")
+                    # Print indented for readability
+                    print("\n".join(f"    {line}" for line in error_msg.splitlines()))
+
+                    # Feedback to Agent
+                    prompt += f"\n\nCRITICAL: Your changes failed the Clean Code Linter.\n{error_msg}\n\nFIX: Remove the prohibited patterns shown above."
+                    continue
+                # -------------------------------------------------------------
+
+                log(f"[COMPLETE] Step {idx}")
                 break
 
             if "STEP_BLOCKED" in output:
-                log(f"[BLOCKED] Step {step_num}")  # Use step_num
-                print(f"\n--- BLOCKED: Step {step_num} ---\n{output}")  # Use step_num
+                log(f"[BLOCKED] Step {idx}")
+                print(f"\n--- BLOCKED: Step {idx} ---\n{output}")
                 sys.exit(1)
         else:
-            log(f"[FAILED] Step {step_num}")  # Use step_num
+            log(f"[FAILED] Step {idx}")
             sys.exit(1)
 
 
