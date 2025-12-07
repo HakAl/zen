@@ -16,8 +16,16 @@ import sys
 import time
 import tempfile
 import threading
+import unicodedata
 from pathlib import Path
 from typing import List, Optional, Tuple
+
+# -----------------------------------------------------------------------------
+# Regex constants
+# -----------------------------------------------------------------------------
+_FAIL_STEM = re.compile(r"\bfail", re.IGNORECASE)
+_CLAUSE_SPLIT = re.compile(r"[,;|()\[\]{}\n]")
+_DIGIT = re.compile(r"\d+")
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -40,6 +48,7 @@ PLAN_FILE = WORK_DIR / "plan.md"
 LOG_FILE = WORK_DIR / "log.md"
 NOTES_FILE = WORK_DIR / "final_notes.md"
 BACKUP_DIR = WORK_DIR / "backup"
+TEST_OUTPUT_FILE = WORK_DIR / "test_output.txt"
 
 DRY_RUN = False
 
@@ -164,60 +173,6 @@ def find_linter() -> Optional[Path]:
     return None
 
 
-# -----------------------------------------------------------------------------
-# Test Detection
-# -----------------------------------------------------------------------------
-def detect_test_command() -> Optional[List[str]]:
-    """Auto-detect the test command based on project files."""
-    # Explicit pytest config
-    if (PROJECT_ROOT / "pytest.ini").exists():
-        return [sys.executable, "-m", "pytest"]
-
-    # Check pyproject.toml for pytest config or dependency
-    pyproject = PROJECT_ROOT / "pyproject.toml"
-    if pyproject.exists():
-        content = read_file(pyproject)
-        if "[tool.pytest" in content or "pytest" in content.lower():
-            return [sys.executable, "-m", "pytest"]
-
-    if (PROJECT_ROOT / "package.json").exists():
-        return ["npm", "test"]
-    if (PROJECT_ROOT / "Cargo.toml").exists():
-        return ["cargo", "test"]
-    if (PROJECT_ROOT / "go.mod").exists():
-        return ["go", "test", "./..."]
-    if (PROJECT_ROOT / "Makefile").exists():
-        return ["make", "test"]
-    return None
-
-
-def run_tests() -> Tuple[bool, str]:
-    """Run tests directly, don't trust the agent."""
-    cmd = detect_test_command()
-    if not cmd:
-        log("[WARN] No test framework detected. Skipping tests.")
-        return True, ""
-
-    if DRY_RUN:
-        log(f"[DRY-RUN] Would run: {' '.join(cmd)}")
-        return True, ""
-
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            cwd=PROJECT_ROOT,
-            timeout=TIMEOUT_EXEC
-        )
-        output = (result.stdout + "\n" + result.stderr).strip()
-        return result.returncode == 0, output
-    except subprocess.TimeoutExpired:
-        return False, "Test command timed out"
-    except Exception as e:
-        return False, f"Test execution failed: {e}"
-
-
 def verify_test_output(output: str) -> bool:
     """
     Verify that agent output contains real test results, not just claims.
@@ -225,9 +180,11 @@ def verify_test_output(output: str) -> bool:
     """
     # Patterns that indicate real test framework output
     real_test_patterns = [
-        # pytest
+        # pytest (verbose and minimal)
         r"=+\s+\d+\s+passed",
         r"=+\s+passed in \d+",
+        r"\d+\s+passed",
+        r"passed in [\d.]+s",
         r"PASSED|FAILED|ERROR",
         # npm/jest
         r"Tests:\s+\d+\s+passed",
@@ -249,6 +206,32 @@ def verify_test_output(output: str) -> bool:
             return True
 
     return False
+
+
+def extract_failure_count(output: str) -> Optional[int]:
+    """Extract failure count from test output. Language-agnostic."""
+    if not output:
+        return None
+
+    # Normalize unicode (smart quotes, dashes, etc.)
+    norm = unicodedata.normalize("NFKC", output)
+    norm = norm.translate({0x2013: 0x2D, 0x2014: 0x2D,
+                           0x2019: 0x27, 0x2018: 0x27,
+                           0x201C: 0x22, 0x201D: 0x22})
+
+    # Split into a list so we can reverse it
+    clauses = _CLAUSE_SPLIT.split(norm)
+
+    # Process from bottom of log to top
+    for clause in reversed(clauses):
+        if not _FAIL_STEM.search(clause):
+            continue
+
+        m = _DIGIT.search(clause)
+        if m:
+            return int(m.group(0))
+
+    return None
 
 
 # -----------------------------------------------------------------------------
@@ -526,9 +509,13 @@ End with: STEP_COMPLETE or STEP_BLOCKED: <reason>"""
 
 def phase_verify() -> None:
     log("\n[VERIFY] Running tests...")
-
     plan = read_file(PLAN_FILE)
-    prompt = f"""Verify implementation is complete.
+
+    # Versioned output files for user visibility
+    last_failure_hash: Optional[str] = None
+    stuck_count = 0
+
+    base_prompt = f"""Verify implementation is complete.
 
 IMPORTANT: This is a fresh session. Read files to understand current state.
 
@@ -536,35 +523,76 @@ Plan executed:
 {plan}
 
 Actions:
-1. Run the project's test suite
-2. Fix any broken tests caused by the changes
-3. Show the full test output
+1. Run the project's test suite with minimal output (e.g., pytest -q --tb=short)
+2. Write test results to: {WORK_DIR_NAME}/test_output.txt
+   - If tests PASS: write only the summary line (e.g., "10 passed in 1.23s")
+   - If tests FAIL: write failure tracebacks + summary line (no passing test names)
+3. If tests fail, fix the issues and re-run
 
-End with: TESTS_PASS or TESTS_FAIL
+End with exactly: TESTS_PASS or TESTS_FAIL"""
 
-You MUST include the actual test command output in your response."""
+    prompt = base_prompt
 
-    output = run_claude(prompt, model=MODEL_HANDS, timeout=TIMEOUT_EXEC)
+    for attempt in range(1, MAX_RETRIES + 2):  # +1 for initial + retries
+        output = run_claude(prompt, model=MODEL_HANDS, timeout=TIMEOUT_EXEC)
 
-    if not output:
-        log("[VERIFY] No output from agent.")
-        sys.exit(1)
+        if not output:
+            log("[VERIFY] No output from agent.")
+            sys.exit(1)
 
-    if "TESTS_PASS" in output:
-        if verify_test_output(output):
-            log("[VERIFY] Passed (verified).")
-        else:
-            log("[WARN] Agent claimed TESTS_PASS but no real test output detected.")
-            # Run tests ourselves to verify
-            passed, test_output = run_tests()
-            if passed:
-                log("[VERIFY] Independent test run passed.")
-            else:
-                log("[VERIFY] Independent test run FAILED.")
+        # Check file exists
+        if not TEST_OUTPUT_FILE.exists():
+            log("[VERIFY] Agent did not write test output file.")
+            prompt = base_prompt + "\n\nYou MUST write test output to the file."
+            continue
+
+        test_output = read_file(TEST_OUTPUT_FILE)
+
+        # Version the file for user
+        versioned = WORK_DIR / f"test_output_{attempt}.txt"
+        shutil.copy2(TEST_OUTPUT_FILE, versioned)
+
+        # Verify it looks like real test output
+        if not verify_test_output(test_output):
+            log("[VERIFY] File doesn't contain valid test output.")
+            prompt = base_prompt + "\n\nThe file must contain actual test framework output, not a summary."
+            continue
+
+        # Check for failures
+        failure_count = extract_failure_count(test_output)
+
+        if failure_count is None or failure_count == 0:
+            # Success or can't parse (trust TESTS_PASS marker)
+            if "TESTS_PASS" in output:
+                log("[VERIFY] Passed.")
+                break
+
+        # We have failures - check for progress
+        failure_hash = hashlib.md5(test_output.encode()).hexdigest()
+
+        if failure_hash == last_failure_hash:
+            stuck_count += 1
+            if stuck_count >= 2:
+                log(f"[VERIFY] Agent stuck - same failures {stuck_count} times.")
                 print(test_output[:500])
                 sys.exit(1)
+            prompt += "\n\nSame failures as before. Try a DIFFERENT approach."
+        else:
+            stuck_count = 0  # Reset - making progress
+            if last_failure_hash is not None:
+                log(f"[VERIFY] Progress: failures changed (attempt {attempt})")
+
+        last_failure_hash = failure_hash
+        prompt = f"""Tests still failing. Fix them.
+
+Test output (from {WORK_DIR_NAME}/test_output.txt):
+{test_output[:2000]}
+
+Write updated test output to: {WORK_DIR_NAME}/test_output.txt
+End with: TESTS_PASS or TESTS_FAIL"""
+
     else:
-        log("[VERIFY] Failed.")
+        log(f"[VERIFY] Failed after {MAX_RETRIES} attempts.")
         sys.exit(1)
 
     # Generate summary
@@ -588,7 +616,7 @@ def run(task_file: str, flags: Optional[set] = None) -> None:
         task_file: Path to task markdown file
         flags: Set of flags (--reset, --retry, --dry-run)
     """
-    global DRY_RUN, WORK_DIR, SCOUT_FILE, PLAN_FILE, LOG_FILE, NOTES_FILE, BACKUP_DIR
+    global DRY_RUN, WORK_DIR, SCOUT_FILE, PLAN_FILE, LOG_FILE, NOTES_FILE, BACKUP_DIR, TEST_OUTPUT_FILE
 
     flags = flags or set()
 
@@ -604,6 +632,7 @@ def run(task_file: str, flags: Optional[set] = None) -> None:
     LOG_FILE = WORK_DIR / "log.md"
     NOTES_FILE = WORK_DIR / "final_notes.md"
     BACKUP_DIR = WORK_DIR / "backup"
+    TEST_OUTPUT_FILE = WORK_DIR / "test_output.txt"
 
     if "--reset" in flags:
         if WORK_DIR.exists():

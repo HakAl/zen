@@ -462,37 +462,3 @@ class TestStepBlockedDetection:
             "Output like 'I won't say STEP_BLOCKED' would incorrectly trigger. "
             "Should check last line or use regex ^STEP_BLOCKED:"
         )
-
-
-class TestRigidTestDetection:
-    """BUG #20: Test detection assumes pyproject.toml means pytest."""
-
-    def test_pyproject_without_pytest_not_assumed(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        zen = _reload_zen(monkeypatch)
-        zen.PROJECT_ROOT = tmp_path
-
-        # Create a pyproject.toml without pytest (e.g., a pure poetry/flit project)
-        pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text("""
-[tool.poetry]
-name = "myproject"
-version = "0.1.0"
-
-[tool.poetry.dependencies]
-python = "^3.9"
-requests = "^2.28"
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
-""")
-
-        # Current bug: detect_test_command returns pytest just because pyproject.toml exists
-        cmd = zen.detect_test_command()
-
-        # Should NOT assume pytest - this project has no test dependencies
-        assert cmd is None or 'pytest' not in str(cmd), (
-            f"BUG: pyproject.toml without pytest config returned pytest command: {cmd}. "
-            "Should check for [tool.pytest] or pytest in dependencies."
-        )
