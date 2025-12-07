@@ -1,0 +1,624 @@
+"""
+Zen Lint: Universal "Lazy Coder" Detector.
+Scans for forbidden patterns (TODO, FIXME, SHIM).
+"""
+import sys
+import re
+import json
+import subprocess
+from pathlib import Path
+from dataclasses import dataclass, field
+from typing import List, Tuple, Dict, Optional, Set
+from io import StringIO
+
+# -----------------------------------------------------------------------------
+# Configuration
+# -----------------------------------------------------------------------------
+
+# Scope Constants
+ALL = "ALL"
+CODE = "CODE"
+COMMENT = "COMMENT"
+RAW = "RAW"  # Check original line with whitespace preserved
+
+# Severity levels
+SEVERITIES = ["HIGH", "MEDIUM", "LOW"]
+
+
+@dataclass
+class Rule:
+    name: str
+    pattern: str
+    scope: str = ALL
+    severity: str = "LOW"
+    ignore_case: bool = True  # Most rules are case-insensitive; secrets opt out
+    _compiled: re.Pattern = field(default=None, repr=False, compare=False)
+
+    def __post_init__(self):
+        flags = re.IGNORECASE if self.ignore_case else 0
+        self._compiled = re.compile(self.pattern, flags)
+
+    def search(self, text: str) -> bool:
+        return bool(self._compiled.search(text))
+
+
+# -----------------------------------------------------------------------------
+# Rules Definition
+# -----------------------------------------------------------------------------
+
+QUALITY_RULES = [
+    # === HIGH SEVERITY: Security & Breakage ===
+    Rule("API_KEY",
+         r"['\"].{0,30}(api[_-]?key|secret|token|password|credential).{0,30}['\"]\s*[:=]\s*['\"][a-zA-Z0-9_\-]{8,}['\"]",
+         CODE, "HIGH", ignore_case=False),
+    Rule("PLACEHOLDER", r"\b[A-Z_]{2,}_HERE\b", CODE, "HIGH"),
+    Rule("POSSIBLE_SECRET", r"\b(passwd|password|secret|api_?key)\s*=\s*['\"][^'\"]{8,}['\"]",
+         CODE, "HIGH", ignore_case=False),
+    Rule("CONFLICT_MARKER", r"^[<>=]{7}", ALL, "HIGH"),
+    Rule("TRUNCATION_MARKER", r"(\.{3}|…)\s*(rest of|remaining|more|etc|continues|implementation)", ALL, "HIGH"),
+    Rule("INCOMPLETE_IMPL", r"#\s*(TODO|FIXME):\s*(implement|finish|complete|add)\b", ALL, "HIGH"),
+    Rule("OVERLY_GENERIC_EXCEPT", r"except\s*:\s*$", CODE, "HIGH"),
+    Rule("BARE_RETURN_IN_CATCH", r"catch\s*\([^)]*\)\s*\{\s*return\s*;?\s*\}", CODE, "HIGH"),
+
+    # === MEDIUM SEVERITY: Maintenance & Debt ===
+    Rule("TODO", r"\bTODO\b", COMMENT, "MEDIUM"),
+    Rule("FIXME", r"\bFIXME\b", COMMENT, "MEDIUM"),
+    Rule("HACK", r"\bHACK\b", COMMENT, "MEDIUM"),
+    Rule("XXX", r"\bXXX\b", COMMENT, "MEDIUM"),
+    Rule("STUB_IMPL", r"^\s*(pass|\.{3})\s*$", CODE, "MEDIUM"),
+    Rule("NOT_IMPLEMENTED", r"(raise\s+)?NotImplementedError|not\s+implemented", CODE, "MEDIUM"),
+    Rule("HARDCODED_IP",
+         r"\b(?!127\.0\.0\.1|0\.0\.0\.0|255\.255\.255\.\d{1,3}|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b",
+         CODE, "MEDIUM"),
+    Rule("AI_COMMENT_BOILERPLATE",
+         r"^\s*#\s*(This (function|method|class|module)|The following)\s+(is used to|responsible for|will|provides|represents)\b",
+         COMMENT, "MEDIUM"),
+    Rule("INLINE_IMPORT",
+         r"^\s+(?:import\s+\w|from\s+\w+\s+import|require\s*\(|using\s+\w)",
+         RAW, "MEDIUM"),
+
+    # === LOW SEVERITY: Smells & Cleanup ===
+    Rule("DEBUG_PRINT", r"\b(console\.log|print|System\.out\.print|fmt\.Print(ln)?|puts|dd|var_dump)\s*\(", CODE,
+         "LOW"),
+    Rule("DEAD_COMMENT", r"\b(unused|dead code|commented.?out|remove.?this|delete.?this)\b", COMMENT, "LOW"),
+    Rule("TEMP_FIX", r"\b(temp|temporary|workaround|band.?aid)\b", COMMENT, "LOW"),
+    Rule("LINT_DISABLE", r"(eslint-disable|pylint:\s*disable|noqa|@ts-ignore|@ts-expect-error|rubocop:disable)",
+         COMMENT, "LOW"),
+    Rule("EXAMPLE_DATA", r"['\"](example|test[@.]|foo|bar|john[._]?doe|jane[._]?doe|lorem ipsum|acme)['\"]", CODE,
+         "LOW"),
+    Rule("CATCH_ALL_EXCEPTION", r"except\s+Exception\s*:|catch\s*\(\s*(Exception|Error|Throwable)\s+\w+\s*\)", CODE,
+         "LOW"),
+    Rule("MAGIC_NUMBER", r"(?<![0-9a-zA-Z_.])(86400|3600|31536000|604800|1440|525600)(?![0-9])", CODE, "LOW"),
+    Rule("EMPTY_CATCH", r"(except.*:\s*pass|catch\s*\([^)]*\)\s*\{\s*\})", CODE, "LOW"),
+    Rule("COPY_PASTE_COMMENT", r"(copied from|copy.?pasted?|stolen from|borrowed from)", COMMENT, "LOW"),
+    Rule("EMPTY_DOCSTRING", r'("""|\'\'\')\s*\1', CODE, "LOW"),
+]
+
+# Language syntax definitions: (line_comment, block_start, block_end)
+LANG_SYNTAX = {
+    '.py': ('#', '"""', '"""'),
+    '.pyi': ('#', '"""', '"""'),
+    '.js': ('//', '/*', '*/'),
+    '.mjs': ('//', '/*', '*/'),
+    '.cjs': ('//', '/*', '*/'),
+    '.ts': ('//', '/*', '*/'),
+    '.jsx': ('//', '/*', '*/'),
+    '.tsx': ('//', '/*', '*/'),
+    '.java': ('//', '/*', '*/'),
+    '.kt': ('//', '/*', '*/'),
+    '.scala': ('//', '/*', '*/'),
+    '.c': ('//', '/*', '*/'),
+    '.h': ('//', '/*', '*/'),
+    '.cpp': ('//', '/*', '*/'),
+    '.hpp': ('//', '/*', '*/'),
+    '.cc': ('//', '/*', '*/'),
+    '.cs': ('//', '/*', '*/'),
+    '.go': ('//', '/*', '*/'),
+    '.rs': ('//', '/*', '*/'),
+    '.swift': ('//', '/*', '*/'),
+    '.php': ('//', '/*', '*/'),
+    '.rb': ('#', '=begin', '=end'),
+    '.sh': ('#', None, None),
+    '.bash': ('#', None, None),
+    '.zsh': ('#', None, None),
+    '.fish': ('#', None, None),
+    '.yaml': ('#', None, None),
+    '.yml': ('#', None, None),
+    '.toml': ('#', None, None),
+    '.ini': (';', None, None),
+    '.sql': ('--', '/*', '*/'),
+    '.lua': ('--', '--[[', ']]'),
+    '.r': ('#', None, None),
+    '.jl': ('#', '#=', '=#'),
+}
+
+IGNORE_DIRS: Set[str] = {
+    # Version control
+    ".git", ".svn", ".hg",
+    # Python
+    "__pycache__", "venv", ".venv", "env", ".eggs", "*.egg-info",
+    ".mypy_cache", ".pytest_cache", ".tox", ".nox", ".ruff_cache",
+    "site-packages", "htmlcov", ".hypothesis",
+    # JavaScript/Node
+    "node_modules", "bower_components", ".npm", ".yarn", ".pnpm",
+    # Build outputs
+    "dist", "build", "target", "bin", "obj", "out", "_build",
+    "cmake-build-debug", "cmake-build-release", "CMakeFiles",
+    # IDE/Editor
+    ".idea", ".vscode", ".vs", ".eclipse", ".settings",
+    # Coverage
+    "coverage", ".coverage", ".nyc_output",
+    # Framework-specific
+    ".next", ".nuxt", ".output", ".svelte-kit", ".astro",
+    ".angular", ".docusaurus", ".meteor",
+    # Infrastructure/Deploy
+    ".terraform", ".serverless", ".aws-sam", "cdk.out",
+    ".vercel", ".netlify", ".firebase",
+    # Other languages
+    ".gradle", ".cargo", ".stack-work", "Pods", "Carthage",
+    "DerivedData", "vendor", "deps", "elm-stuff",
+    # Misc
+    "tmp", "temp", "cache", ".cache", "logs",
+}
+
+IGNORE_FILES: Set[str] = {
+    # Lock files
+    "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "go.sum",
+    "Cargo.lock", "Gemfile.lock", "poetry.lock", "composer.lock",
+    "packages.lock.json", "flake.lock", "pubspec.lock",
+    # OS artifacts
+    ".DS_Store", "Thumbs.db", "desktop.ini",
+    # Editor artifacts
+    ".gitignore", ".gitattributes", ".editorconfig",
+    # Docs/meta (not code)
+    "LICENSE", "LICENSE.md", "LICENSE.txt", "LICENCE",
+    "CHANGELOG.md", "CHANGELOG", "HISTORY.md",
+    "AUTHORS", "CONTRIBUTORS", "CODEOWNERS",
+    # Config files (too many false positives)
+    ".prettierrc", ".eslintrc", ".stylelintrc",
+    "tsconfig.json", "jsconfig.json",
+    # Misc
+    ".npmrc", ".nvmrc", ".python-version", ".ruby-version",
+    ".tool-versions", "requirements.txt", "Pipfile",
+    # Environment files (should be gitignored, not our job)
+    ".env", ".env.local", ".env.development", ".env.production",
+    ".env.test", ".env.staging", ".env.example",
+}
+
+IGNORE_EXTS: Set[str] = {
+    # Images
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".svg", ".bmp",
+    # Documents (binary)
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    # Documentation (text) - too many false positives
+    ".md", ".markdown", ".rst", ".txt", ".adoc", ".textile",
+    # Archives
+    ".zip", ".tar", ".gz", ".bz2", ".7z", ".rar",
+    # Binaries
+    ".exe", ".dll", ".so", ".dylib", ".class", ".pyc", ".pyo", ".o", ".a",
+    # Fonts
+    ".woff", ".woff2", ".ttf", ".eot", ".otf",
+    # Media
+    ".mp3", ".mp4", ".wav", ".avi", ".mov", ".mkv", ".flac", ".ogg",
+    # Generated/minified
+    ".min.js", ".min.css", ".map", ".bundle.js",
+    # Data files
+    ".csv", ".tsv", ".json", ".xml", ".lock",
+}
+
+SUPPRESS_PATTERN = re.compile(r"#\s*lint:(ignore|disable)(?:\s+([A-Z_]+))?\b", re.IGNORECASE)
+
+
+# -----------------------------------------------------------------------------
+# Core Logic
+# -----------------------------------------------------------------------------
+
+def is_binary(path: Path, sample_size: int = 8192, threshold: float = 0.10, min_size: int = 1024) -> bool:
+    """Check if file is binary using null byte ratio heuristic."""
+    try:
+        file_size = path.stat().st_size
+        # Small files (< 1KB) are assumed to be text to avoid favicon/icon misdetection
+        if file_size < min_size:
+            return False
+        blob = path.read_bytes()[:sample_size]
+        if not blob:
+            return False
+        return blob.count(b'\0') / len(blob) > threshold
+    except Exception:
+        return True
+
+
+def find_string_ranges(line: str) -> List[Tuple[int, int]]:
+    """
+    Find ranges of string literals in a line to avoid false comment detection.
+    Returns list of (start, end) indices.
+    """
+    ranges = []
+    in_string = False
+    string_char = None
+    start = 0
+    i = 0
+
+    while i < len(line):
+        c = line[i]
+
+        # Handle escape sequences
+        if i > 0 and line[i - 1] == '\\':
+            i += 1
+            continue
+
+        if not in_string:
+            if c in ('"', "'", '`'):
+                in_string = True
+                string_char = c
+                start = i
+        else:
+            if c == string_char:
+                ranges.append((start, i + 1))
+                in_string = False
+                string_char = None
+
+        i += 1
+
+    return ranges
+
+
+def is_in_string(pos: int, ranges: List[Tuple[int, int]]) -> bool:
+    """Check if a position falls within any string literal range."""
+    return any(start <= pos < end for start, end in ranges)
+
+
+def split_code_comment(line: str, ext: str) -> Tuple[str, str]:
+    """
+    Splits a line into (code, comment) with string-awareness.
+    """
+    syntax = LANG_SYNTAX.get(ext)
+
+    if not syntax or not syntax[0]:
+        return line, ""
+
+    comment_char = syntax[0]
+    string_ranges = find_string_ranges(line)
+
+    # Find comment start that's not inside a string
+    idx = 0
+    while True:
+        pos = line.find(comment_char, idx)
+        if pos == -1:
+            return line, ""
+
+        if not is_in_string(pos, string_ranges):
+            return line[:pos], line[pos + len(comment_char):]
+
+        idx = pos + 1
+
+
+@dataclass
+class MultilineState:
+    """Track multi-line comment state across lines."""
+    in_block: bool = False
+    block_end: Optional[str] = None
+
+
+# Patterns that indicate a stub is legitimate (abstract methods, protocols)
+ABSTRACT_PATTERNS = re.compile(
+    r"@(abc\.)?(abstractmethod|abstractproperty)|"
+    r"class\s+\w+\s*\([^)]*\b(ABC|Protocol|Interface)\b|"
+    r"virtual|abstract\s+(class|void|int|string|bool)",
+    re.IGNORECASE
+)
+
+
+def check_file(path: str, min_severity: str = "LOW", config: Optional[Dict] = None) -> List[Dict]:
+    """Scan a file for violations."""
+    p = Path(path)
+
+    if p.name == Path(__file__).name:
+        return []
+
+    # Pre-checks
+    if not p.exists() or not p.is_file():
+        return []
+    if p.name in IGNORE_FILES:
+        return []
+    if p.suffix.lower() in IGNORE_EXTS:
+        return []
+    if any(p.name.endswith(ext) for ext in ['.min.js', '.min.css']):
+        return []
+    if is_binary(p):
+        return []
+
+    violations = []
+    severity_threshold = SEVERITIES.index(min_severity)
+
+    # Get rules (with config overrides if provided)
+    rules = QUALITY_RULES
+    if config:
+        disabled = set(config.get("disabled_rules", []))
+        rules = [r for r in rules if r.name not in disabled]
+
+    try:
+        content = p.read_text(encoding="utf-8", errors="replace")
+        lines = content.splitlines()
+        ext = p.suffix.lower()
+        syntax = LANG_SYNTAX.get(ext)
+
+        # Multi-line comment tracking
+        ml_state = MultilineState()
+
+        for i, line in enumerate(lines):
+            line_num = i + 1
+            original_line = line
+            stripped = line.strip()
+
+            if not stripped:
+                continue
+
+            # Check for inline suppression
+            suppression_match = SUPPRESS_PATTERN.search(line)
+            if suppression_match:
+                specific_rule = suppression_match.group(2)
+                if not specific_rule:
+                    # Suppress all rules for this line
+                    continue
+
+            # Handle multi-line comment state
+            is_comment_line = False
+            string_ranges = find_string_ranges(stripped)
+
+            if syntax and syntax[1] and syntax[2]:
+                block_start, block_end = syntax[1], syntax[2]
+
+                if ml_state.in_block:
+                    is_comment_line = True
+                    if block_end in stripped:
+                        ml_state.in_block = False
+                else:
+                    # Check for block comment start, but not inside strings
+                    start_pos = stripped.find(block_start)
+                    if start_pos != -1 and not is_in_string(start_pos, string_ranges):
+                        end_pos = stripped.find(block_end, start_pos + len(block_start))
+                        if end_pos == -1:
+                            ml_state.in_block = True
+                            ml_state.block_end = block_end
+
+            # Split code and comment
+            if is_comment_line:
+                code_part, comment_part = "", stripped
+            else:
+                code_part, comment_part = split_code_comment(stripped, ext)
+
+            for rule in rules:
+                # Check severity threshold
+                if SEVERITIES.index(rule.severity) > severity_threshold:
+                    continue
+
+                if suppression_match and suppression_match.group(2):
+                    if rule.name.upper() == suppression_match.group(2).upper():
+                        continue
+
+                # Determine target text based on scope
+                if rule.scope == ALL:
+                    target = stripped
+                elif rule.scope == RAW:
+                    target = original_line
+                elif rule.scope == CODE:
+                    target = code_part
+                elif rule.scope == COMMENT:
+                    target = comment_part
+                else:
+                    target = stripped
+
+                if not target:
+                    continue
+
+                if rule.search(target):
+                    violations.append({
+                        'rule': rule.name,
+                        'severity': rule.severity,
+                        'file': str(p),
+                        'line': line_num,
+                        'content': stripped[:80]  # Shorter preview
+                    })
+
+    except Exception as e:
+        print(f"Error scanning {path}: {e}", file=sys.stderr)
+
+    return violations
+
+
+def get_git_changes() -> List[str]:
+    """Get list of changed files from git (including staged)."""
+    files = set()
+    try:
+        # Check if HEAD exists (repo may have no commits yet)
+        head_exists = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=False
+        ).returncode == 0
+
+        if head_exists:
+            # Get unstaged changes
+            result = subprocess.run(
+                ["git", "diff", "--name-only", "HEAD"],
+                capture_output=True, text=True, check=False
+            )
+            if result.returncode == 0:
+                files.update(result.stdout.splitlines())
+
+            # Get staged changes
+            result = subprocess.run(
+                ["git", "diff", "--name-only", "--cached", "HEAD"],
+                capture_output=True, text=True, check=False
+            )
+            if result.returncode == 0:
+                files.update(result.stdout.splitlines())
+        else:
+            # No commits yet - get all staged files
+            result = subprocess.run(
+                ["git", "diff", "--name-only", "--cached"],
+                capture_output=True, text=True, check=False
+            )
+            if result.returncode == 0:
+                files.update(result.stdout.splitlines())
+
+        # Get untracked files
+        result = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            capture_output=True, text=True, check=False
+        )
+        if result.returncode == 0:
+            files.update(result.stdout.splitlines())
+    except FileNotFoundError:
+        pass
+    return [f for f in files if f]
+
+
+def load_config(config_path: Optional[str]) -> Optional[Dict]:
+    """Load configuration from JSON file."""
+    if not config_path:
+        # Look for default config files
+        for name in [".lintrc.json", ".lintrc", "lint.config.json"]:
+            if Path(name).exists():
+                config_path = name
+                break
+
+    if config_path and Path(config_path).exists():
+        try:
+            with open(config_path) as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Warning: Could not load config {config_path}: {e}", file=sys.stderr)
+
+    return None
+
+
+# -----------------------------------------------------------------------------
+# Reporting
+# -----------------------------------------------------------------------------
+
+def format_report(violations: List[Dict], output_format: str = "text") -> Tuple[str, int]:
+    """Format violations report. Returns (output_string, exit_code)."""
+    output = StringIO()
+
+    if output_format == "json":
+        output.write(json.dumps({"violations": violations, "count": len(violations)}, indent=2))
+        high_count = sum(1 for v in violations if v['severity'] == "HIGH")
+        return output.getvalue(), 1 if high_count > 0 else 0
+
+    # SARIF format for CI integration
+    if output_format == "sarif":
+        sarif = {
+            "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+            "version": "2.1.0",
+            "runs": [{
+                "tool": {
+                    "driver": {
+                        "name": "zen-lint",
+                        "version": "1.0.0",
+                        "rules": [{"id": r.name, "shortDescription": {"text": r.name}} for r in QUALITY_RULES]
+                    }
+                },
+                "results": [
+                    {
+                        "ruleId": v['rule'],
+                        "level": "error" if v['severity'] == "HIGH" else (
+                            "warning" if v['severity'] == "MEDIUM" else "note"),
+                        "message": {"text": v['content']},
+                        "locations": [{
+                            "physicalLocation": {
+                                "artifactLocation": {"uri": v['file']},
+                                "region": {"startLine": v['line']}
+                            }
+                        }]
+                    } for v in violations
+                ]
+            }]
+        }
+        output.write(json.dumps(sarif, indent=2))
+        high_count = sum(1 for v in violations if v['severity'] == "HIGH")
+        return output.getvalue(), 1 if high_count > 0 else 0
+
+    # Text format — compact for agents
+    if not violations:
+        output.write("[PASS] No issues.")
+        return output.getvalue(), 0
+
+    severity_order = {s: i for i, s in enumerate(SEVERITIES)}
+    violations.sort(key=lambda x: (severity_order.get(x['severity'], 99), x['file'], x['line']))
+
+    output.write(f"Found {len(violations)} issue(s):\n\n")
+
+    for v in violations:
+        output.write(f"[{v['severity']}] {v['file']}:{v['line']} {v['rule']}\n")
+
+    # Summary
+    counts = {s: sum(1 for v in violations if v['severity'] == s) for s in SEVERITIES}
+    summary = ", ".join(f"{counts[s]} {s.lower()}" for s in SEVERITIES if counts[s])
+    output.write(f"\nSummary: {summary}\n")
+
+    if counts["HIGH"] > 0:
+        output.write("[FAIL] High severity issues found.\n")
+        return output.getvalue(), 1
+    return output.getvalue(), 0
+
+
+def print_report(violations: List[Dict], output_format: str = "text") -> int:
+    """Print violations report and return exit code."""
+    output, exit_code = format_report(violations, output_format)
+    print(output)
+    return exit_code
+
+
+def print_rules():
+    """Print all available rules."""
+    print("\nAvailable Rules:\n")
+    for sev in SEVERITIES:
+        rules = [r for r in QUALITY_RULES if r.severity == sev]
+        if rules:
+            print(f"[{sev}]")
+            for r in rules:
+                print(f"  {r.name}: {r.pattern[:60]}{'...' if len(r.pattern) > 60 else ''}")
+            print()
+
+
+# -----------------------------------------------------------------------------
+# Public API
+# -----------------------------------------------------------------------------
+
+def run_lint(paths: Optional[List[str]] = None, min_severity: str = "LOW",
+             config_path: Optional[str] = None) -> Tuple[bool, str]:
+    """
+    Run the linter and return results.
+
+    Args:
+        paths: Files or directories to scan (defaults to git changes or cwd)
+        min_severity: Minimum severity level to report
+        config_path: Path to config file
+
+    Returns:
+        Tuple of (passed: bool, output: str)
+    """
+    config = load_config(config_path)
+
+    # Determine paths to scan
+    if not paths:
+        paths = get_git_changes()
+        if not paths:
+            paths = ["."]
+
+    all_violations = []
+
+    for root_arg in paths:
+        path = Path(root_arg)
+        if path.is_file():
+            all_violations.extend(check_file(str(path), min_severity, config))
+        elif path.is_dir():
+            for p in path.rglob("*"):
+                if any(part in IGNORE_DIRS for part in p.parts):
+                    continue
+                if p.is_file():
+                    all_violations.extend(check_file(str(p), min_severity, config))
+
+    output, exit_code = format_report(all_violations, "text")
+    return exit_code == 0, output
