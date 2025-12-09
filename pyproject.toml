@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "zen-mode"
-version = "0.1.0"
+version = "1.0.0"
 description = "Minimalist autonomous agent runner"
 readme = "README.md"
 license = "MIT"
@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["agent", "automation", "claude", "ai"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",

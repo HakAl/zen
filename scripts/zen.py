@@ -47,11 +47,13 @@ MODEL_EYES = os.getenv("ZEN_MODEL_EYES", "haiku")
 TIMEOUT_EXEC = int(os.getenv("ZEN_TIMEOUT", "600"))
 TIMEOUT_LINTER = int(os.getenv("ZEN_LINTER_TIMEOUT", "120"))
 MAX_RETRIES = int(os.getenv("ZEN_RETRIES", "2"))
+MAX_JUDGE_LOOPS = int(os.getenv("ZEN_JUDGE_LOOPS", "2"))
 
 PROJECT_ROOT = Path.cwd()
 
 ZEN_ID = os.getenv("ZEN_ID", str(os.getpid()))
-WORK_DIR = PROJECT_ROOT / f"{WORK_DIR_NAME}-{ZEN_ID}"
+WORK_DIR_STR = f"{WORK_DIR_NAME}-{ZEN_ID}"
+WORK_DIR = PROJECT_ROOT / WORK_DIR_STR
 
 SCOUT_FILE = WORK_DIR / "scout.md"
 PLAN_FILE = WORK_DIR / "plan.md"
@@ -59,6 +61,8 @@ LOG_FILE = WORK_DIR / "log.md"
 NOTES_FILE = WORK_DIR / "final_notes.md"
 BACKUP_DIR = WORK_DIR / "backup"
 TEST_OUTPUT_FILE = WORK_DIR / "test_output.txt"
+TEST_OUTPUT_PATH = WORK_DIR_STR + "/test_output.txt"  # For prompts (forward slash)
+JUDGE_FEEDBACK_FILE = WORK_DIR / "judge_feedback.md"
 
 DRY_RUN = False
 
@@ -237,6 +241,26 @@ def extract_failure_count(output: str) -> Optional[int]:
             return int(m.group(0))
 
     return None
+
+
+def get_changed_filenames() -> str:
+    """Get list of changed files for Sonnet context."""
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", "HEAD"],
+            capture_output=True, text=True, cwd=PROJECT_ROOT
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except Exception:
+        pass
+
+    # Fallback: list files from backup directory
+    if BACKUP_DIR.exists():
+        files = [str(f.relative_to(BACKUP_DIR)) for f in BACKUP_DIR.rglob("*") if f.is_file()]
+        return "\n".join(files)
+
+    return "[No files detected]"
 
 
 # -----------------------------------------------------------------------------
@@ -527,7 +551,7 @@ Plan executed:
 
 Actions:
 1. Run the project's test suite with minimal output (e.g., pytest -q --tb=short)
-2. Write test results to: {WORK_DIR_NAME}/test_output.txt
+2. Write test results to: {TEST_OUTPUT_PATH}
    - If tests PASS: write only the summary line (e.g., "10 passed in 1.23s")
    - If tests FAIL: write failure tracebacks + summary line (no passing test names)
 3. If tests fail, fix the issues and re-run
@@ -588,10 +612,10 @@ End with exactly: TESTS_PASS or TESTS_FAIL"""
         last_failure_hash = failure_hash
         prompt = f"""Tests still failing. Fix them.
 
-Test output (from {WORK_DIR_NAME}/test_output.txt):
+Test output (from {TEST_OUTPUT_PATH}):
 {test_output[:2000]}
 
-Write updated test output to: {WORK_DIR_NAME}/test_output.txt
+Write updated test output to: {TEST_OUTPUT_PATH}
 End with: TESTS_PASS or TESTS_FAIL"""
 
     else:
@@ -608,11 +632,183 @@ End with: TESTS_PASS or TESTS_FAIL"""
         write_file(NOTES_FILE, summary)
 
 
+def phase_judge() -> None:
+    """Judge phase: Opus reviews implementation for quality and alignment."""
+    log("\n[JUDGE] Senior Architect review...")
+
+    # Gather context
+    plan = read_file(PLAN_FILE)
+    scout = read_file(SCOUT_FILE)
+    test_output = read_file(TEST_OUTPUT_FILE)
+
+    constitution_path = PROJECT_ROOT / "CLAUDE.md"
+    constitution = read_file(constitution_path) if constitution_path.exists() else "[No CLAUDE.md found]"
+
+    changed_files = get_changed_filenames()
+    if changed_files == "[No files detected]":
+        log("[JUDGE] No changes detected. Auto-approving.")
+        return
+
+    for loop in range(1, MAX_JUDGE_LOOPS + 1):
+        log(f"[JUDGE] Review loop {loop}/{MAX_JUDGE_LOOPS}")
+
+        prompt = f"""You are the Senior Architect. Be direct and concise.
+
+## Plan (Requirements)
+{plan}
+
+## Scout (File Context)
+{scout}
+
+## Constitution (Rules)
+{constitution}
+
+## Test Results
+{test_output[:2000]}
+
+## Changed Files
+{changed_files}
+
+Use `git diff HEAD -- <file>` or read files directly to review changes.
+
+## Review Criteria
+1. **Plan Alignment** - Does the diff satisfy the requirements?
+2. **Constitution Adherence** - Any CLAUDE.md rule violations?
+3. **Security & Edge Cases** - Obvious vulnerabilities or unhandled cases?
+
+IGNORE: Syntax, formatting, linting (already verified by tooling).
+
+## Output Format
+
+If approved:
+```
+JUDGE_APPROVED
+```
+
+If rejected:
+```
+JUDGE_REJECTED
+
+## Issues
+- Issue 1: [specific problem]
+- Issue 2: [specific problem]
+
+## Fix Plan
+Step 1: [specific fix action]
+Step 2: [specific fix action]
+```
+
+Output ONLY the verdict and (if rejected) the issues/fix plan. No preamble."""
+
+        output = run_claude(prompt, model=MODEL_BRAIN, timeout=TIMEOUT_EXEC)
+
+        # Fail-closed: prompt user on judge failure
+        if not output:
+            log("[JUDGE] No response from Judge.")
+            try:
+                choice = input(">> Judge failed. Proceed anyway? [y/N]: ").strip().lower()
+                if choice == 'y':
+                    log("[JUDGE] User approved proceeding without review.")
+                    return
+            except EOFError:
+                pass  # Non-interactive, fall through to exit
+            log("[JUDGE] Aborting (fail-closed).")
+            sys.exit(1)
+
+        if "JUDGE_APPROVED" in output:
+            log("[JUDGE_APPROVED] Code passed architectural review.")
+            return
+
+        if "JUDGE_REJECTED" not in output:
+            log("[JUDGE] Unclear verdict from Judge.")
+            try:
+                choice = input(">> Judge gave unclear verdict. Proceed anyway? [y/N]: ").strip().lower()
+                if choice == 'y':
+                    log("[JUDGE] User approved proceeding despite unclear verdict.")
+                    return
+            except EOFError:
+                pass
+            log("[JUDGE] Aborting (fail-closed).")
+            sys.exit(1)
+
+        # Rejected - extract feedback
+        log(f"[JUDGE_REJECTED] Issues found (loop {loop})")
+
+        # Parse feedback (everything after JUDGE_REJECTED)
+        feedback = output.split("JUDGE_REJECTED", 1)[-1].strip()
+        write_file(JUDGE_FEEDBACK_FILE, feedback)
+
+        # Print issues for visibility
+        for line in feedback.splitlines()[:10]:
+            print(f"    {line}")
+
+        if loop >= MAX_JUDGE_LOOPS:
+            log("[ESCALATE_TO_HUMAN] Max judge loops reached. Manual review required.")
+            log(f"[INFO] Judge feedback saved to: {JUDGE_FEEDBACK_FILE}")
+            sys.exit(1)
+
+        # Apply fixes with Sonnet - include changed files list
+        log("[JUDGE_FIX] Applying fixes...")
+        changed_files = get_changed_filenames()
+
+        fix_prompt = f"""JUDGE FEEDBACK - Fixes Required:
+
+{feedback}
+
+## Changed Files
+{changed_files}
+
+## Original Plan
+{plan}
+
+IMPORTANT: This is a fresh session. The files listed above were modified.
+READ those files first to understand current state before making fixes.
+
+Execute the fixes above. After fixing:
+1. Ensure linting passes
+2. Ensure tests still pass
+
+End with: FIXES_COMPLETE or FIXES_BLOCKED: <reason>"""
+
+        fix_output = run_claude(fix_prompt, model=MODEL_HANDS, timeout=TIMEOUT_EXEC)
+
+        if not fix_output:
+            log("[JUDGE_FIX] No response from fixer.")
+            sys.exit(1)
+
+        if "FIXES_BLOCKED" in fix_output:
+            log("[JUDGE_FIX] Fixes blocked. Manual intervention required.")
+            sys.exit(1)
+
+        # Re-run linter after fixes
+        passed, lint_out = run_linter()
+        if not passed:
+            log("[JUDGE_FIX] Lint failed after fixes.")
+            for line in lint_out.splitlines()[:10]:
+                print(f"    {line}")
+            sys.exit(1)
+
+        # Re-run verify (tests)
+        log("[JUDGE_FIX] Re-verifying tests...")
+        phase_verify()
+
+        # Update changed files for next judge loop
+        changed_files = get_changed_filenames()
+
+        # Clean up feedback file on retry
+        if JUDGE_FEEDBACK_FILE.exists():
+            JUDGE_FEEDBACK_FILE.unlink()
+
+    # Should not reach here
+    log("[JUDGE] Unexpected exit from judge loop.")
+    sys.exit(1)
+
+
 # -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
 def main():
-    global DRY_RUN, WORK_DIR, SCOUT_FILE, PLAN_FILE, LOG_FILE, NOTES_FILE, BACKUP_DIR, TEST_OUTPUT_FILE
+    global DRY_RUN, WORK_DIR, SCOUT_FILE, PLAN_FILE, LOG_FILE, NOTES_FILE, BACKUP_DIR, TEST_OUTPUT_FILE, JUDGE_FEEDBACK_FILE
 
     if len(sys.argv) < 2:
         print(__doc__)
@@ -627,13 +823,14 @@ def main():
     flags = set(sys.argv[2:])
 
     # Set up paths first (before any flag handling that uses them)
-    WORK_DIR = PROJECT_ROOT / f"{WORK_DIR_NAME}-{ZEN_ID}"
+    WORK_DIR = PROJECT_ROOT / WORK_DIR_STR
     SCOUT_FILE = WORK_DIR / "scout.md"
     PLAN_FILE = WORK_DIR / "plan.md"
     LOG_FILE = WORK_DIR / "log.md"
     NOTES_FILE = WORK_DIR / "final_notes.md"
     BACKUP_DIR = WORK_DIR / "backup"
     TEST_OUTPUT_FILE = WORK_DIR / "test_output.txt"
+    JUDGE_FEEDBACK_FILE = WORK_DIR / "judge_feedback.md"
 
     # Handle legacy work dir (without PID suffix) for --reset
     legacy_work_dir = PROJECT_ROOT / WORK_DIR_NAME
@@ -657,11 +854,19 @@ def main():
         DRY_RUN = True
         print("Dry-run mode enabled.")
 
+    skip_judge = "--skip-judge" in flags
+
     try:
         phase_scout(task_file)
         phase_plan(task_file)
         phase_implement()
         phase_verify()
+
+        if not skip_judge:
+            phase_judge()
+        else:
+            log("[JUDGE] Skipped (--skip-judge flag)")
+
         print("\n[SUCCESS]")
     except KeyboardInterrupt:
         log("[INTERRUPTED] User cancelled execution")
