@@ -53,6 +53,8 @@ def cmd_run(args):
             cmd.append("--retry")
         if args.dry_run:
             cmd.append("--dry-run")
+        if args.skip_judge:
+            cmd.append("--skip-judge")
         sys.exit(subprocess.call(cmd))
 
     # Use package core
@@ -65,6 +67,8 @@ def cmd_run(args):
         flags.add("--retry")
     if args.dry_run:
         flags.add("--dry-run")
+    if args.skip_judge:
+        flags.add("--skip-judge")
 
     core.run(task_file, flags)
 
@@ -196,6 +200,7 @@ def main():
             parser.add_argument("--reset", action="store_true", help="Reset work directory")
             parser.add_argument("--retry", action="store_true", help="Clear completion markers")
             parser.add_argument("--dry-run", action="store_true", help="Show what would happen")
+            parser.add_argument("--skip-judge", action="store_true", help="Skip Judge phase review")
             args = parser.parse_args(sys.argv[1:])
             cmd_run(args)
             return
@@ -212,11 +217,13 @@ Options:
   --reset               Reset work directory and start fresh
   --retry               Clear completion markers to retry failed steps
   --dry-run             Show what would happen without executing
+  --skip-judge          Skip Judge phase review (Opus architectural review)
 
 Examples:
   zen init
   zen task.md
   zen task.md --reset
+  zen task.md --skip-judge
   zen eject
 """)
 
