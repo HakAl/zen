@@ -7,6 +7,8 @@ We maintain two copies of the code:
 
 This test ensures key functions don't drift apart.
 """
+from __future__ import annotations
+
 import ast
 import sys
 from pathlib import Path
