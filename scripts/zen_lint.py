@@ -7,6 +7,7 @@ Scans for forbidden patterns (TODO, FIXME, SHIM).
 import sys
 import re
 import json
+import fnmatch
 import argparse
 import subprocess
 from pathlib import Path
@@ -70,7 +71,12 @@ QUALITY_RULES = [
     Rule("STUB_IMPL", r"^\s*(pass|\.{3})\s*$", CODE, "MEDIUM"),
     Rule("NOT_IMPLEMENTED", r"(raise\s+)?NotImplementedError|not\s+implemented", CODE, "MEDIUM"),
     Rule("HARDCODED_IP",
-         r"\b(?!127\.0\.0\.1|0\.0\.0\.0|255\.255\.255\.\d{1,3}|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b",
+         # Valid octet: 0-255
+         r"\b(?!127\.0\.0\.1|0\.0\.0\.0|255\.255\.255\.\d{1,3}|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)"
+         r"(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\."
+         r"(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\."
+         r"(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\."
+         r"(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\b",
          CODE, "MEDIUM"),
     Rule("AI_COMMENT_BOILERPLATE",
          r"^\s*#\s*(This (function|method|class|module)|The following)\s+(is used to|responsible for|will|provides|represents)\b",
@@ -136,7 +142,7 @@ LANG_SYNTAX = {
 
 IGNORE_DIRS: Set[str] = {
     # Version control
-    ".git", ".svn", ".hg",
+    ".git", ".svn", ".hg", ".zen",
     # Python
     "__pycache__", "venv", ".venv", "env", ".eggs", "*.egg-info",
     ".mypy_cache", ".pytest_cache", ".tox", ".nox", ".ruff_cache",
@@ -208,7 +214,41 @@ IGNORE_EXTS: Set[str] = {
     ".csv", ".tsv", ".json", ".xml", ".lock",
 }
 
-SUPPRESS_PATTERN = re.compile(r"#\s*lint:(ignore|disable)(?:\s+([A-Z_]+))?\b", re.IGNORECASE)
+# Suppression patterns for different comment styles
+SUPPRESS_PATTERNS = {
+    '#': re.compile(r"#\s*lint:(ignore|disable)(?:\s+([A-Z_]+))?\b", re.IGNORECASE),
+    '//': re.compile(r"//\s*lint:(ignore|disable)(?:\s+([A-Z_]+))?\b", re.IGNORECASE),
+    '--': re.compile(r"--\s*lint:(ignore|disable)(?:\s+([A-Z_]+))?\b", re.IGNORECASE),
+    ';': re.compile(r";\s*lint:(ignore|disable)(?:\s+([A-Z_]+))?\b", re.IGNORECASE),
+}
+
+def get_suppression_match(line: str, ext: str):
+    """Check for lint suppression comment based on language."""
+    syntax = LANG_SYNTAX.get(ext)
+    if syntax and syntax[0]:
+        pattern = SUPPRESS_PATTERNS.get(syntax[0])
+        if pattern:
+            return pattern.search(line)
+    # Fallback: try all patterns
+    for pattern in SUPPRESS_PATTERNS.values():
+        match = pattern.search(line)
+        if match:
+            return match
+    return None
+
+# Rules that should be skipped in test files (mock secrets are common)
+TEST_EXEMPT_RULES: Set[str] = {"API_KEY", "POSSIBLE_SECRET", "EXAMPLE_DATA"}
+
+# Patterns that indicate a test file (checked against full path)
+# Matches: test_*.py, *_test.py, *.test.js, *.spec.ts, tests/, __tests__/
+TEST_FILE_PATTERNS = re.compile(
+    r"([\\/]|^)(tests?|spec|__tests__)[\\/]|"  # test directories
+    r"[\\/]test_[^\\/]*$|"                      # /test_*.ext
+    r"_test\.[^\\/]+$|"                         # *_test.ext
+    r"\.test\.[^\\/]+$|"                        # *.test.ext
+    r"\.spec\.[^\\/]+$",                        # *.spec.ext
+    re.IGNORECASE
+)
 
 
 # -----------------------------------------------------------------------------
@@ -234,33 +274,53 @@ def find_string_ranges(line: str) -> List[Tuple[int, int]]:
     """
     Find ranges of string literals in a line to avoid false comment detection.
     Returns list of (start, end) indices.
+    Handles both single/double quotes and triple-quoted strings.
     """
     ranges = []
-    in_string = False
-    string_char = None
-    start = 0
     i = 0
+    length = len(line)
 
-    while i < len(line):
+    while i < length:
         c = line[i]
 
-        # Handle escape sequences
-        if i > 0 and line[i - 1] == '\\':
-            i += 1
-            continue
-
-        if not in_string:
-            if c in ('"', "'", '`'):
-                in_string = True
-                string_char = c
+        if c in ('"', "'", '`'):
+            # Check for triple-quoted string
+            if i + 2 < length and line[i:i+3] in ('"""', "'''"):
+                triple = line[i:i+3]
                 start = i
+                i += 3
+                # Look for closing triple quote
+                while i + 2 < length:
+                    if line[i] == '\\':
+                        i += 2  # Skip escaped character
+                        continue
+                    if line[i:i+3] == triple:
+                        ranges.append((start, i + 3))
+                        i += 3
+                        break
+                    i += 1
+                else:
+                    # Unclosed triple quote - don't add to ranges (spans multiple lines)
+                    i = length
+            else:
+                # Single-quoted string
+                quote_char = c
+                start = i
+                i += 1
+                while i < length:
+                    if line[i] == '\\' and i + 1 < length:
+                        i += 2  # Skip escaped character
+                        continue
+                    if line[i] == quote_char:
+                        ranges.append((start, i + 1))
+                        i += 1
+                        break
+                    i += 1
+                else:
+                    # Unclosed string - don't add to ranges
+                    pass
         else:
-            if c == string_char:
-                ranges.append((start, i + 1))
-                in_string = False
-                string_char = None
-
-        i += 1
+            i += 1
 
     return ranges
 
@@ -333,11 +393,18 @@ def check_file(path: str, min_severity: str = "LOW", config: Optional[Dict] = No
     violations = []
     severity_threshold = SEVERITIES.index(min_severity)
 
+    # Check if this is a test file (exempt from secret detection rules)
+    is_test_file = bool(TEST_FILE_PATTERNS.search(str(p)))
+
     # Get rules (with config overrides if provided)
     rules = QUALITY_RULES
     if config:
         disabled = set(config.get("disabled_rules", []))
         rules = [r for r in rules if r.name not in disabled]
+
+    # Skip secret detection rules in test files
+    if is_test_file:
+        rules = [r for r in rules if r.name not in TEST_EXEMPT_RULES]
 
     try:
         content = p.read_text(encoding="utf-8", errors="replace")
@@ -357,7 +424,7 @@ def check_file(path: str, min_severity: str = "LOW", config: Optional[Dict] = No
                 continue
 
             # Check for inline suppression
-            suppression_match = SUPPRESS_PATTERN.search(line)
+            suppression_match = get_suppression_match(line, ext)
             if suppression_match:
                 specific_rule = suppression_match.group(2)
                 if not specific_rule:
@@ -415,6 +482,14 @@ def check_file(path: str, min_severity: str = "LOW", config: Optional[Dict] = No
                     continue
 
                 if rule.search(target):
+                    # Skip STUB_IMPL for abstract methods/protocols
+                    if rule.name == "STUB_IMPL":
+                        # Check previous lines for abstract/protocol context
+                        context_start = max(0, i - 5)
+                        context = "\n".join(lines[context_start:i + 1])
+                        if ABSTRACT_PATTERNS.search(context):
+                            continue
+
                     violations.append({
                         'rule': rule.name,
                         'severity': rule.severity,
@@ -633,7 +708,8 @@ Config file (.lintrc.json):
             all_violations.extend(check_file(str(path), args.severity, config))
         elif path.is_dir():
             for p in path.rglob("*"):
-                if any(part in IGNORE_DIRS for part in p.parts):
+                if any(part in IGNORE_DIRS or any(fnmatch.fnmatch(part, pattern) for pattern in IGNORE_DIRS)
+                       for part in p.parts):
                     continue
                 if p.is_file():
                     all_violations.extend(check_file(str(p), args.severity, config))
