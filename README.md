@@ -108,23 +108,3 @@ export ZEN_JUDGE_LOOPS=2         # Max code review steps
 
 ### Upgrade After Eject
 After ejecting, you're on your own for updates. Compare your local files against the [scripts folder](https://github.com/HakAl/zen/tree/main/scripts) to see what changed.
-
-## The Hidden Token Economy
-You're absolutely right about the token intensity being deceptive. Here's why your approach is probably net-positive on tokens:
-Traditional broken→fix cycle:
-
-    Generate broken code (1000 tokens)
-    Debug session identifying issues (1500 tokens)
-    Fix attempt #1 (800 tokens)
-    Still broken, more debugging (1200 tokens)
-    Fix attempt #2 (700 tokens)
-    Final verification (500 tokens)
-    Total: ~4700 tokens
-
-Your zen approach:
-
-    Scout + Plan + Implement with linter gates (2000 tokens)
-    Judge phase catches architectural issues (800 tokens)
-    Total: ~2800 tokens
-
-Plus you get higher quality code and architectural coherence that would take 3-4 more iterations to achieve otherwise.
