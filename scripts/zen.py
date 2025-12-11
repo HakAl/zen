@@ -46,8 +46,15 @@ MODEL_HANDS = os.getenv("ZEN_MODEL_HANDS", "sonnet")
 MODEL_EYES = os.getenv("ZEN_MODEL_EYES", "haiku")
 TIMEOUT_EXEC = int(os.getenv("ZEN_TIMEOUT", "600"))
 TIMEOUT_LINTER = int(os.getenv("ZEN_LINTER_TIMEOUT", "120"))
+TIMEOUT_SUMMARY = int(os.getenv("ZEN_SUMMARY_TIMEOUT", "180"))  # 3 min for summary
 MAX_RETRIES = int(os.getenv("ZEN_RETRIES", "2"))
 MAX_JUDGE_LOOPS = int(os.getenv("ZEN_JUDGE_LOOPS", "2"))
+
+# Judge skip thresholds (lines changed)
+JUDGE_TRIVIAL_LINES = int(os.getenv("ZEN_JUDGE_TRIVIAL", "5"))
+JUDGE_SMALL_REFACTOR_LINES = int(os.getenv("ZEN_JUDGE_SMALL", "20"))
+JUDGE_SIMPLE_PLAN_LINES = int(os.getenv("ZEN_JUDGE_SIMPLE_LINES", "30"))
+JUDGE_SIMPLE_PLAN_STEPS = int(os.getenv("ZEN_JUDGE_SIMPLE_STEPS", "2"))
 
 PROJECT_ROOT = Path.cwd()
 
@@ -134,7 +141,8 @@ def _is_test_or_doc(path: str) -> bool:
             '_test.' in path or 'test_' in path)
 
 
-def run_claude(prompt: str, model: str, timeout: int = 480) -> Optional[str]:
+def run_claude(prompt: str, model: str, timeout: Optional[int] = None) -> Optional[str]:
+    timeout = timeout or TIMEOUT_EXEC
     if DRY_RUN:
         log(f"[DRY-RUN] Would call {model}")
         return "DRY_RUN_OUTPUT"
@@ -250,49 +258,134 @@ def extract_failure_count(output: str) -> Optional[int]:
     return None
 
 
-def get_changed_filenames() -> str:
-    """Get list of changed files for Sonnet context."""
+def _git_has_head() -> bool:
+    """Check if git repo has at least one commit (HEAD exists)."""
     try:
         result = subprocess.run(
-            ["git", "diff", "--name-only", "HEAD"],
+            ["git", "rev-parse", "HEAD"],
             capture_output=True, text=True, cwd=PROJECT_ROOT
         )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
+        return result.returncode == 0
     except Exception:
-        pass
+        return False
+
+
+def _git_is_repo() -> bool:
+    """Check if we're in a git repository."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-dir"],
+            capture_output=True, text=True, cwd=PROJECT_ROOT
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def get_changed_filenames() -> str:
+    """Get list of changed files for Sonnet context.
+
+    Handles edge cases:
+    - No git repo: falls back to backup directory
+    - No commits (fresh repo): uses git diff --cached instead of diff HEAD
+    - Untracked files: always checks git ls-files --others
+    """
+    changed_files: set[str] = set()
+
+    if _git_is_repo():
+        # Try git diff against HEAD (works if commits exist)
+        if _git_has_head():
+            try:
+                result = subprocess.run(
+                    ["git", "diff", "--name-only", "HEAD"],
+                    capture_output=True, text=True, cwd=PROJECT_ROOT
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    changed_files.update(result.stdout.strip().splitlines())
+            except Exception:
+                pass
+        else:
+            # No commits yet - use git diff --cached to find staged files
+            try:
+                result = subprocess.run(
+                    ["git", "diff", "--cached", "--name-only"],
+                    capture_output=True, text=True, cwd=PROJECT_ROOT
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    changed_files.update(result.stdout.strip().splitlines())
+            except Exception:
+                pass
+
+        # Always check for untracked files (works even with no commits)
+        try:
+            result = subprocess.run(
+                ["git", "ls-files", "--others", "--exclude-standard"],
+                capture_output=True, text=True, cwd=PROJECT_ROOT
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                changed_files.update(result.stdout.strip().splitlines())
+        except Exception:
+            pass
+
+    # Return git-detected files if any
+    if changed_files:
+        return "\n".join(sorted(changed_files))
 
     # Fallback: list files from backup directory
     if BACKUP_DIR.exists():
         files = [str(f.relative_to(BACKUP_DIR)) for f in BACKUP_DIR.rglob("*") if f.is_file()]
-        return "\n".join(files)
+        if files:
+            return "\n".join(files)
 
     return "[No files detected]"
 
 
 def should_skip_judge() -> bool:
-    """Skip expensive Opus review for trivial/safe changes."""
+    """Skip expensive Opus review for trivial/safe changes.
+
+    Handles edge cases:
+    - No git repo: returns False (require judge, fail-safe)
+    - No commits (fresh repo): uses git diff --cached instead of diff HEAD
+    """
+    # Check if we're in a git repo
+    if not _git_is_repo():
+        return False  # Fail-safe: require judge if not a git repo
+
     # Get modified files (tracked)
-    try:
-        result = subprocess.run(
-            ["git", "diff", "--numstat", "HEAD"],
-            capture_output=True, text=True, cwd=PROJECT_ROOT
-        )
-        if result.returncode != 0:
-            return False
-        numstat = result.stdout.strip()
-    except Exception:
-        return False
+    numstat = ""
+    if _git_has_head():
+        try:
+            result = subprocess.run(
+                ["git", "diff", "--numstat", "HEAD"],
+                capture_output=True, text=True, cwd=PROJECT_ROOT
+            )
+            if result.returncode == 0:
+                numstat = result.stdout.strip()
+        except Exception:
+            pass
+    else:
+        # No commits yet - use git diff --cached to find staged files
+        try:
+            result = subprocess.run(
+                ["git", "diff", "--cached", "--numstat"],
+                capture_output=True, text=True, cwd=PROJECT_ROOT
+            )
+            if result.returncode == 0:
+                numstat = result.stdout.strip()
+        except Exception:
+            pass
 
     # Get untracked files (new files not yet in git)
+    untracked = ""
     try:
         untracked_result = subprocess.run(
             ["git", "ls-files", "--others", "--exclude-standard"],
             capture_output=True, text=True, cwd=PROJECT_ROOT
         )
-        untracked = untracked_result.stdout.strip() if untracked_result.returncode == 0 else ""
+        if untracked_result.returncode == 0:
+            untracked = untracked_result.stdout.strip()
     except Exception:
-        untracked = ""
+        pass
 
     # Handle edge cases for new files
     if not numstat and not untracked:
@@ -336,7 +429,7 @@ def should_skip_judge() -> bool:
             return False
 
     # Rule A: Typo fix threshold (but not if new code files exist)
-    if total_changes < 5 and not has_new_code_files:
+    if total_changes < JUDGE_TRIVIAL_LINES and not has_new_code_files:
         log(f"[JUDGE] Skipping: Trivial ({total_changes} lines)")
         return True
 
@@ -348,11 +441,11 @@ def should_skip_judge() -> bool:
     # Rule D: Small refactor + simple plan
     plan = read_file(PLAN_FILE)
     steps = parse_steps(plan)
-    if len(steps) <= 2 and total_changes < 30 and not has_new_code_files:
+    if len(steps) <= JUDGE_SIMPLE_PLAN_STEPS and total_changes < JUDGE_SIMPLE_PLAN_LINES and not has_new_code_files:
         log(f"[JUDGE] Skipping: Simple ({len(steps)} steps, {total_changes} lines)")
         return True
 
-    if total_changes < 20 and not has_new_code_files:
+    if total_changes < JUDGE_SMALL_REFACTOR_LINES and not has_new_code_files:
         log(f"[JUDGE] Skipping: Small refactor ({total_changes} lines)")
         return True
 
@@ -723,7 +816,7 @@ End with: TESTS_PASS or TESTS_FAIL"""
     summary = run_claude(
         f"Summarize changes made. Be concise.\n\nPlan:\n{plan}",
         model=MODEL_EYES,
-        timeout=120,
+        timeout=TIMEOUT_SUMMARY,
     )
     if summary:
         write_file(NOTES_FILE, summary)
@@ -732,7 +825,7 @@ End with: TESTS_PASS or TESTS_FAIL"""
 
 
 def phase_judge() -> None:
-    """Judge phase: Opus reviews implementation for quality and alignment."""
+    """Judge phase: Review implementation for quality and alignment."""
     log("\n[JUDGE] Senior Architect review...")
 
     # Gather context
