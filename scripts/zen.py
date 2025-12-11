@@ -127,6 +127,13 @@ def backup_file(path: Path) -> None:
         log(f"[BACKUP] {rel_path}")
 
 
+def _is_test_or_doc(path: str) -> bool:
+    """Check if path is a test or documentation file."""
+    return (path.endswith(('.md', '.txt', '.rst')) or
+            '/test' in path or path.startswith('test') or
+            '_test.' in path or 'test_' in path)
+
+
 def run_claude(prompt: str, model: str, timeout: int = 480) -> Optional[str]:
     if DRY_RUN:
         log(f"[DRY-RUN] Would call {model}")
@@ -261,6 +268,95 @@ def get_changed_filenames() -> str:
         return "\n".join(files)
 
     return "[No files detected]"
+
+
+def should_skip_judge() -> bool:
+    """Skip expensive Opus review for trivial/safe changes."""
+    # Get modified files (tracked)
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--numstat", "HEAD"],
+            capture_output=True, text=True, cwd=PROJECT_ROOT
+        )
+        if result.returncode != 0:
+            return False
+        numstat = result.stdout.strip()
+    except Exception:
+        return False
+
+    # Get untracked files (new files not yet in git)
+    try:
+        untracked_result = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            capture_output=True, text=True, cwd=PROJECT_ROOT
+        )
+        untracked = untracked_result.stdout.strip() if untracked_result.returncode == 0 else ""
+    except Exception:
+        untracked = ""
+
+    # Handle edge cases for new files
+    if not numstat and not untracked:
+        log("[JUDGE] Skipping: No changes detected")
+        return True
+
+    if not numstat and untracked:
+        # Only new files, no modifications to existing
+        untracked_files = untracked.splitlines()
+        if not all(_is_test_or_doc(f) for f in untracked_files):
+            log("[JUDGE] Required: New code files created")
+            return False
+        log("[JUDGE] Skipping: Only new test/doc files")
+        return True
+
+    # Parse numstat for modified files
+    total_add, total_del = 0, 0
+    changed_files = []
+
+    for line in numstat.splitlines():
+        parts = line.split('\t')
+        if len(parts) >= 3:
+            add = int(parts[0]) if parts[0] != '-' else 0
+            delete = int(parts[1]) if parts[1] != '-' else 0
+            total_add += add
+            total_del += delete
+            changed_files.append(parts[2])
+
+    # Include untracked files in the file list for risk assessment
+    if untracked:
+        changed_files.extend(untracked.splitlines())
+
+    total_changes = total_add + total_del
+    has_new_code_files = untracked and not all(_is_test_or_doc(f) for f in untracked.splitlines())
+
+    # Rule B: Risky files always reviewed (check FIRST - before any skip rules)
+    risky_patterns = ['auth', 'login', 'secur', 'payment', 'crypt', 'secret', 'token']
+    for f in changed_files:
+        if any(r in f.lower() for r in risky_patterns):
+            log(f"[JUDGE] Required: Sensitive file ({f})")
+            return False
+
+    # Rule A: Typo fix threshold (but not if new code files exist)
+    if total_changes < 5 and not has_new_code_files:
+        log(f"[JUDGE] Skipping: Trivial ({total_changes} lines)")
+        return True
+
+    # Rule C: Pure docs/tests exempt
+    if all(_is_test_or_doc(f) for f in changed_files):
+        log("[JUDGE] Skipping: Only docs/tests changed")
+        return True
+
+    # Rule D: Small refactor + simple plan
+    plan = read_file(PLAN_FILE)
+    steps = parse_steps(plan)
+    if len(steps) <= 2 and total_changes < 30 and not has_new_code_files:
+        log(f"[JUDGE] Skipping: Simple ({len(steps)} steps, {total_changes} lines)")
+        return True
+
+    if total_changes < 20 and not has_new_code_files:
+        log(f"[JUDGE] Skipping: Small refactor ({total_changes} lines)")
+        return True
+
+    return False
 
 
 # -----------------------------------------------------------------------------
@@ -534,7 +630,8 @@ End with: STEP_COMPLETE or STEP_BLOCKED: <reason>"""
             sys.exit(1)
 
 
-def phase_verify() -> None:
+def phase_verify() -> bool:
+    """Returns True if verification passed, False otherwise."""
     log("\n[VERIFY] Running tests...")
     plan = read_file(PLAN_FILE)
 
@@ -565,7 +662,7 @@ End with exactly: TESTS_PASS or TESTS_FAIL"""
 
         if not output:
             log("[VERIFY] No output from agent.")
-            sys.exit(1)
+            return False
 
         # Check file exists
         if not TEST_OUTPUT_FILE.exists():
@@ -602,7 +699,7 @@ End with exactly: TESTS_PASS or TESTS_FAIL"""
             if stuck_count >= 2:
                 log(f"[VERIFY] Agent stuck - same failures {stuck_count} times.")
                 print(test_output[:500])
-                sys.exit(1)
+                return False
             prompt += "\n\nSame failures as before. Try a DIFFERENT approach."
         else:
             stuck_count = 0  # Reset - making progress
@@ -620,7 +717,7 @@ End with: TESTS_PASS or TESTS_FAIL"""
 
     else:
         log(f"[VERIFY] Failed after {MAX_RETRIES} attempts.")
-        sys.exit(1)
+        return False
 
     # Generate summary
     summary = run_claude(
@@ -630,6 +727,8 @@ End with: TESTS_PASS or TESTS_FAIL"""
     )
     if summary:
         write_file(NOTES_FILE, summary)
+
+    return True
 
 
 def phase_judge() -> None:
@@ -790,7 +889,9 @@ End with: FIXES_COMPLETE or FIXES_BLOCKED: <reason>"""
 
         # Re-run verify (tests)
         log("[JUDGE_FIX] Re-verifying tests...")
-        phase_verify()
+        if not phase_verify():
+            log("[JUDGE_FIX] Tests failed after fixes.")
+            sys.exit(1)
 
         # Update changed files for next judge loop
         changed_files = get_changed_filenames()
@@ -860,12 +961,15 @@ def main():
         phase_scout(task_file)
         phase_plan(task_file)
         phase_implement()
-        phase_verify()
+        if not phase_verify():
+            sys.exit(1)
 
-        if not skip_judge:
+        if not skip_judge and not should_skip_judge():
             phase_judge()
         else:
-            log("[JUDGE] Skipped (--skip-judge flag)")
+            if skip_judge:
+                log("[JUDGE] Skipped (--skip-judge flag)")
+            # else: should_skip_judge() already logged reason
 
         print("\n[SUCCESS]")
     except KeyboardInterrupt:
