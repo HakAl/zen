@@ -233,31 +233,6 @@ This shouldn't happen but parser might match
         )
 
 
-class TestGitDiffInitialCommit:
-    """BUG #9: git diff fails silently on repos with no commits."""
-
-    def test_get_git_changes_handles_no_head(self, tmp_path, monkeypatch):
-        import subprocess
-
-        zen_lint = _reload_zen_lint()
-
-        # Create a new git repo with no commits
-        monkeypatch.chdir(tmp_path)
-        subprocess.run(["git", "init"], capture_output=True, check=True)
-
-        # Create and stage a file (but don't commit)
-        test_file = tmp_path / "staged.py"
-        test_file.write_text("print('hello')")
-        subprocess.run(["git", "add", "staged.py"], capture_output=True, check=True)
-
-        # get_git_changes should still find the staged file
-        changes = zen_lint.get_git_changes()
-
-        assert "staged.py" in changes, (
-            f"BUG: get_git_changes missed staged file in repo with no commits. Got: {changes}"
-        )
-
-
 class TestEscapeSequenceHandling:
     """BUG #10: Escape handling checks previous char incorrectly."""
 

@@ -4,7 +4,7 @@ Changes to `scripts/zen.py` organized by priority.
 
 ## P1: High Priority
 
-### 3. Model Escalation (Sonnet → Opus on 2x fail)
+### 3. Model Escalation (Sonnet → Opus on 2x fail) -- Complete
 
 **Location:** `phase_implement()` inner retry loop (~line 488).
 
@@ -60,7 +60,7 @@ You are the senior specialist. Analyze the problem fresh and fix it definitively
 
 ---
 
-### 4. "I'm Stuck" Detection + Coaching Prompt
+### 4. "I'm Stuck" Detection + Coaching Prompt -- Complete
 
 **Location:** `phase_implement()` after getting output (~line 493).
 
@@ -90,7 +90,7 @@ COACHING: You are in Zen Mode with full file access. You CAN do this.
 
 ---
 
-### 5. Implement Snapshots (create_snapshot / restore_snapshot)
+### 5. Implement Snapshots (create_snapshot / restore_snapshot) -- Complete
 
 **Location:** Add after `backup_file()` (~line 128).
 

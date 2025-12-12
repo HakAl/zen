@@ -10,59 +10,65 @@ Orchestrates `claude` to scout, plan, code, and verify tasks using the file syst
 4.  **Contract First:** Enforces architectural rules via a "psychological linter."
 5.  **Slow is Fast:** Upfront planning costs tokens now to save thousands of "debugging tokens" later.
 
-## Prerequisites
+## Quick Start
 
-**1. Install Claude CLI (Required):**
-The agent uses the official Anthropic CLI to interface with the LLM.
+**1. Prerequisites**
+You need the [Claude CLI](https://github.com/anthropics/claude-cli) installed and authenticated.
 ```bash
 npm install -g @anthropic-ai/claude-cli
 claude login
 ```
 
-## Installation
-
-### Option A: The Package (Recommended)
-Best for general use. Zero dependencies.
+**2. Install Zen**
 ```bash
 pip install zen-mode
+# OR copy 'scripts/zen.py' and 'scripts/zen_lint.py' to your project root.
 ```
 
-### Option B: The Scripts (For Hackers)
-Best if you want to modify the agent's internal logic.
+**3. Run a Task**
+```bash
+# Describe your task
+echo "Refactor auth.py to use JWTs. Remove session logic." > task.md
 
-Download `zen.py` and `zen_lint.py` from the [scripts folder](https://github.com/HakAl/zen/tree/main/scripts) to your project root.
+# Let Zen take the wheel
+zen task.md
+```
+---
+
+## How it Works
+
+Zen Mode breaks development into five distinct phases. Because state is saved to disk, you can pause, edit, or retry at any stage.
+
+```text
+.zen/
+├── scout.md      # Phase 1: The Map (Relevant files & context)
+├── plan.md       # Phase 2: The Strategy (Step-by-step instructions)
+├── log.md        # Phase 3: The History (Execution logs)
+├── backup/       # Safety: Original files are backed up before edit
+└── ...
+```
+
+1.  **Scout:** Parallel search strategies map the codebase.
+2.  **Plan:** The "Brain" (Opus) drafts a strict implementation plan.
+3.  **Implement:** The "Hands" (Sonnet) executes steps atomically.
+4.  **Verify:** The agent runs your test suite (pytest/npm/cargo) to confirm.
+5.  **Judge:** An architectural review loop checks for safety and alignment.
+
+### Human Intervention
+Since state is just files, you are always in control:
+*   **Don't like the plan?** Edit `.zen/plan.md`. The agent follows *your* edits.
+*   **Stuck on a step?** Run `zen task.md --retry` to clear the completion marker.
+*   **Total restart?** Run `zen task.md --reset`.
 
 ---
 
-## Workflow
+## The Constitution (`CLAUDE.md`)
+When you run `zen init`, it creates a `CLAUDE.md` file in your root (if you don't have one). This is the **Psychological Linter**.
 
-### 1. Initialize
-Run this in your project root to generate the config.
-```bash
-zen init
-```
-*Creates `.zen/` directory and `CLAUDE.md` (The Constitution).*
-
-### 2. Define the Task
-Create a simple text file (e.g., `task.md`) describing what you want:
-> "Refactor the auth module to use JWTs instead of sessions. Delete the old session middleware."
-
-### 3. Run the Agent
-```bash
-zen task.md
-```
-The agent will loop through five phases:
-1.  **Scout:** Maps relevant code (writes to `.zen/scout.md`).
-2.  **Plan:** Drafts a step-by-step plan (writes to `.zen/plan.md`).
-3.  **Implement:** Executes steps one by one.
-4.  **Verify:** Runs tests to confirm.
-5.  **Judge:** Architectural review.
-
-### 4. Intervention (The "Human in the Loop")
-Since state is just files, you are in control:
-*   **Don't like the plan?** Open `.zen/plan.md`, edit the text, and run `zen task.md` again. It resumes automatically.
-*   **Stuck on a step?** Run `zen task.md --retry` to clear the step completion marker.
-*   **Total restart?** Run `zen task.md --reset` to nuke the `.zen` folder.
+Put your non-negotiable rules here. The agent reads this *every single step*.
+> * "Always use TypeScript strict mode."
+> * "Prefer composition over inheritance."
+> * "Never use 'any'."
 
 ---
 
@@ -70,16 +76,10 @@ Since state is just files, you are in control:
 
 At first glance, Zen Mode's five-phase process seems token-intensive. In practice, it is **net-positive** because it eliminates the "Debug Spiral."
 
-**Traditional "Shotgun" Approach (~4,700 tokens):**
-*   Generate broken code (1000)
-*   Debug session identifying issues (1500)
-*   Fix attempt #1 (800)
-*   Still broken, more debugging (1200)
-*   Final verification (500)
-
-**The Zen Approach (~2,800 tokens):**
-*   Scout + Plan + Implement (2000)
-*   Judge phase / Architectural gates (800)
+| Approach | Typical Token Flow | Cost |
+| :--- | :--- | :--- |
+| **"Shotgun" Chat** | Generate code -> Debug -> Fix -> Debug -> Fix | ~4,700 tokens |
+| **Zen Mode** | Scout -> Plan -> Implement -> Judge | ~2,800 tokens |
 
 **The Result:** You spend ~40% fewer tokens to achieve architectural coherence that would usually take 3-4 manual iterations.
 
@@ -87,24 +87,19 @@ At first glance, Zen Mode's five-phase process seems token-intensive. In practic
 
 ## Advanced
 
+### Configuration
+Tune the behavior via environment variables:
+
+```bash
+export ZEN_MODEL_BRAIN=claude-3-opus-20240229    # Planning/Judging
+export ZEN_MODEL_HANDS=claude-3-5-sonnet-20241022 # Coding
+export ZEN_TRACK_COSTS=true                       # Enable cost receipt
+export ZEN_TIMEOUT=600                            # Max seconds per step
+export ZEN_RETRIES=2                              # Retries before "Stuck"
+```
+
 ### The Eject Button
-Started with the package but want to hack the source code?
+If you installed via pip but want to hack the source code:
 ```bash
 zen eject
 ```
-This copies the internal logic (`zen.py` and `zen_lint.py`) into your local directory. The `zen` command will now use your local versions.
-
-### Configuration
-Env vars (optional):
-```bash
-export ZEN_MODEL_BRAIN=opus       # For planning
-export ZEN_MODEL_HANDS=sonnet     # For coding
-export ZEN_MODEL_EYES=haiku       # For summaries
-export ZEN_TIMEOUT=600            # Max seconds per step
-export ZEN_LINTER_TIMEOUT=120     # Max seconds for linter
-export ZEN_RETRIES=2              # Max retries per step
-export ZEN_JUDGE_LOOPS=2         # Max code review steps
-```
-
-### Upgrade After Eject
-After ejecting, you're on your own for updates. Compare your local files against the [scripts folder](https://github.com/HakAl/zen/tree/main/scripts) to see what changed.
