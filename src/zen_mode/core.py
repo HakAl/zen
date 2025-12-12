@@ -1088,6 +1088,9 @@ Output ONLY the verdict and (if rejected) the issues/fix plan. No preamble."""
 
 {feedback}
 
+## Constitution (CLAUDE.md)
+{constitution}
+
 ## Changed Files
 {changed_files}
 

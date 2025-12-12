@@ -242,7 +242,7 @@ for step_num, step_desc in steps:
 
 ---
 
-### 6. Include CLAUDE.md in Fix Prompt
+### 6. Include CLAUDE.md in Fix Prompt -- Complete
 
 **Location:** `phase_judge()` fix prompt (~line 754).
 

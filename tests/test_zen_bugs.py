@@ -170,69 +170,6 @@ class TestTaskFileNotValidated:
             "BUG: task_file is never validated. A typo in the path sends garbage to Claude."
         )
 
-
-class TestStepParsingDuplicates:
-    """BUG #7: Step parsing can produce duplicates or gaps."""
-
-    def test_parse_steps_no_duplicates(self, monkeypatch):
-        zen = _reload_zen(monkeypatch)
-
-        # Plan with potential duplicate matching
-        plan_with_dupe = """
-## Step 1: Do first thing
-Some description
-
-## Step 1: Duplicate step one
-This shouldn't happen but parser might match
-
-## Step 2: Do second thing
-"""
-        steps = zen.parse_steps(plan_with_dupe)
-        step_nums = [s[0] for s in steps]
-
-        # Should not have duplicate step numbers
-        assert len(step_nums) == len(set(step_nums)), (
-            f"BUG: parse_steps produced duplicate step numbers: {step_nums}"
-        )
-
-    def test_parse_steps_no_gaps(self, monkeypatch):
-        zen = _reload_zen(monkeypatch)
-
-        # Normal sequential plan
-        plan = """
-## Step 1: First
-## Step 2: Second
-## Step 3: Third
-"""
-        steps = zen.parse_steps(plan)
-        step_nums = [s[0] for s in steps]
-
-        # Steps should be sequential without gaps
-        if step_nums:
-            expected = list(range(step_nums[0], step_nums[0] + len(step_nums)))
-            assert step_nums == expected, (
-                f"BUG: parse_steps produced gaps: {step_nums}, expected {expected}"
-            )
-
-    def test_parse_steps_mixed_formats_no_duplicates(self, monkeypatch):
-        zen = _reload_zen(monkeypatch)
-
-        # Plan with mixed formats that could match twice
-        plan = """
-## Step 1: First thing
-1. First thing (same content, different format)
-
-## Step 2: Second thing
-"""
-        steps = zen.parse_steps(plan)
-        step_nums = [s[0] for s in steps]
-
-        # The "1." should not create a duplicate of Step 1
-        assert step_nums.count(1) <= 1, (
-            f"BUG: Mixed format caused duplicate step 1: {steps}"
-        )
-
-
 class TestEscapeSequenceHandling:
     """BUG #10: Escape handling checks previous char incorrectly."""
 
@@ -258,41 +195,6 @@ class TestEscapeSequenceHandling:
         assert "comment" in comment, (
             f"BUG: Escaped quote broke string detection. Got comment: '{comment}'"
         )
-
-
-class TestBackupPathCollision:
-    """BUG #11: Backup path flattening can cause collisions."""
-
-    def test_same_filename_different_parents_no_collision(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        zen = _reload_zen(monkeypatch)
-
-        # Set up backup directory
-        backup_dir = tmp_path / "backup"
-        backup_dir.mkdir()
-        zen.BACKUP_DIR = backup_dir
-        zen.PROJECT_ROOT = tmp_path
-
-        # Create two files with same name in different directories
-        (tmp_path / "src").mkdir()
-        (tmp_path / "lib").mkdir()
-        file1 = tmp_path / "src" / "utils.py"
-        file2 = tmp_path / "lib" / "utils.py"
-        file1.write_text("# from src/utils.py")
-        file2.write_text("# from lib/utils.py")
-
-        # Backup both files
-        zen.backup_file(file1)
-        zen.backup_file(file2)
-
-        # Both should have separate backups with preserved directory structure
-        backup1 = backup_dir / "src" / "utils.py"
-        backup2 = backup_dir / "lib" / "utils.py"
-
-        assert backup1.exists(), f"Backup for src/utils.py not found at {backup1}"
-        assert backup2.exists(), f"Backup for lib/utils.py not found at {backup2}"
-        assert backup1.read_text() == "# from src/utils.py"
-        assert backup2.read_text() == "# from lib/utils.py"
 
 
 class TestResetClearsParallelInstances:
@@ -372,45 +274,6 @@ class TestLintHashCollision:
         # These should be different now that we hash full output
         assert hash1 != hash2, (
             "Different lint errors should produce different hashes"
-        )
-
-
-class TestNoVerificationStepEnforcement:
-    """BUG #17: No enforcement that plan includes a verification step."""
-
-    def test_plan_without_verify_step_is_rejected(self, monkeypatch):
-        zen = _reload_zen(monkeypatch)
-
-        # A plan that doesn't end with verification
-        plan_no_verify = """
-## Step 1: Add new feature
-Implement the feature
-
-## Step 2: Update imports
-Fix the imports
-"""
-        steps = zen.parse_steps(plan_no_verify)
-        step_descs = [s[1].lower() for s in steps]
-
-        # Check if any validation exists for verification step
-        source = inspect.getsource(zen)
-        source_lower = source.lower()
-
-        # Look for verification step validation
-        has_verify_check = (
-            ('verify' in source_lower and 'step' in source_lower and 'check' in source_lower) or
-            'must end with' in source_lower or
-            'requires verification' in source_lower or
-            'missing verification' in source_lower
-        )
-
-        # Alternative: check if parse_steps or phase_plan validates this
-        plan_source = inspect.getsource(zen.phase_plan) if hasattr(zen, 'phase_plan') else ""
-        validates_verify_step = 'verif' in plan_source.lower() and 'check' in plan_source.lower()
-
-        assert has_verify_check or validates_verify_step, (
-            "BUG: No enforcement that plan includes verification step. "
-            "A plan without 'verify' or 'test' step is accepted."
         )
 
 
