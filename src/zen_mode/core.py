@@ -132,6 +132,112 @@ def backup_file(path: Path) -> None:
         log(f"[BACKUP] {rel_path}")
 
 
+def create_snapshot(label: str) -> str:
+    """Create a git stash snapshot before risky operation. Returns stash ref."""
+    # Safety: skip if not a git repo
+    if not (PROJECT_ROOT / ".git").exists():
+        return ""
+
+    try:
+        # Check if there are changes to stash
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True, text=True, cwd=PROJECT_ROOT
+        )
+        if not status.stdout.strip():
+            return ""  # Nothing to snapshot
+
+        stash_msg = f"zen-snapshot-{label}-{int(time.time())}"
+        result = subprocess.run(
+            ["git", "stash", "push", "-m", stash_msg, "--include-untracked"],
+            capture_output=True, text=True, cwd=PROJECT_ROOT
+        )
+        if result.returncode == 0:
+            log(f"[SNAPSHOT] Created: {label}")
+            return stash_msg
+    except Exception as e:
+        log(f"[SNAPSHOT] Failed: {e}")
+    return ""
+
+
+def restore_snapshot(stash_msg: str) -> bool:
+    """Restore a snapshot by stash message. Returns True on success."""
+    if not stash_msg:
+        return False
+
+    # Safety: skip if not a git repo
+    if not (PROJECT_ROOT / ".git").exists():
+        return False
+
+    try:
+        # Find the stash index by message
+        result = subprocess.run(
+            ["git", "stash", "list"],
+            capture_output=True, text=True, cwd=PROJECT_ROOT
+        )
+        for line in result.stdout.splitlines():
+            if stash_msg in line:
+                # Extract stash ref (e.g., "stash@{0}")
+                stash_ref = line.split(":")[0]
+
+                # Try stash pop first
+                pop_result = subprocess.run(
+                    ["git", "stash", "pop", stash_ref],
+                    capture_output=True, text=True, cwd=PROJECT_ROOT
+                )
+                if pop_result.returncode == 0:
+                    log(f"[SNAPSHOT] Restored: {stash_msg}")
+                    return True
+
+                # Fallback: stash pop failed (likely conflict)
+                # Hard reset to clean state, then apply
+                log(f"[SNAPSHOT] Conflict detected, forcing restore...")
+                subprocess.run(
+                    ["git", "checkout", "."],
+                    capture_output=True, text=True, cwd=PROJECT_ROOT
+                )
+                subprocess.run(
+                    ["git", "clean", "-fd"],
+                    capture_output=True, text=True, cwd=PROJECT_ROOT
+                )
+                apply_result = subprocess.run(
+                    ["git", "stash", "pop", stash_ref],
+                    capture_output=True, text=True, cwd=PROJECT_ROOT
+                )
+                if apply_result.returncode == 0:
+                    log(f"[SNAPSHOT] Restored (forced): {stash_msg}")
+                    return True
+                else:
+                    log(f"[SNAPSHOT] Restore failed: {apply_result.stderr[:200]}")
+                    return False
+
+    except Exception as e:
+        log(f"[SNAPSHOT] Restore failed: {e}")
+    return False
+
+
+def drop_snapshot(stash_msg: str) -> None:
+    """Drop a snapshot after successful step (prevents stash stack growth)."""
+    if not stash_msg or not (PROJECT_ROOT / ".git").exists():
+        return
+
+    try:
+        result = subprocess.run(
+            ["git", "stash", "list"],
+            capture_output=True, text=True, cwd=PROJECT_ROOT
+        )
+        for line in result.stdout.splitlines():
+            if stash_msg in line:
+                stash_ref = line.split(":")[0]
+                subprocess.run(
+                    ["git", "stash", "drop", stash_ref],
+                    capture_output=True, text=True, cwd=PROJECT_ROOT
+                )
+                return
+    except Exception:
+        pass  # Non-critical, ignore failures
+
+
 def _is_test_or_doc(path: str) -> bool:
     """Check if path is a test or documentation file."""
     return (path.endswith(('.md', '.txt', '.rst')) or
@@ -648,7 +754,10 @@ def phase_implement() -> None:
 
         log(f"\n[STEP {step_num}] {step_desc[:60]}...")
 
-        prompt = f"""Execute Step {step_num}: {step_desc}
+        # Create snapshot before mutation
+        snapshot_ref = create_snapshot(f"step_{step_num}")
+
+        base_prompt = f"""Execute Step {step_num}: {step_desc}
 
 IMPORTANT: This is a fresh session with no memory of previous steps.
 READ target files first to understand current state before editing.
@@ -663,11 +772,45 @@ Rules:
 
 End with: STEP_COMPLETE or STEP_BLOCKED: <reason>"""
 
+        prompt = base_prompt
+        last_error_summary = ""
+
         for attempt in range(1, MAX_RETRIES + 1):
             if attempt > 1:
                 log(f"  Retry {attempt}/{MAX_RETRIES}...")
 
-            output = run_claude(prompt, model=MODEL_HANDS, timeout=TIMEOUT_EXEC) or ""
+            # Escalate to Opus on final retry with CLEAN prompt
+            if attempt == MAX_RETRIES:
+                log(f"  Escalating to {MODEL_BRAIN}...")
+                prompt = base_prompt + f"""
+
+ESCALATION: Previous {attempt - 1} attempts by a junior model failed.
+Last error: {last_error_summary}
+You are the senior specialist. Analyze the problem fresh and fix it definitively."""
+                model = MODEL_BRAIN
+            else:
+                model = MODEL_HANDS
+
+            output = run_claude(prompt, model=model, timeout=TIMEOUT_EXEC) or ""
+
+            # Detect "I'm stuck" hesitation patterns
+            STUCK_PHRASES = ["I cannot", "I am unable", "I'm unable", "not possible", "cannot complete"]
+            if any(phrase in output for phrase in STUCK_PHRASES) and "STEP_COMPLETE" not in output:
+                log(f"  [STUCK] Detected hesitation, injecting coaching prompt...")
+                coaching_prompt = prompt + """
+
+COACHING: You are in Zen Mode with full file access. You CAN do this.
+- Re-read the scout report for correct file paths
+- Break the problem into smaller pieces
+- If a file doesn't exist, create it
+- Try again."""
+
+                # Immediately retry with coaching (same attempt, no continue)
+                output = run_claude(coaching_prompt, model=model, timeout=TIMEOUT_EXEC) or ""
+
+                # If still stuck after coaching, let normal flow handle it
+                if any(phrase in output for phrase in STUCK_PHRASES) and "STEP_COMPLETE" not in output:
+                    log(f"  [STUCK] Still stuck after coaching, proceeding to next attempt")
 
             # Check last line for STEP_BLOCKED to avoid false positives
             last_line = output.strip().split('\n')[-1] if output.strip() else ""
@@ -686,6 +829,9 @@ End with: STEP_COMPLETE or STEP_BLOCKED: <reason>"""
                     # Truncate for prompt to avoid blowing context
                     truncated = "\n".join(lint_out.splitlines()[:30])
 
+                    # Capture summary for potential escalation
+                    last_error_summary = truncated[:300]
+
                     # Hash full output to detect same error, but use truncated for prompt
                     lint_hash = hashlib.md5(lint_out.encode()).hexdigest()
                     if lint_hash in seen_lint_hashes:
@@ -703,10 +849,16 @@ End with: STEP_COMPLETE or STEP_BLOCKED: <reason>"""
                     continue
 
                 log(f"[COMPLETE] Step {step_num}")
+                # Drop snapshot after successful step (prevent stash growth)
+                if snapshot_ref:
+                    drop_snapshot(snapshot_ref)
                 seen_lint_hashes.clear()  # Reset on success
                 break
         else:
             log(f"[FAILED] Step {step_num} after {MAX_RETRIES} attempts")
+            # Restore snapshot on failure
+            if snapshot_ref:
+                restore_snapshot(snapshot_ref)
             if BACKUP_DIR.exists():
                 log(f"[RECOVERY] Backups available in: {BACKUP_DIR}")
             sys.exit(1)

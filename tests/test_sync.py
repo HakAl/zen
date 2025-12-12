@@ -29,6 +29,10 @@ SYNCED_FUNCTIONS = [
     "get_changed_filenames",
     "should_skip_judge",
     "_is_test_or_doc",
+    # Snapshot (git stash) operations
+    "create_snapshot",
+    "restore_snapshot",
+    "drop_snapshot",
     # Test output parsing
     "verify_test_output",
     "extract_failure_count",
