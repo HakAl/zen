@@ -819,15 +819,6 @@ End with: TESTS_PASS or TESTS_FAIL"""
         log(f"[VERIFY] Failed after {MAX_RETRIES} attempts.")
         return False
 
-    # Generate summary
-    summary = run_claude(
-        f"Summarize changes made. Be concise.\n\nPlan:\n{plan}",
-        model=MODEL_EYES,
-        timeout=TIMEOUT_SUMMARY,
-    )
-    if summary:
-        write_file(NOTES_FILE, summary)
-
     return True
 
 
@@ -1069,6 +1060,18 @@ def run(task_file: str, flags: Optional[set] = None) -> None:
             if skip_judge:
                 log("[JUDGE] Skipped (--skip-judge flag)")
             # else: should_skip_judge() already logged reason
+
+        # Generate summary (once, after all phases complete)
+        plan = read_file(PLAN_FILE)
+        summary = run_claude(
+            f"Summarize the completed changes in 3-5 bullets.\n\nPlan:\n{plan}",
+            model=MODEL_EYES,
+            timeout=60,
+        )
+        if summary:
+            write_file(NOTES_FILE, summary)
+        else:
+            log("[SUMMARY] Skipped (timeout)")
 
         print("\n[SUCCESS]")
     except KeyboardInterrupt:
