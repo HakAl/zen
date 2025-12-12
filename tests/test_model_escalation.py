@@ -41,16 +41,12 @@ class TestModelEscalation:
             "tmp_path": tmp_path,
         }
 
-    @patch('zen_mode.core.create_snapshot')
-    @patch('zen_mode.core.drop_snapshot')
-    @patch('zen_mode.core.restore_snapshot')
     @patch('zen_mode.core.run_linter')
     @patch('zen_mode.core.run_claude')
     @patch('zen_mode.core.log')
     @patch('zen_mode.core.backup_scout_files')
     def test_escalates_to_opus_on_final_retry(
-        self, mock_backup, mock_log, mock_claude, mock_linter,
-        mock_restore, mock_drop, mock_create, mock_zen_env
+        self, mock_backup, mock_log, mock_claude, mock_linter, mock_zen_env
     ):
         """On the final retry (MAX_RETRIES), model should switch to MODEL_BRAIN."""
         from zen_mode.core import phase_implement, MAX_RETRIES, MODEL_BRAIN, MODEL_HANDS
@@ -59,7 +55,6 @@ class TestModelEscalation:
             with patch('zen_mode.core.LOG_FILE', mock_zen_env["log_file"]):
                 with patch('zen_mode.core.WORK_DIR', mock_zen_env["work_dir"]):
                     with patch('zen_mode.core.get_completed_steps', return_value=set()):
-                        mock_create.return_value = "snapshot-ref"
 
                         # First attempts fail lint, final attempt succeeds
                         call_count = [0]
@@ -89,16 +84,12 @@ class TestModelEscalation:
                         # Final call should use MODEL_BRAIN
                         assert calls[-1][1]['model'] == MODEL_BRAIN, "Final call should use MODEL_BRAIN"
 
-    @patch('zen_mode.core.create_snapshot')
-    @patch('zen_mode.core.drop_snapshot')
-    @patch('zen_mode.core.restore_snapshot')
     @patch('zen_mode.core.run_linter')
     @patch('zen_mode.core.run_claude')
     @patch('zen_mode.core.log')
     @patch('zen_mode.core.backup_scout_files')
     def test_escalation_prompt_includes_escalation_notice(
-        self, mock_backup, mock_log, mock_claude, mock_linter,
-        mock_restore, mock_drop, mock_create, mock_zen_env
+        self, mock_backup, mock_log, mock_claude, mock_linter, mock_zen_env
     ):
         """The escalation prompt should include 'ESCALATION:' notice."""
         from zen_mode.core import phase_implement, MAX_RETRIES
@@ -107,7 +98,6 @@ class TestModelEscalation:
             with patch('zen_mode.core.LOG_FILE', mock_zen_env["log_file"]):
                 with patch('zen_mode.core.WORK_DIR', mock_zen_env["work_dir"]):
                     with patch('zen_mode.core.get_completed_steps', return_value=set()):
-                        mock_create.return_value = ""
 
                         captured_prompts = []
 
@@ -129,16 +119,12 @@ class TestModelEscalation:
                         assert "ESCALATION:" in final_prompt, "Final prompt should contain ESCALATION notice"
                         assert "senior specialist" in final_prompt.lower(), "Should mention senior specialist"
 
-    @patch('zen_mode.core.create_snapshot')
-    @patch('zen_mode.core.drop_snapshot')
-    @patch('zen_mode.core.restore_snapshot')
     @patch('zen_mode.core.run_linter')
     @patch('zen_mode.core.run_claude')
     @patch('zen_mode.core.log')
     @patch('zen_mode.core.backup_scout_files')
     def test_escalation_includes_last_error_summary(
-        self, mock_backup, mock_log, mock_claude, mock_linter,
-        mock_restore, mock_drop, mock_create, mock_zen_env
+        self, mock_backup, mock_log, mock_claude, mock_linter, mock_zen_env
     ):
         """The escalation prompt should include a summary of the last error."""
         from zen_mode.core import phase_implement, MAX_RETRIES
@@ -147,7 +133,6 @@ class TestModelEscalation:
             with patch('zen_mode.core.LOG_FILE', mock_zen_env["log_file"]):
                 with patch('zen_mode.core.WORK_DIR', mock_zen_env["work_dir"]):
                     with patch('zen_mode.core.get_completed_steps', return_value=set()):
-                        mock_create.return_value = ""
 
                         captured_prompts = []
 
@@ -171,16 +156,12 @@ class TestModelEscalation:
                         assert "foobar" in final_prompt or "undefined" in final_prompt, \
                             "Error content should be included in escalation"
 
-    @patch('zen_mode.core.create_snapshot')
-    @patch('zen_mode.core.drop_snapshot')
-    @patch('zen_mode.core.restore_snapshot')
     @patch('zen_mode.core.run_linter')
     @patch('zen_mode.core.run_claude')
     @patch('zen_mode.core.log')
     @patch('zen_mode.core.backup_scout_files')
     def test_escalation_logs_message(
-        self, mock_backup, mock_log, mock_claude, mock_linter,
-        mock_restore, mock_drop, mock_create, mock_zen_env
+        self, mock_backup, mock_log, mock_claude, mock_linter, mock_zen_env
     ):
         """Should log 'Escalating to MODEL_BRAIN' when escalating."""
         from zen_mode.core import phase_implement, MAX_RETRIES, MODEL_BRAIN
@@ -189,7 +170,6 @@ class TestModelEscalation:
             with patch('zen_mode.core.LOG_FILE', mock_zen_env["log_file"]):
                 with patch('zen_mode.core.WORK_DIR', mock_zen_env["work_dir"]):
                     with patch('zen_mode.core.get_completed_steps', return_value=set()):
-                        mock_create.return_value = ""
                         mock_claude.return_value = "STEP_COMPLETE"
 
                         lint_results = [(False, "error")] * (MAX_RETRIES - 1) + [(True, "")]
@@ -202,16 +182,12 @@ class TestModelEscalation:
                         escalation_logged = any("Escalating" in c and MODEL_BRAIN in c for c in log_calls)
                         assert escalation_logged, f"Should log escalation message. Got: {log_calls}"
 
-    @patch('zen_mode.core.create_snapshot')
-    @patch('zen_mode.core.drop_snapshot')
-    @patch('zen_mode.core.restore_snapshot')
     @patch('zen_mode.core.run_linter')
     @patch('zen_mode.core.run_claude')
     @patch('zen_mode.core.log')
     @patch('zen_mode.core.backup_scout_files')
     def test_no_escalation_if_first_attempt_succeeds(
-        self, mock_backup, mock_log, mock_claude, mock_linter,
-        mock_restore, mock_drop, mock_create, mock_zen_env
+        self, mock_backup, mock_log, mock_claude, mock_linter, mock_zen_env
     ):
         """If first attempt succeeds, should not escalate."""
         from zen_mode.core import phase_implement, MODEL_HANDS
@@ -220,7 +196,6 @@ class TestModelEscalation:
             with patch('zen_mode.core.LOG_FILE', mock_zen_env["log_file"]):
                 with patch('zen_mode.core.WORK_DIR', mock_zen_env["work_dir"]):
                     with patch('zen_mode.core.get_completed_steps', return_value=set()):
-                        mock_create.return_value = ""
                         mock_claude.return_value = "STEP_COMPLETE"
                         mock_linter.return_value = (True, "")  # Success on first try
 
@@ -230,16 +205,12 @@ class TestModelEscalation:
                         assert mock_claude.call_count == 1
                         assert mock_claude.call_args[1]['model'] == MODEL_HANDS
 
-    @patch('zen_mode.core.create_snapshot')
-    @patch('zen_mode.core.drop_snapshot')
-    @patch('zen_mode.core.restore_snapshot')
     @patch('zen_mode.core.run_linter')
     @patch('zen_mode.core.run_claude')
     @patch('zen_mode.core.log')
     @patch('zen_mode.core.backup_scout_files')
     def test_escalation_uses_clean_base_prompt(
-        self, mock_backup, mock_log, mock_claude, mock_linter,
-        mock_restore, mock_drop, mock_create, mock_zen_env
+        self, mock_backup, mock_log, mock_claude, mock_linter, mock_zen_env
     ):
         """Escalation should use clean base prompt, not accumulated lint errors."""
         from zen_mode.core import phase_implement, MAX_RETRIES
@@ -248,7 +219,6 @@ class TestModelEscalation:
             with patch('zen_mode.core.LOG_FILE', mock_zen_env["log_file"]):
                 with patch('zen_mode.core.WORK_DIR', mock_zen_env["work_dir"]):
                     with patch('zen_mode.core.get_completed_steps', return_value=set()):
-                        mock_create.return_value = ""
 
                         captured_prompts = []
 
