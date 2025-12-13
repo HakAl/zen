@@ -18,6 +18,7 @@ FLAGS:
 """
 from __future__ import annotations
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -27,7 +28,7 @@ import time
 import tempfile
 import unicodedata
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 # -----------------------------------------------------------------------------
 # Regex constants
@@ -49,6 +50,11 @@ TIMEOUT_LINTER = int(os.getenv("ZEN_LINTER_TIMEOUT", "120"))
 TIMEOUT_SUMMARY = int(os.getenv("ZEN_SUMMARY_TIMEOUT", "180"))  # 3 min for summary
 MAX_RETRIES = int(os.getenv("ZEN_RETRIES", "2"))
 MAX_JUDGE_LOOPS = int(os.getenv("ZEN_JUDGE_LOOPS", "2"))
+
+# Cost tracking
+SHOW_COSTS = os.getenv("ZEN_SHOW_COSTS", "false").lower() == "true"
+_phase_costs: Dict[str, float] = {}
+_phase_tokens: Dict[str, Dict[str, int]] = {}
 
 # Judge skip thresholds (lines changed)
 JUDGE_TRIVIAL_LINES = int(os.getenv("ZEN_JUDGE_TRIVIAL", "5"))
@@ -141,13 +147,45 @@ def _is_test_or_doc(path: str) -> bool:
             '_test.' in path or 'test_' in path)
 
 
-def run_claude(prompt: str, model: str, timeout: Optional[int] = None) -> Optional[str]:
+def _extract_cost(raw: dict) -> tuple[float, dict[str, int]]:
+    """Extract cost and token counts from CLI JSON response."""
+    cost = float(raw.get("total_cost_usd") or 0)
+    usage = raw.get("usage") or {}
+    return cost, {
+        "in": int(usage.get("input_tokens") or 0),
+        "out": int(usage.get("output_tokens") or 0),
+        "cache_read": int(usage.get("cache_read_input_tokens") or 0),
+    }
+
+
+def _parse_json_response(stdout: str) -> Optional[dict]:
+    """Parse JSON from CLI output, stripping any warning prefixes."""
+    # CLI may emit warnings before JSON; find first '{'
+    start = stdout.find("{")
+    if start == -1:
+        return None
+    try:
+        return json.loads(stdout[start:])
+    except json.JSONDecodeError:
+        return None
+
+
+def _record_cost(phase: str, cost: float, tokens: dict[str, int]) -> None:
+    """Accumulate cost and tokens for a phase."""
+    _phase_costs[phase] = _phase_costs.get(phase, 0) + cost
+    _phase_tokens.setdefault(phase, {"in": 0, "out": 0, "cache_read": 0})
+    for k in tokens:
+        _phase_tokens[phase][k] += tokens[k]
+
+
+def run_claude(prompt: str, model: str, *, phase: str = "unknown", timeout: Optional[int] = None) -> Optional[str]:
     timeout = timeout or TIMEOUT_EXEC
     if DRY_RUN:
         log(f"[DRY-RUN] Would call {model}")
         return "DRY_RUN_OUTPUT"
 
-    cmd = [CLAUDE_EXE, "-p", "--dangerously-skip-permissions", "--model", model]
+    cmd = [CLAUDE_EXE, "-p", "--dangerously-skip-permissions", "--model", model,
+           "--output-format", "json"]
     proc = None
     try:
         proc = subprocess.Popen(
@@ -165,7 +203,23 @@ def run_claude(prompt: str, model: str, timeout: Optional[int] = None) -> Option
         if proc.returncode != 0:
             log(f"[ERROR] Claude ({model}): {stderr[:300]}")
             return None
-        return stdout
+
+        data = _parse_json_response(stdout)
+        if not isinstance(data, dict):
+            log(f"[WARN] Failed to parse JSON response, cost not tracked")
+            return stdout  # Continue without cost data
+
+        try:
+            cost, tokens = _extract_cost(data)
+            _record_cost(phase, cost, tokens)
+
+            if SHOW_COSTS:
+                total_tok = tokens["in"] + tokens["out"]
+                log(f"[COST] {model} {phase}: ${cost:.4f} ({tokens['in']}+{tokens['out']}={total_tok} tok)")
+        except (KeyError, TypeError, ValueError) as e:
+            log(f"[WARN] Cost extraction failed: {e}")
+
+        return data.get("result")
 
     except subprocess.TimeoutExpired:
         log(f"[ERROR] Claude ({model}) timed out")
@@ -183,6 +237,32 @@ def run_claude(prompt: str, model: str, timeout: Optional[int] = None) -> Option
             proc.terminate()
             proc.communicate()
         return None
+
+
+def _write_cost_summary() -> None:
+    """Write cost summary to log and final_notes."""
+    if not _phase_costs:
+        return  # No costs tracked (e.g., dry run)
+
+    total = sum(_phase_costs.values())
+    total_in = sum(t["in"] for t in _phase_tokens.values())
+    total_out = sum(t["out"] for t in _phase_tokens.values())
+    total_cache = sum(t["cache_read"] for t in _phase_tokens.values())
+    breakdown = ", ".join(f"{k}=${v:.3f}" for k, v in _phase_costs.items())
+
+    summary = f"[COST] Total: ${total:.3f} ({breakdown})"
+    log(summary)
+
+    # Append to log.md
+    with LOG_FILE.open("a", encoding="utf-8") as f:
+        f.write(f"\n{summary}\n")
+
+    # Append to final_notes.md
+    with NOTES_FILE.open("a", encoding="utf-8") as f:
+        f.write(f"\n## Cost Summary\n")
+        f.write(f"Total: ${total:.3f}\n")
+        f.write(f"Tokens: {total_in} in, {total_out} out, {total_cache} cache read\n")
+        f.write(f"Breakdown: {breakdown}\n")
 
 
 def find_linter() -> Optional[Path]:
@@ -492,7 +572,7 @@ OUTPUT ONLY the 4 sections above. No preamble, no commentary, no explanations ou
 
 Write to: {SCOUT_FILE}"""
 
-    output = run_claude(prompt, model=MODEL_HANDS)
+    output = run_claude(prompt, model=MODEL_HANDS, phase="scout")
     if not output:
         log("[SCOUT] Failed.")
         sys.exit(1)
@@ -533,7 +613,7 @@ OUTPUT ONLY the steps. No preamble, no commentary.
 
 Write to: {PLAN_FILE}"""
 
-    output = run_claude(prompt, model=MODEL_BRAIN)
+    output = run_claude(prompt, model=MODEL_BRAIN, phase="plan")
     if not output:
         log("[PLAN] Failed.")
         sys.exit(1)
@@ -693,7 +773,7 @@ You are the senior specialist. Analyze the problem fresh and fix it definitively
             else:
                 model = MODEL_HANDS
 
-            output = run_claude(prompt, model=model, timeout=TIMEOUT_EXEC) or ""
+            output = run_claude(prompt, model=model, phase="implement", timeout=TIMEOUT_EXEC) or ""
 
             # Check last line for STEP_BLOCKED to avoid false positives
             last_line = output.strip().split('\n')[-1] if output.strip() else ""
@@ -769,7 +849,7 @@ End with exactly: TESTS_PASS or TESTS_FAIL"""
     prompt = base_prompt
 
     for attempt in range(1, MAX_RETRIES + 2):  # +1 for initial + retries
-        output = run_claude(prompt, model=MODEL_HANDS, timeout=TIMEOUT_EXEC)
+        output = run_claude(prompt, model=MODEL_HANDS, phase="verify", timeout=TIMEOUT_EXEC)
 
         if not output:
             log("[VERIFY] No output from agent.")
@@ -901,7 +981,7 @@ Step 2: [specific fix action]
 
 Output ONLY the verdict and (if rejected) the issues/fix plan. No preamble."""
 
-        output = run_claude(prompt, model=MODEL_BRAIN, timeout=TIMEOUT_EXEC)
+        output = run_claude(prompt, model=MODEL_BRAIN, phase="judge", timeout=TIMEOUT_EXEC)
 
         # Fail-closed: prompt user on judge failure
         if not output:
@@ -974,7 +1054,7 @@ Execute the fixes above. After fixing:
 
 End with: FIXES_COMPLETE or FIXES_BLOCKED: <reason>"""
 
-        fix_output = run_claude(fix_prompt, model=MODEL_HANDS, timeout=TIMEOUT_EXEC)
+        fix_output = run_claude(fix_prompt, model=MODEL_HANDS, phase="judge_fix", timeout=TIMEOUT_EXEC)
 
         if not fix_output:
             log("[JUDGE_FIX] No response from fixer.")
@@ -1081,12 +1161,15 @@ def main():
         summary = run_claude(
             f"Summarize the completed changes in 3-5 bullets.\n\nPlan:\n{plan}",
             model=MODEL_EYES,
+            phase="summary",
             timeout=60,
         )
         if summary:
             write_file(NOTES_FILE, summary)
         else:
             log("[SUMMARY] Skipped (timeout)")
+
+        _write_cost_summary()
 
         print("\n[SUCCESS]")
     except KeyboardInterrupt:

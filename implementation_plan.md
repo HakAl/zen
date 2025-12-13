@@ -4,102 +4,146 @@ Changes to `scripts/zen.py` organized by priority.
 
 ---
 
-## P0: Critical (Production Bug)
-
-### 0. Move Summary Generation Out of phase_verify()
-
-**Problem:** Summary generation happens inside `phase_verify()` on every call, including during judge re-verification. This causes:
-1. **3-minute timeout** blocking workflow (Haiku API congestion)
-2. **Misleading errors** — looks like verify failed, not just optional summary
-3. **Wasted work** — summary regenerated even when judge will reject and re-verify
-4. **Stale data risk** — summary may not reflect post-fix state
-
-**Location:** Remove from `phase_verify()` (lines 833-840), add to `main()` (after line 1086).
-
-**Fix:**
-
-```python
-# DELETE from phase_verify() (lines 833-840):
-#     # Generate summary
-#     summary = run_claude(
-#         f"Summarize changes made. Be concise.\n\nPlan:\n{plan}",
-#         model=MODEL_EYES,
-#         timeout=TIMEOUT_SUMMARY,
-#     )
-#     if summary:
-#         write_file(NOTES_FILE, summary)
-
-# ADD to main() after judge phase, before SUCCESS print:
-        # Generate summary (once, after all phases complete)
-        plan = read_file(PLAN_FILE)
-        summary = run_claude(
-            f"Summarize the completed changes in 3-5 bullets.\n\nPlan:\n{plan}",
-            model=MODEL_EYES,
-            timeout=60,  # Reduced from 180 - fail fast
-        )
-        if summary:
-            write_file(NOTES_FILE, summary)
-        else:
-            log("[SUMMARY] Skipped (timeout)")
-
-        print("\n[SUCCESS]")
-```
-
-**Benefits:**
-- Summary runs exactly once, after all fixes complete
-- Reduced timeout (60s) — if Haiku can't respond fast, skip it
-- Clear log message distinguishes summary timeout from verify failure
-- Workflow SUCCESS not blocked by optional summary
-
-**Gate:** Run full workflow, verify summary appears after judge approval.
-
----
-
 ## P1: High Priority (Low Risk, Immediate Value)
 
 ### 1. Cost Tracking
 
-**Rationale:** Zero risk, ~20 lines, provides data for optimization decisions.
+**Rationale:** Low risk, ~50 lines, provides exact cost data for optimization decisions.
+
+**Approach:** Use `--output-format json` to get actual USD costs and token counts from Claude CLI.
+Always track internally; env var controls whether to display to user.
+Write totals to `final_notes.md` and per-step to `log.md`.
 
 **Location:** Config section (~line 45), `run_claude()` (~line 144), `main()` (~line 1025).
 
 ```python
 # Add to config section (after TIMEOUT_SUMMARY)
-TRACK_COSTS = os.getenv("ZEN_TRACK_COSTS", "false").lower() == "true"
-_phase_times: Dict[str, float] = {}
-_current_phase: str = "unknown"
+SHOW_COSTS = os.getenv("ZEN_SHOW_COSTS", "false").lower() == "true"
+_phase_costs: Dict[str, float] = {}
+_phase_tokens: Dict[str, Dict[str, int]] = {}
 
-# Add helper (after config section)
-def set_phase(name: str) -> None:
-    global _current_phase
-    _current_phase = name
 
-# Modify run_claude - wrap existing logic with timing
-def run_claude(prompt: str, model: str, timeout: Optional[int] = None) -> Optional[str]:
-    start = time.time()
-    # ... existing implementation unchanged ...
-    # Before final return, add:
-    if TRACK_COSTS and output is not None:
-        elapsed = time.time() - start
-        _phase_times[_current_phase] = _phase_times.get(_current_phase, 0) + elapsed
-        log(f"[TIME] {model}: {elapsed:.1f}s")
-    return output
+def _extract_cost(raw: dict) -> tuple[float, dict[str, int]]:
+    """Extract cost and token counts from CLI JSON response."""
+    cost = float(raw.get("total_cost_usd") or 0)
+    usage = raw.get("usage") or {}
+    return cost, {
+        "in": int(usage.get("input_tokens") or 0),
+        "out": int(usage.get("output_tokens") or 0),
+        "cache_read": int(usage.get("cache_read_input_tokens") or 0),
+    }
 
-# Add set_phase() calls at start of each phase function:
-# - phase_scout(): set_phase("scout")
-# - phase_plan(): set_phase("plan")
-# - phase_implement(): set_phase("implement")
-# - phase_verify(): set_phase("verify")
-# - phase_judge(): set_phase("judge")
 
-# Add to main() before "[SUCCESS]" print
-if TRACK_COSTS:
-    total = sum(_phase_times.values())
-    breakdown = ", ".join(f"{k}={v:.0f}s" for k, v in _phase_times.items())
-    log(f"[COST] Total: {total:.0f}s ({breakdown})")
+def _parse_json_response(stdout: str) -> Optional[dict]:
+    """Parse JSON from CLI output, stripping any warning prefixes."""
+    # CLI may emit warnings before JSON; find first '{'
+    start = stdout.find("{")
+    if start == -1:
+        return None
+    try:
+        return json.loads(stdout[start:])
+    except json.JSONDecodeError:
+        return None
+
+
+def _record_cost(phase: str, cost: float, tokens: dict[str, int]) -> None:
+    """Accumulate cost and tokens for a phase."""
+    _phase_costs[phase] = _phase_costs.get(phase, 0) + cost
+    _phase_tokens.setdefault(phase, {"in": 0, "out": 0, "cache_read": 0})
+    for k in tokens:
+        _phase_tokens[phase][k] += tokens[k]
+
+
+# Modify run_claude - pass phase explicitly for thread-safety
+def run_claude(prompt: str, model: str, *,
+               phase: str = "unknown",
+               timeout: Optional[int] = None) -> Optional[str]:
+    timeout = timeout or TIMEOUT_EXEC
+    if DRY_RUN:
+        log(f"[DRY-RUN] Would call {model}")
+        return "DRY_RUN_OUTPUT"
+
+    cmd = [CLAUDE_EXE, "-p", "--dangerously-skip-permissions", "--model", model,
+           "--output-format", "json"]
+
+    # ... existing Popen logic unchanged ...
+
+    if proc.returncode != 0:
+        log(f"[ERROR] Claude ({model}): {stderr[:300]}")
+        return None
+
+    data = _parse_json_response(stdout)
+    if data is None:
+        log(f"[WARN] Failed to parse JSON response, cost not tracked")
+        return stdout  # Continue without cost data
+
+    cost, tokens = _extract_cost(data)
+    _record_cost(phase, cost, tokens)
+
+    if SHOW_COSTS:
+        total_tok = tokens["in"] + tokens["out"]
+        log(f"[COST] {model} {phase}: ${cost:.4f} ({tokens['in']}+{tokens['out']}={total_tok} tok)")
+
+    return data.get("result")
+
+
+# Update all call sites to pass phase:
+# - phase_scout():    run_claude(..., phase="scout")
+# - phase_plan():     run_claude(..., phase="plan")
+# - phase_implement(): run_claude(..., phase="implement")
+# - phase_verify():   run_claude(..., phase="verify")
+# - phase_judge():    run_claude(..., phase="judge")
+
+
+def _write_cost_summary() -> None:
+    """Write cost summary to log and final_notes."""
+    total = sum(_phase_costs.values())
+    total_in = sum(t["in"] for t in _phase_tokens.values())
+    total_out = sum(t["out"] for t in _phase_tokens.values())
+    total_cache = sum(t["cache_read"] for t in _phase_tokens.values())
+    breakdown = ", ".join(f"{k}=${v:.3f}" for k, v in _phase_costs.items())
+
+    summary = f"[COST] Total: ${total:.3f} ({breakdown})"
+    log(summary)
+
+    # Append to log.md
+    with LOG_FILE.open("a", encoding="utf-8") as f:
+        f.write(f"\n{summary}\n")
+
+    # Append to final_notes.md
+    with FINAL_NOTES.open("a", encoding="utf-8") as f:
+        f.write(f"\n## Cost Summary\n")
+        f.write(f"Total: ${total:.3f}\n")
+        f.write(f"Tokens: {total_in} in, {total_out} out, {total_cache} cache read\n")
+        f.write(f"Breakdown: {breakdown}\n")
+
+
+# Call at end of main() before "[SUCCESS]" print
+_write_cost_summary()
 ```
 
-**Gate:** Run with `ZEN_TRACK_COSTS=true` on a simple task, verify timing output.
+**Unit Test:**
+```python
+def test_extract_cost():
+    sample = {"total_cost_usd": 0.00123,
+              "usage": {"input_tokens": 100, "output_tokens": 50,
+                        "cache_read_input_tokens": 500}}
+    cost, tok = _extract_cost(sample)
+    assert cost == 0.00123
+    assert tok == {"in": 100, "out": 50, "cache_read": 500}
+
+def test_extract_cost_missing_fields():
+    assert _extract_cost({}) == (0, {"in": 0, "out": 0, "cache_read": 0})
+    assert _extract_cost({"usage": None})[0] == 0
+```
+
+**Documentation:** Add to README env vars table:
+```
+ZEN_SHOW_COSTS    false    Print per-call cost and token counts to console
+```
+
+**Gate:** Run on a simple task, verify costs match Anthropic console. Check `final_notes.md` and `log.md` contain summaries.
+
 
 ---
 
@@ -359,10 +403,164 @@ def test_should_skip_judge_security_file():
 
 | Step | Item | Risk | Effort | Gate |
 |------|------|------|--------|------|
-| 1 | Cost Tracking | None | ~20 LOC | Verify timing output |
+| 1 | Cost Tracking (JSON) | Low | ~50 LOC | Verify costs match console; check file outputs |
 | 2a | XML: scout prompt | Low | 1 prompt | Compare scout.md quality |
 | 2b | XML: plan prompt | Low | 1 prompt | Compare plan.md quality |
 | 2c | XML: judge prompt | Low | 1 prompt | Verify judge approvals |
 | 2d | XML: remaining prompts | Low | 3 prompts | Full workflow test |
 | 3 | Escalating Lint Tone | Low | ~10 LOC | Lint retry test |
 | 4 | File Size Annotations | Low | ~25 LOC | Defer |
+
+
+---
+
+# BUGS
+
+## Linter
+
+---
+ ### ✅ 2. **Improve False Positives: Refine Regex Patterns**
+ Some rules may trigger on false positives.
+
+ #### 🔍 Example: `HARDCODED_IP` Rule
+ ```python
+ r"\b(?!127\.0\.0\.1|...)\d+\.\d+\.\d+\.\d+\b"
+ ```
+ - The negative lookahead `(?!...)` only applies to the first octet — **this is incorrect**.
+ - E.g., `192.168.1.1` might still match if the negative lookahead doesn't consume the full IP.
+
+ #### ✅ Fix:
+ Use a **negative lookahead that matches the entire IP**, or better yet, **match all IPs first, then filter
+ programmatically**.
+
+ ```python
+ # Instead of complex regex, do:
+ ip_match = re.match(r"\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b", line)
+ if ip_match and not is_private_ip(ip_match.groups()):
+     yield Issue(...)
+ ```
+
+ > 📄 **Relevant Code**: Line ~100+ for `HARDCODED_IP`. Replace with logic-based check.
+---
+
+---
+ ### ✅ 3. **Add Per-File or Per-Line Disable Comments**
+ Like `# noqa` in flake8 or `// eslint-disable-line`.
+
+ #### ✅ Suggested Syntax:
+ ```python
+ x = secret_key  # zenlint: ignore POSSIBLE_SECRET
+ ```
+
+ #### 💡 Implementation:
+ Before checking each line, scan for:
+ ```python
+ r"#\s*zenlint:\s*ignore\s+([A-Z_]+)"
+ ```
+ Then skip matching rules accordingly.
+
+ > 📄 **Relevant Code**: In the main loop (likely not shown), before calling `rule.search(text)`.
+---
+
+---
+
+ ### ✅ 4. **Improve Performance: Skip Binary Files & Large Files**
+ Currently, no indication of file type checking — could crash or hang on large/binary files.
+
+ #### ✅ Add:
+ ```python
+ def is_text_file(filepath: Path) -> bool:
+     try:
+         with open(filepath, 'r') as f:
+             f.read(1024)
+         return True
+     except UnicodeDecodeError:
+         return False
+ ```
+
+ Also, set a max file size limit:
+ ```python
+ if filepath.stat().st_size > 1_000_000:  # 1MB
+     return []
+ ```
+
+ > 📄 **Relevant Code**: Likely in a `scan_directory()` function (not shown), but should wrap file processing.
+
+---
+
+
+ ### ✅ 5. **Add Language-Specific Scoping**
+ Rules like `INLINE_IMPORT` assume Python/JS syntax, but the linter claims to be universal.
+
+ #### ✅ Improve:
+ - Detect file extension.
+ - Apply rules only to relevant languages.
+
+ ```python
+ RULE_LANGUAGES = {
+     "INLINE_IMPORT": {"py", "js", "ts", "java"},
+     "API_KEY": {"all"},
+     ...
+ }
+ ```
+
+ Then:
+ ```python
+ ext = file.suffix.lstrip(".").lower()
+ if rule_langs != {"all"} and ext not in rule_langs:
+     continue
+ ```
+
+ > 📄 **Relevant Code**: Add metadata to `Rule` class or keep mapping separately.
+
+---
+
+## Zen
+
+1. Break up god class
+
+```
+   ├── zen/
+   │   ├── __main__.py          # CLI entrypoint
+   │   ├── core/state.py        # WorkDir, TaskState
+   │   ├── planning/planner.py
+   │   ├── execution/runner.py
+   │   ├── judge/judge.py
+   │   └── utils/files.py
+```
+
+
+7. **Dry Run Mode Enhancement**
+ > `--dry-run` shows what would happen, but output is minimal.
+
+ #### 🛠️ Suggested Improvements:                                                                                         - In dry-run:
+   - Print full command that would be executed.
+   - Show prompt that would be sent to Claude.
+   - Do not create real files (use temp paths).
+ - Add `--verbose` flag to show more detail.
+
+ #### 💡 Benefit:
+ Safer exploration and debugging.
+
+
+
+ ### 9. **Security & Input Sanitization**
+ > Task file path is used directly; potential for injection via filenames/content.
+
+ #### 🛠️ Suggested Improvements:                                                                                         - Sanitize input paths:
+   ```python
+   task_path = Path(task_file).resolve().relative_to(PROJECT_ROOT)
+   ```
+ - Avoid shell=True in subprocess.
+ - Hash prompts/responses for caching and safety.
+
+ #### 💡 Benefit:
+ Prevents path traversal or command injection in edge cases.
+ 
+
+ ### 10. **Documentation & User Guidance**
+ > Good docstring, but no in-file examples or help menu.
+
+ #### 🛠️ Suggested Improvements:                                                                                         - Add `--help` flag with usage examples.
+ - Include sample task file in docs.
+ - Link to `implementation_plan.md` and `CLAUDE.md`.

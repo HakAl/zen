@@ -79,7 +79,7 @@ class TestConstitutionInFixPrompt:
 
                                 captured_prompts = []
 
-                                def capture_prompts(prompt, model=None, timeout=None):
+                                def capture_prompts(prompt, model=None, **kwargs):
                                     captured_prompts.append(prompt)
                                     # First call: judge rejects
                                     if len(captured_prompts) == 1:
@@ -129,7 +129,7 @@ class TestConstitutionInFixPrompt:
 
                                 captured_prompts = []
 
-                                def capture_prompts(prompt, model=None, timeout=None):
+                                def capture_prompts(prompt, model=None, **kwargs):
                                     captured_prompts.append(prompt)
                                     if len(captured_prompts) == 1:
                                         return "JUDGE_REJECTED\n\n## Issues\n- Problem found"
@@ -175,7 +175,7 @@ class TestConstitutionInFixPrompt:
 
                                 captured_prompts = []
 
-                                def capture_prompts(prompt, model=None, timeout=None):
+                                def capture_prompts(prompt, model=None, **kwargs):
                                     captured_prompts.append(prompt)
                                     if len(captured_prompts) == 1:
                                         return "JUDGE_REJECTED\n\n## Issues\n- Bad code"
@@ -226,7 +226,7 @@ class TestConstitutionInFixPrompt:
                                 captured_prompts = []
                                 feedback = "## Issues\n- Missing tests\n\n## Fix Plan\nStep 1: Add tests"
 
-                                def capture_prompts(prompt, model=None, timeout=None):
+                                def capture_prompts(prompt, model=None, **kwargs):
                                     captured_prompts.append(prompt)
                                     if len(captured_prompts) == 1:
                                         return f"JUDGE_REJECTED\n\n{feedback}"
@@ -289,7 +289,7 @@ class TestConstitutionInFixPrompt:
 
                                 captured_prompts = []
 
-                                def capture_prompts(prompt, model=None, timeout=None):
+                                def capture_prompts(prompt, model=None, **kwargs):
                                     captured_prompts.append(prompt)
                                     if len(captured_prompts) == 1:
                                         return "JUDGE_REJECTED\n\n## Issues\n- Security issue"
@@ -340,7 +340,7 @@ class TestConstitutionInFixPrompt:
 
                                 captured_prompts = []
 
-                                def capture_prompts(prompt, model=None, timeout=None):
+                                def capture_prompts(prompt, model=None, **kwargs):
                                     captured_prompts.append(prompt)
                                     if len(captured_prompts) == 1:
                                         return "JUDGE_REJECTED\n\n## Issues\n- Fix this"

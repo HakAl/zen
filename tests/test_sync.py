@@ -40,6 +40,11 @@ SYNCED_FUNCTIONS = [
     # Plan parsing
     "parse_steps",
     "get_completed_steps",
+    # Cost tracking
+    "_extract_cost",
+    "_parse_json_response",
+    "_record_cost",
+    "_write_cost_summary",
     # Phases (core workflow)
     "phase_scout",
     "phase_plan",
