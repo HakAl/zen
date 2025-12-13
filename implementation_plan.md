@@ -1,431 +1,266 @@
 # Zen.py Refinements - Implementation Plan
 
-Changes to `scripts/zen.py` organized by priority.
+Changes to `scripts/zen.py` and `src/zen_mode/` organized by priority.
 
 ---
 
-## P2: Medium Priority (High Value, Medium Effort)
+## P1: High Priority (Bugs & Security)
 
-### 2. XML Prompt Structuring
+### 1.1 Linter: Skip Binary & Large Files
 
-**Rationale:** Anthropic models are trained on XML boundaries. Reduces hallucination, improves instruction following. Output remains markdown (human-readable).
+**Problem:** Linter may crash or hang on binary/large files.
 
-**Prompts to refactor (6 total):**
+**Location:** `src/zen_mode/linter.py` - file scanning logic
 
-| Location | Phase | Current Style |
-|----------|-------|---------------|
-| `phase_scout` :464 | Scout | Markdown headers |
-| `phase_plan` :514 | Plan | Markdown headers |
-| `phase_implement` :662 | Execute | Inline text |
-| `phase_verify` :753 | Verify | Numbered list |
-| `phase_judge` :865 | Judge | Markdown headers |
-| `phase_judge` :964 | Fix | Inline text |
-
-**Tag taxonomy:**
-```xml
-<task>...</task>           # The file/objective being worked on
-<context>...</context>     # Scout report, plan, prior state
-<rules>...</rules>         # Constraints, requirements
-<output>...</output>       # What/where to write (format stays markdown)
-```
-
-**Implementation order (one at a time, verify between each):**
-
-#### 2a. phase_scout
-
+**Implementation:**
 ```python
-prompt = f"""<task>
-Scout codebase for: {task_file}
-</task>
+def is_text_file(filepath: Path) -> bool:
+    """Check if file is text (not binary)."""
+    try:
+        with open(filepath, 'rb') as f:
+            chunk = f.read(1024)
+            return b'\x00' not in chunk  # Binary files contain null bytes
+    except Exception:
+        return False
 
-<objective>
-Map code relevant to the task. Quality over quantity.
-</objective>
-
-<investigation>
-1. find . -type f -name "*.py" (or equivalent for the language)
-2. grep -r for task-related symbols
-3. Read ONLY signatures/exports of key files — never dump full contents
-</investigation>
-
-<constraints>
-- Max 30 files total
-- Skip: test*, docs/, node_modules/, venv/, migrations/, __pycache__/
-- If unsure whether a file matters, include in Context (not Targeted)
-</constraints>
-
-<output>
-Write to: {SCOUT_FILE}
-
-Format (markdown, all 4 sections required, use "None" if empty):
-## Targeted Files (Must Change)
-- `path/to/file.py`: one-line reason
-
-## Context Files (Read-Only)
-- `path/to/file.py`: one-line reason
-
-## Deletion Candidates
-- `path/to/file.py`: one-line reason
-
-## Open Questions
-- Question about ambiguity
-</output>"""
+# In scan loop:
+if filepath.stat().st_size > 1_000_000:  # Skip files > 1MB
+    continue
+if not is_text_file(filepath):
+    continue
 ```
 
-#### 2b. phase_plan
-
-```python
-prompt = f"""<task>
-Create execution plan for: {task_file}
-</task>
-
-<context>
-{scout}
-</context>
-
-<rules>
-- Clean Code over Backward Compatibility
-- DELETE old code, no shims
-- UPDATE callers directly
-- Final step MUST be verification (test/verify/validate)
-</rules>
-
-<output>
-Write to: {PLAN_FILE}
-
-Format (strict markdown, no preamble):
-## Step 1: <action verb> <specific target>
-## Step 2: <action verb> <specific target>
-...
-## Step N: Verify changes and run tests
-
-Each step: one atomic change. No sub-steps, no bullet lists within steps.
-</output>"""
-```
-
-#### 2c. phase_judge
-
-```python
-prompt = f"""<role>Senior Architect. Be direct and concise.</role>
-
-<context>
-<plan>{plan}</plan>
-<scout>{scout}</scout>
-<constitution>{constitution}</constitution>
-<test_results>{test_output[:2000]}</test_results>
-<changed_files>{changed_files}</changed_files>
-</context>
-
-<task>
-Review implementation using `git diff HEAD -- <file>` or read files directly.
-</task>
-
-<criteria>
-1. Plan Alignment — Does the diff satisfy the requirements?
-2. Constitution Adherence — Any CLAUDE.md rule violations?
-3. Security and Edge Cases — Obvious vulnerabilities or unhandled cases?
-
-IGNORE: Syntax, formatting, linting (already verified by tooling).
-</criteria>
-
-<output>
-If approved:
-JUDGE_APPROVED
-
-If rejected:
-JUDGE_REJECTED
-
-## Issues
-- Issue 1: [specific problem]
-
-## Fix Plan
-Step 1: [specific fix action]
-</output>"""
-```
-
-#### 2d-f. Remaining prompts
-
-Convert `phase_implement`, `phase_verify`, and judge fix prompt following same pattern.
-
-**Gate:** Run full workflow on test task after each conversion, compare output quality.
+**Effort:** ~20 LOC | **Risk:** Low
 
 ---
 
-### 3. Escalating Lint Tone
+### 1.2 Security: Input Path Sanitization
 
-**Rationale:** Current retry messages are flat. Escalating tone helps model understand severity.
+**Problem:** Task file path used directly; potential path traversal.
 
-**Location:** `phase_implement()` lint failure handling (~line 720).
+**Location:** `run()` function in both files
 
+**Implementation:**
 ```python
 # Current
-if lint_hash in seen_lint_hashes:
-    prompt += f"\n\nLINT FAILED (same as a previous attempt—try a different fix):\n{truncated}"
-else:
-    prompt += f"\n\nLINT FAILED:\n{truncated}\n\nFix the issues above."
+task_path = Path(task_file)
 
-# Proposed
-if lint_hash in seen_lint_hashes:
-    prompt += f"""
-
-<lint_failure severity="critical">
-You made the exact same error again. The previous approach did not work.
-Review the file content carefully. Try a DIFFERENT fix strategy.
-
-{truncated}
-</lint_failure>"""
-else:
-    prompt += f"""
-
-<lint_failure>
-Your changes look good but failed strict validation. Fix these specific issues:
-
-{truncated}
-</lint_failure>"""
+# Fixed
+task_path = Path(task_file).resolve()
+if not task_path.is_relative_to(PROJECT_ROOT):
+    print(f"ERROR: Task file must be within project: {PROJECT_ROOT}")
+    sys.exit(1)
 ```
 
-**Gate:** Verify lint retries still work on a file with intentional lint errors.
+**Effort:** ~10 LOC | **Risk:** Low
+
+---
+
+### 1.3 Linter: Fix HARDCODED_IP False Positives
+
+**Problem:** Regex negative lookahead only matches first octet. Private IPs like `192.168.1.1` may still trigger.
+
+**Location:** `src/zen_mode/linter.py` - HARDCODED_IP rule
+
+**Implementation:**
+```python
+import ipaddress
+
+def is_private_or_special_ip(ip_str: str) -> bool:
+    """Check if IP is private, loopback, or link-local."""
+    try:
+        ip = ipaddress.ip_address(ip_str)
+        return ip.is_private or ip.is_loopback or ip.is_link_local
+    except ValueError:
+        return False
+
+# Replace regex-only approach:
+IP_PATTERN = re.compile(r'\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b')
+
+def check_hardcoded_ip(line: str, line_num: int) -> list:
+    issues = []
+    for match in IP_PATTERN.finditer(line):
+        ip = match.group(1)
+        if not is_private_or_special_ip(ip):
+            issues.append(Issue("HARDCODED_IP", line_num, f"Public IP: {ip}"))
+    return issues
+```
+
+**Effort:** ~15 LOC | **Risk:** Low
+
+---
+
+## P2: Medium Priority (Cost & Quality)
+
+### 2.1 Haiku-First Test Execution
+
+**Problem:** Test runs use Sonnet ($0.30+) even when tests pass first try.
+
+**Location:** `phase_verify()` in both files
+
+**Implementation:**
+```python
+def phase_verify() -> bool:
+    # First attempt: Haiku just runs tests (no fixing)
+    haiku_prompt = f"""<task>
+Run the test suite and report results.
+</task>
+
+<actions>
+1. Run: pytest -q --tb=short (or project's test command)
+2. Write output to: {TEST_OUTPUT_PATH}
+</actions>
+
+<output>
+End with: TESTS_PASS or TESTS_FAIL
+</output>"""
+
+    output = run_claude(haiku_prompt, model=MODEL_EYES, phase="verify_check")
+
+    if "TESTS_PASS" in output and verify_test_output(read_file(TEST_OUTPUT_FILE)):
+        log("[VERIFY] Passed (Haiku).")
+        return True
+
+    # Tests failed or unclear - escalate to Sonnet for fixing
+    log("[VERIFY] Escalating to Sonnet for fixes...")
+    # ... existing Sonnet retry logic ...
+```
+
+**Savings:** ~$0.27 per run when tests pass first try
+
+**Effort:** ~30 LOC | **Risk:** Medium (adds complexity)
+
+---
+
+### 2.2 Linter: Per-Line Disable Comments
+
+**Problem:** No way to suppress false positives inline.
+
+**Location:** `src/zen_mode/linter.py` - main check loop
+
+**Syntax:**
+```python
+secret = "not-a-secret"  # zenlint: ignore POSSIBLE_SECRET
+```
+
+**Implementation:**
+```python
+IGNORE_PATTERN = re.compile(r'#\s*zenlint:\s*ignore\s+(\w+)')
+
+def get_ignored_rules(line: str) -> set[str]:
+    """Extract rule names to ignore from line comment."""
+    match = IGNORE_PATTERN.search(line)
+    return {match.group(1)} if match else set()
+
+# In check loop:
+ignored = get_ignored_rules(line)
+if rule_name in ignored:
+    continue
+```
+
+**Effort:** ~20 LOC | **Risk:** Low
+
+---
+
+### 2.3 Linter: Language-Specific Rule Scoping
+
+**Problem:** Rules like `INLINE_IMPORT` trigger on non-applicable languages.
+
+**Location:** `src/zen_mode/linter.py` - rule definitions
+
+**Implementation:**
+```python
+RULE_EXTENSIONS = {
+    "INLINE_IMPORT": {"py", "js", "ts", "tsx", "jsx"},
+    "POSSIBLE_SECRET": {"*"},  # All files
+    "HARDCODED_IP": {"*"},
+    "TODO_FIXME": {"*"},
+    # ... map each rule
+}
+
+def rule_applies_to_file(rule_name: str, filepath: Path) -> bool:
+    extensions = RULE_EXTENSIONS.get(rule_name, {"*"})
+    if "*" in extensions:
+        return True
+    return filepath.suffix.lstrip(".").lower() in extensions
+```
+
+**Effort:** ~40 LOC | **Risk:** Low
 
 ---
 
 ## P3: Low Priority (Nice to Have)
 
-### 4. File Size Annotations in Scout
+### 3.1 File Size Annotations in Scout
 
-**Rationale:** Helps model avoid reading massive files. More code, marginal benefit.
+**Problem:** Model may waste tokens reading massive files.
 
-**Location:** Add helper function, update `phase_scout()` prompt.
+**Implementation:** Add `[LARGE]` / `[MASSIVE]` tags to file tree in scout prompt.
 
-```python
-def get_file_tree_with_sizes(ignore: list[str] | None = None) -> str:
-    """Generate file tree with size annotations."""
-    ignore = ignore or ['node_modules', 'venv', '__pycache__', '.git', '.zen*']
-    lines = []
-
-    for path in PROJECT_ROOT.rglob('*'):
-        if path.is_dir():
-            continue
-        if any(pattern.replace('*', '') in str(path) for pattern in ignore):
-            continue
-
-        try:
-            rel = path.relative_to(PROJECT_ROOT)
-            content = path.read_bytes()
-            line_count = content.count(b'\n')
-            if line_count > 1000:
-                tag = "[MASSIVE]"
-            elif line_count > 200:
-                tag = "[LARGE]"
-            else:
-                tag = ""
-            lines.append(f"{rel} {tag}".strip())
-        except Exception:
-            continue
-
-    return "\n".join(sorted(lines)[:100])
-```
-
-**Gate:** Defer until P1-P2 complete.
+**Effort:** ~25 LOC | **Defer until:** P1-P2 complete
 
 ---
 
-## Verification Strategy
+### 3.2 Dry Run Mode Enhancement
 
-### Unit Tests for New Functions
+**Problem:** `--dry-run` output is minimal.
 
-```python
-# tests/test_zen_helpers.py
-import pytest
-from unittest.mock import patch, MagicMock
+**Improvements:**
+- Print prompts that would be sent
+- Show which files would be created
+- Add `--verbose` flag
 
-def test_is_test_or_doc():
-    assert _is_test_or_doc("README.md") == True
-    assert _is_test_or_doc("tests/test_foo.py") == True
-    assert _is_test_or_doc("src/auth.py") == False
+**Effort:** ~30 LOC | **Defer until:** User requests
 
-def test_should_skip_judge_trivial_change():
-    with patch('subprocess.run') as mock_run:
-        mock_run.return_value = MagicMock(returncode=0, stdout="2\t1\tREADME.md")
-        assert should_skip_judge() == True
+---
 
-def test_should_skip_judge_security_file():
-    with patch('subprocess.run') as mock_run:
-        mock_run.return_value = MagicMock(returncode=0, stdout="10\t5\tsrc/auth.py")
-        assert should_skip_judge() == False
+### 3.3 Documentation & --help
+
+**Problem:** No built-in help or examples.
+
+**Improvements:**
+- Add `--help` with usage examples
+- Sample task file in repo
+- Link to CLAUDE.md
+
+**Effort:** ~20 LOC | **Defer until:** Public release
+
+---
+
+### 3.4 Break Up God Class
+
+**Problem:** `zen.py` is 1000+ LOC single file.
+
+**Target Structure:**
 ```
+zen/
+├── __main__.py          # CLI entrypoint
+├── core/state.py        # WorkDir, TaskState
+├── planning/planner.py  # Scout, Plan phases
+├── execution/runner.py  # Implement phase
+├── judge/judge.py       # Judge phase
+└── utils/files.py       # File helpers
+```
+
+**Effort:** ~200+ LOC refactor | **Defer until:** Pain point or major feature
 
 ---
 
 ## Implementation Order
 
-| Step | Item | Risk | Effort | Gate |
-|------|------|------|--------|------|
-| 1 | Cost Tracking (JSON) | Low | ~50 LOC | Verify costs match console; check file outputs |
-| 2a | XML: scout prompt | Low | 1 prompt | Compare scout.md quality |
-| 2b | XML: plan prompt | Low | 1 prompt | Compare plan.md quality |
-| 2c | XML: judge prompt | Low | 1 prompt | Verify judge approvals |
-| 2d | XML: remaining prompts | Low | 3 prompts | Full workflow test |
-| 3 | Escalating Lint Tone | Low | ~10 LOC | Lint retry test |
-| 4 | File Size Annotations | Low | ~25 LOC | Defer |
-
+| Step | Item | Effort | Gate |
+|------|------|--------|------|
+| 1 | 1.1 Skip binary/large files | ~20 LOC | Linter doesn't crash on test repo |
+| 2 | 1.2 Path sanitization | ~10 LOC | Rejects `../../../etc/passwd` |
+| 3 | 1.3 HARDCODED_IP fix | ~15 LOC | `192.168.x.x` no longer flagged |
+| 4 | 2.1 Haiku-first tests | ~30 LOC | Cost drops when tests pass |
+| 5 | 2.2 `# zenlint: ignore` | ~20 LOC | Inline suppression works |
+| 6 | 2.3 Language scoping | ~40 LOC | JS rules don't fire on .md |
 
 ---
 
-# BUGS
+## Completed
 
-## Linter
-
----
- ### ✅ 2. **Improve False Positives: Refine Regex Patterns**
- Some rules may trigger on false positives.
-
- #### 🔍 Example: `HARDCODED_IP` Rule
- ```python
- r"\b(?!127\.0\.0\.1|...)\d+\.\d+\.\d+\.\d+\b"
- ```
- - The negative lookahead `(?!...)` only applies to the first octet — **this is incorrect**.
- - E.g., `192.168.1.1` might still match if the negative lookahead doesn't consume the full IP.
-
- #### ✅ Fix:
- Use a **negative lookahead that matches the entire IP**, or better yet, **match all IPs first, then filter
- programmatically**.
-
- ```python
- # Instead of complex regex, do:
- ip_match = re.match(r"\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b", line)
- if ip_match and not is_private_ip(ip_match.groups()):
-     yield Issue(...)
- ```
-
- > 📄 **Relevant Code**: Line ~100+ for `HARDCODED_IP`. Replace with logic-based check.
----
-
----
- ### ✅ 3. **Add Per-File or Per-Line Disable Comments**
- Like `# noqa` in flake8 or `// eslint-disable-line`.
-
- #### ✅ Suggested Syntax:
- ```python
- x = secret_key  # zenlint: ignore POSSIBLE_SECRET
- ```
-
- #### 💡 Implementation:
- Before checking each line, scan for:
- ```python
- r"#\s*zenlint:\s*ignore\s+([A-Z_]+)"
- ```
- Then skip matching rules accordingly.
-
- > 📄 **Relevant Code**: In the main loop (likely not shown), before calling `rule.search(text)`.
----
-
----
-
- ### ✅ 4. **Improve Performance: Skip Binary Files & Large Files**
- Currently, no indication of file type checking — could crash or hang on large/binary files.
-
- #### ✅ Add:
- ```python
- def is_text_file(filepath: Path) -> bool:
-     try:
-         with open(filepath, 'r') as f:
-             f.read(1024)
-         return True
-     except UnicodeDecodeError:
-         return False
- ```
-
- Also, set a max file size limit:
- ```python
- if filepath.stat().st_size > 1_000_000:  # 1MB
-     return []
- ```
-
- > 📄 **Relevant Code**: Likely in a `scan_directory()` function (not shown), but should wrap file processing.
-
----
-
-
- ### ✅ 5. **Add Language-Specific Scoping**
- Rules like `INLINE_IMPORT` assume Python/JS syntax, but the linter claims to be universal.
-
- #### ✅ Improve:
- - Detect file extension.
- - Apply rules only to relevant languages.
-
- ```python
- RULE_LANGUAGES = {
-     "INLINE_IMPORT": {"py", "js", "ts", "java"},
-     "API_KEY": {"all"},
-     ...
- }
- ```
-
- Then:
- ```python
- ext = file.suffix.lstrip(".").lower()
- if rule_langs != {"all"} and ext not in rule_langs:
-     continue
- ```
-
- > 📄 **Relevant Code**: Add metadata to `Rule` class or keep mapping separately.
-
----
-
-## Zen
-
-1. Break up god class
-
-```
-   ├── zen/
-   │   ├── __main__.py          # CLI entrypoint
-   │   ├── core/state.py        # WorkDir, TaskState
-   │   ├── planning/planner.py
-   │   ├── execution/runner.py
-   │   ├── judge/judge.py
-   │   └── utils/files.py
-```
-
-
-7. **Dry Run Mode Enhancement**
- > `--dry-run` shows what would happen, but output is minimal.
-
- #### 🛠️ Suggested Improvements:                                                                                        
-- In dry-run:
-   - Print full command that would be executed.
-   - Show prompt that would be sent to Claude.
-   - Do not create real files (use temp paths).
- - Add `--verbose` flag to show more detail.
-
- #### 💡 Benefit:
- Safer exploration and debugging.
-
-
-
- ### 9. **Security & Input Sanitization**
- > Task file path is used directly; potential for injection via filenames/content.
-
- #### 🛠️ Suggested Improvements:                                                                                        
-- Sanitize input paths:
-   ```python
-   task_path = Path(task_file).resolve().relative_to(PROJECT_ROOT)
-   ```
- - Avoid shell=True in subprocess.
- - Hash prompts/responses for caching and safety.
-
- #### 💡 Benefit:
- Prevents path traversal or command injection in edge cases.
- 
-
- ### 10. **Documentation & User Guidance**
- > Good docstring, but no in-file examples or help menu.
-
- #### 🛠️ Suggested Improvements:                                                                                        
-- Add `--help` flag with usage examples.
- - Include sample task file in docs.
- - Link to `implementation_plan.md` and `CLAUDE.md`.
-
-
---
-
-
+- [x] XML Prompt Structuring (all 6 prompts refactored)
+- [x] Scout uses Haiku instead of Sonnet
+- [x] Cost tracking with per-phase breakdown
