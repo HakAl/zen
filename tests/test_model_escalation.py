@@ -59,7 +59,7 @@ class TestModelEscalation:
                         # First attempts fail lint, final attempt succeeds
                         call_count = [0]
 
-                        def mock_claude_responses(prompt, model=None, timeout=None):
+                        def mock_claude_responses(prompt, model=None, **kwargs):
                             call_count[0] += 1
                             return "STEP_COMPLETE"
 
@@ -101,7 +101,7 @@ class TestModelEscalation:
 
                         captured_prompts = []
 
-                        def capture_prompt(prompt, model=None, timeout=None):
+                        def capture_prompt(prompt, model=None, **kwargs):
                             captured_prompts.append(prompt)
                             return "STEP_COMPLETE"
 
@@ -136,7 +136,7 @@ class TestModelEscalation:
 
                         captured_prompts = []
 
-                        def capture_prompt(prompt, model=None, timeout=None):
+                        def capture_prompt(prompt, model=None, **kwargs):
                             captured_prompts.append(prompt)
                             return "STEP_COMPLETE"
 
@@ -222,7 +222,7 @@ class TestModelEscalation:
 
                         captured_prompts = []
 
-                        def capture_prompt(prompt, model=None, timeout=None):
+                        def capture_prompt(prompt, model=None, **kwargs):
                             captured_prompts.append(prompt)
                             return "STEP_COMPLETE"
 

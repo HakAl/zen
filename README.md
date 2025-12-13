@@ -10,6 +10,8 @@ Orchestrates `claude` to scout, plan, code, and verify tasks using the file syst
 4.  **Contract First:** Enforces architectural rules via a "psychological linter."
 5.  **Slow is Fast:** Upfront planning costs tokens now to save thousands of "debugging tokens" later.
 
+TLDR: Treat LLMs as stateless functions and check their work. Run `zen docs/feature.md --reset`.
+
 ## Quick Start
 
 **1. Prerequisites**
@@ -93,7 +95,7 @@ Tune the behavior via environment variables:
 ```bash
 export ZEN_MODEL_BRAIN=claude-3-opus-20240229    # Planning/Judging
 export ZEN_MODEL_HANDS=claude-3-5-sonnet-20241022 # Coding
-export ZEN_TRACK_COSTS=true                       # Enable cost receipt
+export ZEN_SHOW_COSTS=false                        # Print per-call cost and token counts
 export ZEN_TIMEOUT=600                            # Max seconds per step
 export ZEN_RETRIES=2                              # Retries before "Stuck"
 ```
