@@ -52,7 +52,7 @@ MAX_RETRIES = int(os.getenv("ZEN_RETRIES", "2"))
 MAX_JUDGE_LOOPS = int(os.getenv("ZEN_JUDGE_LOOPS", "2"))
 
 # Cost tracking
-SHOW_COSTS = os.getenv("ZEN_SHOW_COSTS", "false").lower() == "true"
+SHOW_COSTS = os.getenv("ZEN_SHOW_COSTS", "true").lower() == "true"
 _phase_costs: Dict[str, float] = {}
 _phase_tokens: Dict[str, Dict[str, int]] = {}
 
