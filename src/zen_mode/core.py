@@ -528,21 +528,30 @@ def phase_scout(task_file: str) -> None:
         return
 
     log(f"\n[SCOUT] Mapping codebase for {task_file}...")
-    prompt = f"""Scout codebase for: {task_file}
+    prompt = f"""<task>
+Scout codebase for: {task_file}
+</task>
 
-OBJECTIVE: Map code relevant to the task. Quality > quantity.
+<objective>
+Map code relevant to the task. Quality over quantity.
+</objective>
 
-INVESTIGATION:
-1. `find . -type f -name "*.py"` (or equivalent for the language)
-2. `grep -r` for task-related symbols
-3. Read ONLY signatures/exports of key files—never dump full contents
+<investigation>
+1. find . -type f -name "*.py" (or equivalent for the language)
+2. grep -r for task-related symbols
+3. Read ONLY signatures/exports of key files — never dump full contents
+</investigation>
 
-CONSTRAINTS:
+<constraints>
 - Max 30 files total
-- Skip: test*, docs/, **/node_modules/, venv/, migrations/, __pycache__/
-- If unsure whether a file matters, include it in Context (not Targeted)
+- Skip: test*, docs/, node_modules/, venv/, migrations/, __pycache__/
+- If unsure whether a file matters, include in Context (not Targeted)
+</constraints>
 
-OUTPUT FORMAT (all 4 sections required, use "None" if empty):
+<output>
+Write to: {SCOUT_FILE}
+
+Format (markdown, all 4 sections required, use "None" if empty):
 ## Targeted Files (Must Change)
 - `path/to/file.py`: one-line reason
 
@@ -554,12 +563,9 @@ OUTPUT FORMAT (all 4 sections required, use "None" if empty):
 
 ## Open Questions
 - Question about ambiguity
+</output>"""
 
-OUTPUT ONLY the 4 sections above. No preamble, no commentary, no explanations outside the sections.
-
-Write to: {SCOUT_FILE}"""
-
-    output = run_claude(prompt, model=MODEL_HANDS, phase="scout")
+    output = run_claude(prompt, model=MODEL_EYES, phase="scout")
     if not output:
         log("[SCOUT] Failed.")
         sys.exit(1)
@@ -578,27 +584,32 @@ def phase_plan(task_file: str) -> None:
 
     log("\n[PLAN] Creating execution plan...")
     scout = read_file(SCOUT_FILE)
-    prompt = f"""Create plan for: {task_file}
+    prompt = f"""<task>
+Create execution plan for: {task_file}
+</task>
 
-Scout report:
+<context>
 {scout}
+</context>
 
-RULES:
-- Clean Code > Backward Compatibility
+<rules>
+- Clean Code over Backward Compatibility
 - DELETE old code, no shims
 - UPDATE callers directly
 - Final step MUST be verification (test/verify/validate)
+</rules>
 
-OUTPUT FORMAT (strict):
+<output>
+Write to: {PLAN_FILE}
+
+Format (strict markdown, no preamble):
 ## Step 1: <action verb> <specific target>
 ## Step 2: <action verb> <specific target>
 ...
 ## Step N: Verify changes and run tests
 
 Each step: one atomic change. No sub-steps, no bullet lists within steps.
-OUTPUT ONLY the steps. No preamble, no commentary.
-
-Write to: {PLAN_FILE}"""
+</output>"""
 
     output = run_claude(prompt, model=MODEL_BRAIN, phase="plan")
     if not output:
@@ -728,20 +739,27 @@ def phase_implement() -> None:
 
         log(f"\n[STEP {step_num}] {step_desc[:60]}...")
 
-        base_prompt = f"""Execute Step {step_num}: {step_desc}
+        base_prompt = f"""<task>
+Execute Step {step_num}: {step_desc}
+</task>
 
+<context>
 IMPORTANT: This is a fresh session with no memory of previous steps.
 READ target files first to understand current state before editing.
 
 Full plan:
 {plan}
+</context>
 
-Rules:
+<rules>
 - DELETE old code, no shims
 - UPDATE callers immediately
 - No broken imports
+</rules>
 
-End with: STEP_COMPLETE or STEP_BLOCKED: <reason>"""
+<output>
+End with: STEP_COMPLETE or STEP_BLOCKED: <reason>
+</output>"""
 
         prompt = base_prompt
         last_error_summary = ""
@@ -819,21 +837,28 @@ def phase_verify() -> bool:
     last_failure_hash: Optional[str] = None
     stuck_count = 0
 
-    base_prompt = f"""Verify implementation is complete.
+    base_prompt = f"""<task>
+Verify implementation is complete.
+</task>
 
+<context>
 IMPORTANT: This is a fresh session. Read files to understand current state.
 
 Plan executed:
 {plan}
+</context>
 
-Actions:
+<actions>
 1. Run the project's test suite with minimal output (e.g., pytest -q --tb=short)
 2. Write test results to: {TEST_OUTPUT_PATH}
    - If tests PASS: write only the summary line (e.g., "10 passed in 1.23s")
    - If tests FAIL: write failure tracebacks + summary line (no passing test names)
 3. If tests fail, fix the issues and re-run
+</actions>
 
-End with exactly: TESTS_PASS or TESTS_FAIL"""
+<output>
+End with exactly: TESTS_PASS or TESTS_FAIL
+</output>"""
 
     prompt = base_prompt
 
@@ -922,53 +947,41 @@ def phase_judge() -> None:
     for loop in range(1, MAX_JUDGE_LOOPS + 1):
         log(f"[JUDGE] Review loop {loop}/{MAX_JUDGE_LOOPS}")
 
-        prompt = f"""You are the Senior Architect. Be direct and concise.
+        prompt = f"""<role>Senior Architect. Be direct and concise.</role>
 
-## Plan (Requirements)
-{plan}
+<context>
+<plan>{plan}</plan>
+<scout>{scout}</scout>
+<constitution>{constitution}</constitution>
+<test_results>{test_output[:2000]}</test_results>
+<changed_files>{changed_files}</changed_files>
+</context>
 
-## Scout (File Context)
-{scout}
+<task>
+Review implementation using `git diff HEAD -- <file>` or read files directly.
+</task>
 
-## Constitution (Rules)
-{constitution}
-
-## Test Results
-{test_output[:2000]}
-
-## Changed Files
-{changed_files}
-
-Use `git diff HEAD -- <file>` or read files directly to review changes.
-
-## Review Criteria
-1. **Plan Alignment** - Does the diff satisfy the requirements?
-2. **Constitution Adherence** - Any CLAUDE.md rule violations?
-3. **Security & Edge Cases** - Obvious vulnerabilities or unhandled cases?
+<criteria>
+1. Plan Alignment — Does the diff satisfy the requirements?
+2. Constitution Adherence — Any CLAUDE.md rule violations?
+3. Security and Edge Cases — Obvious vulnerabilities or unhandled cases?
 
 IGNORE: Syntax, formatting, linting (already verified by tooling).
+</criteria>
 
-## Output Format
-
+<output>
 If approved:
-```
 JUDGE_APPROVED
-```
 
 If rejected:
-```
 JUDGE_REJECTED
 
 ## Issues
 - Issue 1: [specific problem]
-- Issue 2: [specific problem]
 
 ## Fix Plan
 Step 1: [specific fix action]
-Step 2: [specific fix action]
-```
-
-Output ONLY the verdict and (if rejected) the issues/fix plan. No preamble."""
+</output>"""
 
         output = run_claude(prompt, model=MODEL_BRAIN, phase="judge", timeout=TIMEOUT_EXEC)
 
@@ -1021,27 +1034,30 @@ Output ONLY the verdict and (if rejected) the issues/fix plan. No preamble."""
         log("[JUDGE_FIX] Applying fixes...")
         changed_files = get_changed_filenames()
 
-        fix_prompt = f"""JUDGE FEEDBACK - Fixes Required:
+        fix_prompt = f"""<task>
+JUDGE FEEDBACK - Fixes Required:
 
 {feedback}
+</task>
 
-## Constitution (CLAUDE.md)
-{constitution}
-
-## Changed Files
-{changed_files}
-
-## Original Plan
-{plan}
+<context>
+<constitution>{constitution}</constitution>
+<changed_files>{changed_files}</changed_files>
+<plan>{plan}</plan>
 
 IMPORTANT: This is a fresh session. The files listed above were modified.
 READ those files first to understand current state before making fixes.
+</context>
 
+<rules>
 Execute the fixes above. After fixing:
 1. Ensure linting passes
 2. Ensure tests still pass
+</rules>
 
-End with: FIXES_COMPLETE or FIXES_BLOCKED: <reason>"""
+<output>
+End with: FIXES_COMPLETE or FIXES_BLOCKED: <reason>
+</output>"""
 
         fix_output = run_claude(fix_prompt, model=MODEL_HANDS, phase="judge_fix", timeout=TIMEOUT_EXEC)
 

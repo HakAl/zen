@@ -9,7 +9,6 @@ Orchestrates `claude` to scout, plan, code, and verify tasks using the file syst
 3.  **Aggressive Cleanup:** Designed for legacy codebases. It deletes old code rather than deprecating it.
 4.  **Contract First:** Enforces architectural rules via a "psychological linter."
 5.  **Slow is Fast:** Upfront planning costs tokens now to save thousands of "debugging tokens" later.
-6.  **Price Transparency:** Real-time cost auditing. You see exactly how many tokens were spent on planning vs. coding.
 
 TLDR: Treat LLMs as stateless functions and check their work. Run `zen docs/feature.md --reset`.
 
@@ -31,7 +30,7 @@ pip install zen-mode
 **3. Run a Task**
 ```bash
 # Describe your task
-echo "Refactor auth.py to use JWTs. Remove session logic." > task.md
+echo "build a python web scraper that's robust -- use whatever deps are best. add tests and update requirements." > task.md
 
 # Let Zen take the wheel
 zen task.md
@@ -63,12 +62,112 @@ Since state is just files, you are always in control:
 *   **Stuck on a step?** Run `zen task.md --retry` to clear the completion marker.
 *   **Total restart?** Run `zen task.md --reset`.
 
-```text
+### **Price Transparency:** 
+Real-time cost auditing. You see exactly how many tokens were spent on planning vs. coding.
+
+> ```[COST] Total: $3.510 (scout=$0.180, plan=$0.152, implement=$2.615, verify=$0.265, judge=$0.261, summary=$0.038)```
+<details>
+<summary>Click to see full execution log and cost breakdown</summary>
+
+```bash
+test_repo> zen cleanup.md --reset
+Reset complete.
+
+[SCOUT] Mapping codebase for cleanup.md...
+  [COST] sonnet scout: $0.1798 (228+1839=2067 tok)
+  [SCOUT] Done.
+
+[PLAN] Creating execution plan...
+  [COST] opus plan: $0.1516 (6+948=954 tok)
+  [PLAN] Done.
+  [BACKUP] workers\scraper.py
+  [BACKUP] requirements.txt
+  [BACKUP] api\v1\tests\conftest.py
+  [BACKUP] api\v1\tests\test_routes.py
+  [BACKUP] api\db\models.py
+  [BACKUP] api\db\repository.py
+
+[IMPLEMENT] 16 steps to execute.
+
+[STEP 1] Add scraping dependencies to requirements.txt (tenacity, fak...
+  [COST] sonnet implement: $0.0681 (15+465=480 tok)
+  [COMPLETE] Step 1
+
+[STEP 2] Create ScraperConfig dataclass for timeout, retries, rate li...
+  [COST] sonnet implement: $0.1010 (35+1040=1075 tok)
+  [COMPLETE] Step 2
+
+[STEP 3] Add retry decorator with exponential backoff using tenacity ...
+  [COST] sonnet implement: $0.1017 (28+1197=1225 tok)
+  [COMPLETE] Step 3
+
+[STEP 4] Add rotating user-agent headers using fake-useragent library...
+  [COST] sonnet implement: $0.1010 (27+1110=1137 tok)
+  [COMPLETE] Step 4
+
+[STEP 5] Add rate limiting with configurable delay between requests...
+  [COST] sonnet implement: $0.1009 (27+1715=1742 tok)
+  [COMPLETE] Step 5
+
+[STEP 6] Add request timeout configuration to fetch_page method...
+  [COST] sonnet implement: $0.0520 (15+524=539 tok)
+  [COMPLETE] Step 6
+
+[STEP 7] Add session management with connection pooling using request...
+  [COST] sonnet implement: $0.1314 (36+1864=1900 tok)
+  [COMPLETE] Step 7
+
+[STEP 8] Add structured logging with Python logging module to WebScra...
+  [COST] sonnet implement: $0.1961 (31+3517=3548 tok)
+  [COMPLETE] Step 8
+
+[STEP 9] Create workers/tests directory with __init__.py file...
+  [COST] sonnet implement: $0.0592 (27+426=453 tok)
+  [COMPLETE] Step 9
+
+[STEP 10] Create workers/tests/conftest.py with pytest fixtures for mo...
+  [COST] sonnet implement: $0.0903 (16+1744=1760 tok)
+  [COMPLETE] Step 10
+
+[STEP 11] Create workers/tests/test_scraper.py with tests for successf...
+  [COST] sonnet implement: $0.1338 (26+3330=3356 tok)
+  [COMPLETE] Step 11
+
+[STEP 12] Add tests for retry logic on transient failures (5xx errors,...
+  [COST] sonnet implement: $0.2961 (50+5202=5252 tok)
+  [COMPLETE] Step 12
+
+[STEP 13] Add tests for rate limiting behavior...
+  [COST] sonnet implement: $0.2042 (34+3886=3920 tok)
+  [COMPLETE] Step 13
+
+[STEP 14] Add tests for user-agent rotation...
+  [COST] sonnet implement: $0.2357 (2054+3894=5948 tok)
+  [COMPLETE] Step 14
+
+[STEP 15] Add tests for HTML parsing edge cases (empty content, malfor...
+  [COST] sonnet implement: $0.4185 (2071+6290=8361 tok)
+  [COMPLETE] Step 15
+
+[STEP 16] Verify changes and run tests...
+  [COST] sonnet implement: $0.3247 (53+2540=2593 tok)
+  [COMPLETE] Step 16
+
+[VERIFY] Running tests...
+  [COST] sonnet verify: $0.2646 (67+2759=2826 tok)
+  [VERIFY] Passed.
+  [JUDGE] Required: Sensitive file (.scrappy/lancedb/code_chunks.lance/_indices/7e9eadae-cd58-457c-9031-7eeb51f022c4/part_6_tokens.lance)
+
 [JUDGE] Senior Architect review...
-[20:42:40] [JUDGE] Review loop 1/2
-[20:44:40] [JUDGE_APPROVED] Code passed architectural review.
-[20:44:46] [COST] Total: $7.147 (scout=$0.302, plan=$0.467, implement=$5.304, verify=$0.131, judge=$0.928, summary=$0.016)
+  [JUDGE] Review loop 1/2
+  [COST] opus judge: $0.2614 (5+750=755 tok)
+  [JUDGE_APPROVED] Code passed architectural review.
+  [COST] haiku summary: $0.0382 (14+641=655 tok)
+  [COST] Total: $3.510 (scout=$0.180, plan=$0.152, implement=$2.615, verify=$0.265, judge=$0.261, summary=$0.038)
+
+[SUCCESS]
 ```
+</details>
 ---
 
 ## The Constitution (`CLAUDE.md`)
@@ -102,7 +201,7 @@ Tune the behavior via environment variables:
 ```bash
 export ZEN_MODEL_BRAIN=claude-3-opus-20240229     # Planning/Judging
 export ZEN_MODEL_HANDS=claude-3-5-sonnet-20241022 # Coding
-export ZEN_SHOW_COSTS=false                       # Print per-call cost and token counts
+export ZEN_SHOW_COSTS=false                       # Hide per-call cost and token counts
 export ZEN_TIMEOUT=600                            # Max seconds per step
 export ZEN_RETRIES=2                              # Retries before "Stuck"
 ```
