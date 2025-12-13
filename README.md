@@ -95,7 +95,7 @@ Tune the behavior via environment variables:
 ```bash
 export ZEN_MODEL_BRAIN=claude-3-opus-20240229    # Planning/Judging
 export ZEN_MODEL_HANDS=claude-3-5-sonnet-20241022 # Coding
-export ZEN_SHOW_COSTS=false                        # Print per-call cost and token counts
+export ZEN_SHOW_COSTS=true                        # Print per-call cost and token counts
 export ZEN_TIMEOUT=600                            # Max seconds per step
 export ZEN_RETRIES=2                              # Retries before "Stuck"
 ```
