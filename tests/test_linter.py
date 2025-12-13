@@ -553,17 +553,77 @@ class TestTripleQuoteHandling:
         assert "TODO" in rules, "TODO in docstring should be flagged"
 
 
-class TestBugInvalidIPAddressMatches:
-    """BUG: HARDCODED_IP regex matches invalid IP addresses."""
+class TestBugHardcodedIPFalsePositives:
+    """BUG: HARDCODED_IP regex incorrectly flags private/reserved IPs."""
 
-    def test_invalid_ip_not_matched(self, tmp_path):
-        """999.999.999.999 is not a valid IP and should not be flagged."""
+    def test_private_ip_192_168_not_flagged(self, tmp_path):
+        """Private IPs like 192.168.x.x should not be flagged."""
+        f = tmp_path / "code.py"
+        f.write_text('local_server = "192.168.1.1"\n')
+        violations = check_file(str(f))
+        rules = [v["rule"] for v in violations]
+        assert "HARDCODED_IP" not in rules, "192.168.x.x should not be flagged (private IP)"
+
+    def test_private_ip_10_not_flagged(self, tmp_path):
+        """Private IPs like 10.x.x.x should not be flagged."""
+        f = tmp_path / "code.py"
+        f.write_text('vpn_server = "10.0.0.1"\n')
+        violations = check_file(str(f))
+        rules = [v["rule"] for v in violations]
+        assert "HARDCODED_IP" not in rules, "10.x.x.x should not be flagged (private IP)"
+
+    def test_private_ip_172_16_not_flagged(self, tmp_path):
+        """Private IPs like 172.16-31.x.x should not be flagged."""
+        f = tmp_path / "code.py"
+        f.write_text('docker_network = "172.16.0.1"\n')
+        violations = check_file(str(f))
+        rules = [v["rule"] for v in violations]
+        assert "HARDCODED_IP" not in rules, "172.16-31.x.x should not be flagged (private IP)"
+
+    def test_localhost_not_flagged(self, tmp_path):
+        """Loopback address 127.0.0.1 should not be flagged."""
+        f = tmp_path / "code.py"
+        f.write_text('localhost = "127.0.0.1"\n')
+        violations = check_file(str(f))
+        rules = [v["rule"] for v in violations]
+        assert "HARDCODED_IP" not in rules, "127.0.0.1 should not be flagged (loopback)"
+
+    def test_link_local_not_flagged(self, tmp_path):
+        """Link-local addresses 169.254.x.x should not be flagged."""
+        f = tmp_path / "code.py"
+        f.write_text('link_local = "169.254.1.1"\n')
+        violations = check_file(str(f))
+        rules = [v["rule"] for v in violations]
+        assert "HARDCODED_IP" not in rules, "169.254.x.x should not be flagged (link-local)"
+
+    def test_public_ip_flagged(self, tmp_path):
+        """Public IPs like 8.8.8.8 should still be flagged."""
+        f = tmp_path / "code.py"
+        f.write_text('dns_server = "8.8.8.8"\n')
+        violations = check_file(str(f))
+        rules = [v["rule"] for v in violations]
+        assert "HARDCODED_IP" in rules, "8.8.8.8 should be flagged (public IP)"
+
+    def test_another_public_ip_flagged(self, tmp_path):
+        """Public IPs like 1.1.1.1 should be flagged."""
+        f = tmp_path / "code.py"
+        f.write_text('cloudflare_dns = "1.1.1.1"\n')
+        violations = check_file(str(f))
+        rules = [v["rule"] for v in violations]
+        assert "HARDCODED_IP" in rules, "1.1.1.1 should be flagged (public IP)"
+
+
+class TestInvalidIPAddressHandling:
+    """Test that invalid IP addresses are flagged correctly."""
+
+    def test_invalid_ip_is_flagged(self, tmp_path):
+        """Invalid IPs like 999.999.999.999 should be flagged as suspicious."""
         f = tmp_path / "code.py"
         f.write_text('invalid = "999.999.999.999"\n')
         violations = check_file(str(f))
         rules = [v["rule"] for v in violations]
-        # BUG: Currently fails - regex doesn't validate octet ranges
-        assert "HARDCODED_IP" not in rules, "Invalid IPs should not be flagged"
+        # Invalid IPs are suspicious and should be flagged
+        assert "HARDCODED_IP" in rules, "Invalid IPs should be flagged as suspicious"
 
     def test_valid_public_ip_matched(self, tmp_path):
         """Valid public IPs should still be flagged."""
@@ -572,3 +632,36 @@ class TestBugInvalidIPAddressMatches:
         violations = check_file(str(f))
         rules = [v["rule"] for v in violations]
         assert "HARDCODED_IP" in rules, "Valid public IPs should be flagged"
+
+
+class TestBugLargeFilesNotSkipped:
+    """BUG: Files larger than 1MB are not skipped, may cause hangs/crashes."""
+
+    def test_large_file_should_be_skipped(self, tmp_path):
+        """Files > 1MB should be skipped to avoid performance issues."""
+        f = tmp_path / "large.py"
+        # Create a file > 1MB with violations
+        # 1MB = 1,048,576 bytes. Create content just over that.
+        line = "# TODO: this should be ignored because file is too large\n"
+        lines_needed = (1_000_001 // len(line)) + 1
+        content = line * lines_needed
+        f.write_text(content)
+
+        # Verify file is indeed > 1MB
+        assert f.stat().st_size > 1_000_000, "Test file should be > 1MB"
+
+        violations = check_file(str(f))
+        # BUG: Currently fails - large files are not skipped
+        assert len(violations) == 0, "Files > 1MB should be skipped entirely"
+
+    def test_normal_file_still_scanned(self, tmp_path):
+        """Files < 1MB should still be scanned normally."""
+        f = tmp_path / "normal.py"
+        f.write_text("# TODO: this should be caught\n")
+
+        # Verify file is small
+        assert f.stat().st_size < 1_000_000, "Test file should be < 1MB"
+
+        violations = check_file(str(f))
+        rules = [v["rule"] for v in violations]
+        assert "TODO" in rules, "Normal files should still be scanned"

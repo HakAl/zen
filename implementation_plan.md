@@ -1,94 +1,7 @@
 # Zen.py Refinements - Implementation Plan
 
-Changes to `scripts/zen.py` and `src/zen_mode/` organized by priority.
+Changes organized by priority.
 
----
-
-## P1: High Priority (Bugs & Security)
-
-### 1.1 Linter: Skip Binary & Large Files
-
-**Problem:** Linter may crash or hang on binary/large files.
-
-**Location:** `src/zen_mode/linter.py` - file scanning logic
-
-**Implementation:**
-```python
-def is_text_file(filepath: Path) -> bool:
-    """Check if file is text (not binary)."""
-    try:
-        with open(filepath, 'rb') as f:
-            chunk = f.read(1024)
-            return b'\x00' not in chunk  # Binary files contain null bytes
-    except Exception:
-        return False
-
-# In scan loop:
-if filepath.stat().st_size > 1_000_000:  # Skip files > 1MB
-    continue
-if not is_text_file(filepath):
-    continue
-```
-
-**Effort:** ~20 LOC | **Risk:** Low
-
----
-
-### 1.2 Security: Input Path Sanitization
-
-**Problem:** Task file path used directly; potential path traversal.
-
-**Location:** `run()` function in both files
-
-**Implementation:**
-```python
-# Current
-task_path = Path(task_file)
-
-# Fixed
-task_path = Path(task_file).resolve()
-if not task_path.is_relative_to(PROJECT_ROOT):
-    print(f"ERROR: Task file must be within project: {PROJECT_ROOT}")
-    sys.exit(1)
-```
-
-**Effort:** ~10 LOC | **Risk:** Low
-
----
-
-### 1.3 Linter: Fix HARDCODED_IP False Positives
-
-**Problem:** Regex negative lookahead only matches first octet. Private IPs like `192.168.1.1` may still trigger.
-
-**Location:** `src/zen_mode/linter.py` - HARDCODED_IP rule
-
-**Implementation:**
-```python
-import ipaddress
-
-def is_private_or_special_ip(ip_str: str) -> bool:
-    """Check if IP is private, loopback, or link-local."""
-    try:
-        ip = ipaddress.ip_address(ip_str)
-        return ip.is_private or ip.is_loopback or ip.is_link_local
-    except ValueError:
-        return False
-
-# Replace regex-only approach:
-IP_PATTERN = re.compile(r'\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b')
-
-def check_hardcoded_ip(line: str, line_num: int) -> list:
-    issues = []
-    for match in IP_PATTERN.finditer(line):
-        ip = match.group(1)
-        if not is_private_or_special_ip(ip):
-            issues.append(Issue("HARDCODED_IP", line_num, f"Public IP: {ip}"))
-    return issues
-```
-
-**Effort:** ~15 LOC | **Risk:** Low
-
----
 
 ## P2: Medium Priority (Cost & Quality)
 
@@ -229,17 +142,15 @@ def rule_applies_to_file(rule_name: str, filepath: Path) -> bool:
 
 ### 3.4 Break Up God Class
 
-**Problem:** `zen.py` is 1000+ LOC single file.
+**Problem:** `core.py` is 1000+ LOC single file.
 
 **Target Structure:**
 ```
-zen/
-├── __main__.py          # CLI entrypoint
-├── core/state.py        # WorkDir, TaskState
-├── planning/planner.py  # Scout, Plan phases
-├── execution/runner.py  # Implement phase
-├── judge/judge.py       # Judge phase
-└── utils/files.py       # File helpers
+├── state.py       # WorkDir, TaskState
+├── planner.py     # Scout, Plan phases
+├── runner.py      # Implement phase
+├── judge.py       # Judge phase
+└── files.py       # File helpers
 ```
 
 **Effort:** ~200+ LOC refactor | **Defer until:** Pain point or major feature
@@ -250,7 +161,6 @@ zen/
 
 | Step | Item | Effort | Gate |
 |------|------|--------|------|
-| 1 | 1.1 Skip binary/large files | ~20 LOC | Linter doesn't crash on test repo |
 | 2 | 1.2 Path sanitization | ~10 LOC | Rejects `../../../etc/passwd` |
 | 3 | 1.3 HARDCODED_IP fix | ~15 LOC | `192.168.x.x` no longer flagged |
 | 4 | 2.1 Haiku-first tests | ~30 LOC | Cost drops when tests pass |
@@ -258,9 +168,3 @@ zen/
 | 6 | 2.3 Language scoping | ~40 LOC | JS rules don't fire on .md |
 
 ---
-
-## Completed
-
-- [x] XML Prompt Structuring (all 6 prompts refactored)
-- [x] Scout uses Haiku instead of Sonnet
-- [x] Cost tracking with per-phase breakdown

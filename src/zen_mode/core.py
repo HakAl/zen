@@ -1040,11 +1040,16 @@ JUDGE FEEDBACK - Fixes Required:
 {feedback}
 </task>
 
-<context>
-<constitution>{constitution}</constitution>
-<changed_files>{changed_files}</changed_files>
-<plan>{plan}</plan>
+## Constitution (CLAUDE.md)
+{constitution}
 
+## Changed Files
+{changed_files}
+
+## Original Plan
+{plan}
+
+<context>
 IMPORTANT: This is a fresh session. The files listed above were modified.
 READ those files first to understand current state before making fixes.
 </context>
@@ -1111,6 +1116,10 @@ def run(task_file: str, flags: Optional[set] = None) -> None:
     flags = flags or set()
 
     task_path = Path(task_file)
+    resolved_path = task_path.resolve()
+    if not resolved_path.is_relative_to(PROJECT_ROOT.resolve()):
+        print(f"ERROR: Task file must be within project directory: {task_file}")
+        sys.exit(1)
     if not task_path.exists():
         print(f"ERROR: Task file not found: {task_file}")
         sys.exit(1)
