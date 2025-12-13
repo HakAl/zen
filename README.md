@@ -9,6 +9,7 @@ Orchestrates `claude` to scout, plan, code, and verify tasks using the file syst
 3.  **Aggressive Cleanup:** Designed for legacy codebases. It deletes old code rather than deprecating it.
 4.  **Contract First:** Enforces architectural rules via a "psychological linter."
 5.  **Slow is Fast:** Upfront planning costs tokens now to save thousands of "debugging tokens" later.
+6.  **Price Transparency:** Real-time cost auditing. You see exactly how many tokens were spent on planning vs. coding.
 
 TLDR: Treat LLMs as stateless functions and check their work. Run `zen docs/feature.md --reset`.
 
@@ -62,6 +63,12 @@ Since state is just files, you are always in control:
 *   **Stuck on a step?** Run `zen task.md --retry` to clear the completion marker.
 *   **Total restart?** Run `zen task.md --reset`.
 
+```text
+[JUDGE] Senior Architect review...
+[20:42:40] [JUDGE] Review loop 1/2
+[20:44:40] [JUDGE_APPROVED] Code passed architectural review.
+[20:44:46] [COST] Total: $7.147 (scout=$0.302, plan=$0.467, implement=$5.304, verify=$0.131, judge=$0.928, summary=$0.016)
+```
 ---
 
 ## The Constitution (`CLAUDE.md`)
@@ -76,7 +83,7 @@ Put your non-negotiable rules here. The agent reads this *every single step*.
 
 ## The Hidden Token Economy
 
-At first glance, Zen Mode's five-phase process seems token-intensive. In practice, it is **net-positive** because it eliminates the "Debug Spiral."
+At first glance, Zen Mode's five-phase process seems token-intensive. In practice, it is **net-positive** because it eliminates the "Debug Spiral." **Zen Mode tracks this for you automatically.** Every run provides a receipt of tokens used and actual cost.
 
 | Approach | Typical Token Flow | Cost |
 | :--- | :--- | :--- |
@@ -93,9 +100,9 @@ At first glance, Zen Mode's five-phase process seems token-intensive. In practic
 Tune the behavior via environment variables:
 
 ```bash
-export ZEN_MODEL_BRAIN=claude-3-opus-20240229    # Planning/Judging
+export ZEN_MODEL_BRAIN=claude-3-opus-20240229     # Planning/Judging
 export ZEN_MODEL_HANDS=claude-3-5-sonnet-20241022 # Coding
-export ZEN_SHOW_COSTS=true                        # Print per-call cost and token counts
+export ZEN_SHOW_COSTS=false                       # Print per-call cost and token counts
 export ZEN_TIMEOUT=600                            # Max seconds per step
 export ZEN_RETRIES=2                              # Retries before "Stuck"
 ```

@@ -4,149 +4,6 @@ Changes to `scripts/zen.py` organized by priority.
 
 ---
 
-## P1: High Priority (Low Risk, Immediate Value)
-
-### 1. Cost Tracking
-
-**Rationale:** Low risk, ~50 lines, provides exact cost data for optimization decisions.
-
-**Approach:** Use `--output-format json` to get actual USD costs and token counts from Claude CLI.
-Always track internally; env var controls whether to display to user.
-Write totals to `final_notes.md` and per-step to `log.md`.
-
-**Location:** Config section (~line 45), `run_claude()` (~line 144), `main()` (~line 1025).
-
-```python
-# Add to config section (after TIMEOUT_SUMMARY)
-SHOW_COSTS = os.getenv("ZEN_SHOW_COSTS", "false").lower() == "true"
-_phase_costs: Dict[str, float] = {}
-_phase_tokens: Dict[str, Dict[str, int]] = {}
-
-
-def _extract_cost(raw: dict) -> tuple[float, dict[str, int]]:
-    """Extract cost and token counts from CLI JSON response."""
-    cost = float(raw.get("total_cost_usd") or 0)
-    usage = raw.get("usage") or {}
-    return cost, {
-        "in": int(usage.get("input_tokens") or 0),
-        "out": int(usage.get("output_tokens") or 0),
-        "cache_read": int(usage.get("cache_read_input_tokens") or 0),
-    }
-
-
-def _parse_json_response(stdout: str) -> Optional[dict]:
-    """Parse JSON from CLI output, stripping any warning prefixes."""
-    # CLI may emit warnings before JSON; find first '{'
-    start = stdout.find("{")
-    if start == -1:
-        return None
-    try:
-        return json.loads(stdout[start:])
-    except json.JSONDecodeError:
-        return None
-
-
-def _record_cost(phase: str, cost: float, tokens: dict[str, int]) -> None:
-    """Accumulate cost and tokens for a phase."""
-    _phase_costs[phase] = _phase_costs.get(phase, 0) + cost
-    _phase_tokens.setdefault(phase, {"in": 0, "out": 0, "cache_read": 0})
-    for k in tokens:
-        _phase_tokens[phase][k] += tokens[k]
-
-
-# Modify run_claude - pass phase explicitly for thread-safety
-def run_claude(prompt: str, model: str, *,
-               phase: str = "unknown",
-               timeout: Optional[int] = None) -> Optional[str]:
-    timeout = timeout or TIMEOUT_EXEC
-    if DRY_RUN:
-        log(f"[DRY-RUN] Would call {model}")
-        return "DRY_RUN_OUTPUT"
-
-    cmd = [CLAUDE_EXE, "-p", "--dangerously-skip-permissions", "--model", model,
-           "--output-format", "json"]
-
-    # ... existing Popen logic unchanged ...
-
-    if proc.returncode != 0:
-        log(f"[ERROR] Claude ({model}): {stderr[:300]}")
-        return None
-
-    data = _parse_json_response(stdout)
-    if data is None:
-        log(f"[WARN] Failed to parse JSON response, cost not tracked")
-        return stdout  # Continue without cost data
-
-    cost, tokens = _extract_cost(data)
-    _record_cost(phase, cost, tokens)
-
-    if SHOW_COSTS:
-        total_tok = tokens["in"] + tokens["out"]
-        log(f"[COST] {model} {phase}: ${cost:.4f} ({tokens['in']}+{tokens['out']}={total_tok} tok)")
-
-    return data.get("result")
-
-
-# Update all call sites to pass phase:
-# - phase_scout():    run_claude(..., phase="scout")
-# - phase_plan():     run_claude(..., phase="plan")
-# - phase_implement(): run_claude(..., phase="implement")
-# - phase_verify():   run_claude(..., phase="verify")
-# - phase_judge():    run_claude(..., phase="judge")
-
-
-def _write_cost_summary() -> None:
-    """Write cost summary to log and final_notes."""
-    total = sum(_phase_costs.values())
-    total_in = sum(t["in"] for t in _phase_tokens.values())
-    total_out = sum(t["out"] for t in _phase_tokens.values())
-    total_cache = sum(t["cache_read"] for t in _phase_tokens.values())
-    breakdown = ", ".join(f"{k}=${v:.3f}" for k, v in _phase_costs.items())
-
-    summary = f"[COST] Total: ${total:.3f} ({breakdown})"
-    log(summary)
-
-    # Append to log.md
-    with LOG_FILE.open("a", encoding="utf-8") as f:
-        f.write(f"\n{summary}\n")
-
-    # Append to final_notes.md
-    with FINAL_NOTES.open("a", encoding="utf-8") as f:
-        f.write(f"\n## Cost Summary\n")
-        f.write(f"Total: ${total:.3f}\n")
-        f.write(f"Tokens: {total_in} in, {total_out} out, {total_cache} cache read\n")
-        f.write(f"Breakdown: {breakdown}\n")
-
-
-# Call at end of main() before "[SUCCESS]" print
-_write_cost_summary()
-```
-
-**Unit Test:**
-```python
-def test_extract_cost():
-    sample = {"total_cost_usd": 0.00123,
-              "usage": {"input_tokens": 100, "output_tokens": 50,
-                        "cache_read_input_tokens": 500}}
-    cost, tok = _extract_cost(sample)
-    assert cost == 0.00123
-    assert tok == {"in": 100, "out": 50, "cache_read": 500}
-
-def test_extract_cost_missing_fields():
-    assert _extract_cost({}) == (0, {"in": 0, "out": 0, "cache_read": 0})
-    assert _extract_cost({"usage": None})[0] == 0
-```
-
-**Documentation:** Add to README env vars table:
-```
-ZEN_SHOW_COSTS    false    Print per-call cost and token counts to console
-```
-
-**Gate:** Run on a simple task, verify costs match Anthropic console. Check `final_notes.md` and `log.md` contain summaries.
-
-
----
-
 ## P2: Medium Priority (High Value, Medium Effort)
 
 ### 2. XML Prompt Structuring
@@ -533,7 +390,8 @@ def test_should_skip_judge_security_file():
 7. **Dry Run Mode Enhancement**
  > `--dry-run` shows what would happen, but output is minimal.
 
- #### 🛠️ Suggested Improvements:                                                                                         - In dry-run:
+ #### 🛠️ Suggested Improvements:                                                                                        
+- In dry-run:
    - Print full command that would be executed.
    - Show prompt that would be sent to Claude.
    - Do not create real files (use temp paths).
@@ -547,7 +405,8 @@ def test_should_skip_judge_security_file():
  ### 9. **Security & Input Sanitization**
  > Task file path is used directly; potential for injection via filenames/content.
 
- #### 🛠️ Suggested Improvements:                                                                                         - Sanitize input paths:
+ #### 🛠️ Suggested Improvements:                                                                                        
+- Sanitize input paths:
    ```python
    task_path = Path(task_file).resolve().relative_to(PROJECT_ROOT)
    ```
@@ -561,6 +420,12 @@ def test_should_skip_judge_security_file():
  ### 10. **Documentation & User Guidance**
  > Good docstring, but no in-file examples or help menu.
 
- #### 🛠️ Suggested Improvements:                                                                                         - Add `--help` flag with usage examples.
+ #### 🛠️ Suggested Improvements:                                                                                        
+- Add `--help` flag with usage examples.
  - Include sample task file in docs.
  - Link to `implementation_plan.md` and `CLAUDE.md`.
+
+
+--
+
+
