@@ -173,10 +173,41 @@ Reset complete.
 ## The Constitution (`CLAUDE.md`)
 When you run `zen init`, it creates a `CLAUDE.md` file in your root (if you don't have one). This is the **Psychological Linter**.
 
-Put your non-negotiable rules here. The agent reads this *every single step*.
+The agent reads this file at *every single step*, ensuring consistent architectural decisions across your entire codebase.
+
+### Default Template
+<details>
+<summary>Click to expand CLAUDE.md</summary>
+
+```markdown
+## GOLDEN RULES
+- **Delete, don't deprecate.** Remove obsolete code immediately.
+- **Complete, don't stub.** No placeholder implementations or "todo" skeletons.
+- **Update callers atomically.** Definition changes and caller updates in one pass.
+
+## ARCHITECTURE
+- **Inject, don't instantiate.** Pass dependencies explicitly.
+- **Contract first.** Define interfaces before implementations.
+- **Pure constructors.** No I/O, network, or DB calls during initialization.
+
+## CODE STYLE
+- **Flat, not nested.** Max 2 directory levels.
+- **Specific, not general.** Catch explicit exceptions; no catch-all handlers.
+- **Top-level imports.** No imports inside functions.
+
+## TESTING
+- **Mock boundaries, not internals.** Fake I/O and network; real logic.
+- **Test behavior, not implementation.** Assert outcomes, not method calls.
+```
+</details>
+
+### Customization Examples
+
+Add project-specific rules:
 > * "Always use TypeScript strict mode."
 > * "Prefer composition over inheritance."
 > * "Never use 'any'."
+> * "All API endpoints must have OpenAPI docstrings."
 
 ---
 
@@ -210,18 +241,129 @@ In the execution log above, Zen Mode performed a complex 16-step refactor on an 
 ## Advanced
 
 ### Configuration
-Tune the behavior via environment variables:
 
+All environment variables with defaults:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ZEN_MODEL_BRAIN` | `opus` | Model for planning and judging (expensive, smart) |
+| `ZEN_MODEL_HANDS` | `sonnet` | Model for implementation (balanced) |
+| `ZEN_MODEL_EYES` | `haiku` | Model for scouting and summaries (cheap, fast) |
+| `ZEN_SHOW_COSTS` | `true` | Show per-call cost and token counts |
+| `ZEN_TIMEOUT` | `600` | Max seconds per Claude call |
+| `ZEN_RETRIES` | `2` | Retry attempts before escalation to Opus |
+| `ZEN_JUDGE_LOOPS` | `2` | Max judge review/fix cycles |
+| `ZEN_LINTER_TIMEOUT` | `120` | Linter timeout in seconds |
+| `ZEN_WORK_DIR` | `.zen` | Working directory name |
+
+**Example:**
 ```bash
-export ZEN_MODEL_BRAIN=claude-3-opus-20240229     # Planning/Judging
-export ZEN_MODEL_HANDS=claude-3-5-sonnet-20241022 # Coding
-export ZEN_SHOW_COSTS=false                       # Hide per-call cost and token counts
-export ZEN_TIMEOUT=600                            # Max seconds per step
-export ZEN_RETRIES=2                              # Retries before "Stuck"
+export ZEN_MODEL_BRAIN=claude-3-opus-20240229
+export ZEN_MODEL_HANDS=claude-3-5-sonnet-20241022
+export ZEN_SHOW_COSTS=false
 ```
+
+### Judge Auto-Skip
+
+The Judge phase (Opus architectural review) is automatically skipped to save costs when:
+
+| Condition | Threshold |
+|-----------|-----------|
+| Trivial changes | < 5 lines changed |
+| Docs/tests only | No production code touched |
+| Small refactors | < 20 lines AND ≤ 2 plan steps |
+
+**Always reviewed:** Files containing `auth`, `login`, `payment`, `crypt`, `secret`, or `token` in the path.
+
+Override thresholds with: `ZEN_JUDGE_TRIVIAL`, `ZEN_JUDGE_SMALL`, `ZEN_JUDGE_SIMPLE_LINES`, `ZEN_JUDGE_SIMPLE_STEPS`
 
 ### The Eject Button
 If you installed via pip but want to hack the source code:
 ```bash
 zen eject
 ```
+This copies `zen.py` and `zen_lint.py` to your project root for local modifications. The `zen` command will automatically use your local versions.
+
+---
+
+## CLI Reference
+
+| Command | Description |
+|---------|-------------|
+| `zen init` | Create `.zen/` directory and default `CLAUDE.md` |
+| `zen <task.md>` | Run the 5-phase workflow |
+| `zen <task.md> --reset` | Wipe state and start fresh |
+| `zen <task.md> --retry` | Clear completion markers to retry failed steps |
+| `zen <task.md> --skip-judge` | Skip architectural review (saves ~$0.25) |
+| `zen <task.md> --dry-run` | Preview without executing |
+| `zen eject` | Copy scripts to project root for customization |
+
+---
+
+## The Linter (`zen_lint`)
+
+Zen Mode includes a built-in "lazy coder detector" that runs after every implementation step. It enforces the Constitution by catching sloppy patterns before they ship.
+
+### Rule Categories
+
+| Severity | What It Catches |
+|----------|-----------------|
+| **HIGH** | Hardcoded secrets, merge conflict markers, truncation markers (`...rest of implementation`), bare `except:` |
+| **MEDIUM** | TODO/FIXME comments, stub implementations (`pass`, `...`), inline imports, hardcoded public IPs |
+| **LOW** | Debug prints, magic numbers (86400, 3600), catch-all exceptions, empty docstrings |
+
+See [docs/linter-rules.md](docs/linter-rules.md) for the complete rule reference.
+
+### Inline Suppression
+
+Suppress specific rules when needed:
+```python
+debug_value = 86400  # lint:ignore MAGIC_NUMBER
+print(x)             # lint:ignore  (suppresses all rules for this line)
+```
+
+### Config File
+
+Create `.lintrc.json` to disable rules project-wide:
+```json
+{
+  "disabled_rules": ["DEBUG_PRINT", "MAGIC_NUMBER"]
+}
+```
+
+### Standalone Usage
+
+```bash
+# Lint git changes (default)
+python -m zen_mode.linter
+
+# Lint specific paths
+python -m zen_mode.linter src/ tests/
+
+# Output formats for CI
+python -m zen_mode.linter --format json
+python -m zen_mode.linter --format sarif  # GitHub Code Scanning compatible
+
+# Show all rules
+python -m zen_mode.linter --list-rules
+```
+
+---
+
+## Troubleshooting
+
+See [docs/troubleshooting.md](docs/troubleshooting.md) for common issues:
+
+- Agent stuck on step → `zen task.md --retry` or edit `.zen/plan.md`
+- Lint keeps failing → inline suppression or `.lintrc.json`
+- Judge rejected → check `.zen/judge_feedback.md`
+- Costs too high → `--skip-judge` or break into smaller tasks
+
+---
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [docs/linter-rules.md](docs/linter-rules.md) | Complete reference for all 25 lint rules |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Common issues and solutions |
