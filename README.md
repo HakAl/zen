@@ -180,16 +180,30 @@ Put your non-negotiable rules here. The agent reads this *every single step*.
 
 ---
 
-## The Hidden Token Economy
+## The "Brownfield" Economy: Why Zen Mode Saves Money
 
-At first glance, Zen Mode's five-phase process seems token-intensive. In practice, it is **net-positive** because it eliminates the "Debug Spiral." **Zen Mode tracks this for you automatically.** Every run provides a receipt of tokens used and actual cost.
+Coding is easy when you start from scratch. It is hard when you have to respect an existing codebase.
 
-| Approach | Typical Token Flow | Cost |
-| :--- | :--- | :--- |
-| **"Shotgun" Chat** | Generate code -> Debug -> Fix -> Debug -> Fix | ~4,700 tokens |
-| **Zen Mode** | Scout -> Plan -> Implement -> Judge | ~2,800 tokens |
+Most users lose money with standard AI chats because they pay the **"Context Tax."** They ask a cheap chatbot to fix a file, but the bot doesn't know the project structure, so it writes code that imports missing libraries or breaks the build. You then spend hours (and more tokens) pasting errors back and forth.
 
-**The Result:** You spend ~40% fewer tokens to achieve architectural coherence that would usually take 3-4 manual iterations.
+**Zen Mode flips this equation.** It pays a higher upfront cost to "Scout" your existing code so it doesn't break it.
+
+### The Cost of a Feature (Existing Codebase)
+
+| Metric | Standard Chat Workflow                                            | Zen Mode                                                    |
+| :--- |:------------------------------------------------------------------|:------------------------------------------------------------|
+| **Context Awareness** | **Blind.** Guesses file paths and imports.                        |  **Scout.** Maps dependency graph first.                    |
+| **User Experience** | **Frustrating.** User acts as the debugger and "copy-paste mule." | **Automated.** Agent writes, runs, and fixes its own tests. |
+| **Success Rate** | Low. Often results in "Code Rot."                                 | High. Changes are verified against real tests.              |
+| **True Cost** | **$1.75 + 2 hours** of your time debugging.                       | **~$3.50** (Flat fee for a finished result).                |
+
+### Example: The "Scraper Refactor"
+In the execution log above, Zen Mode performed a complex 16-step refactor on an existing scraper.
+*   **Total Cost:** `$3.51`
+*   **Human Time:** `0 minutes`
+*   **Result:** It found the files, installed dependencies, wrote the code, **created new tests**, ran them, and self-corrected.
+
+> **For the non-coder:** Zen Mode acts like a Senior Engineer pairing with you. It doesn't just write code; it plans, verifies, and cleans up after itself, making software development accessible even if you don't know how to run a debugger.
 
 ---
 

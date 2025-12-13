@@ -7,6 +7,7 @@ import re
 import json
 import fnmatch
 import subprocess
+import ipaddress
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Tuple, Dict, Optional, Set
@@ -69,12 +70,8 @@ QUALITY_RULES = [
     Rule("STUB_IMPL", r"^\s*(pass|\.{3})\s*$", CODE, "MEDIUM"),
     Rule("NOT_IMPLEMENTED", r"(raise\s+)?NotImplementedError|not\s+implemented", CODE, "MEDIUM"),
     Rule("HARDCODED_IP",
-         # Valid octet: 0-255
-         r"\b(?!127\.0\.0\.1|0\.0\.0\.0|255\.255\.255\.\d{1,3}|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)"
-         r"(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\."
-         r"(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\."
-         r"(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\."
-         r"(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\b",
+         # Simple pattern to match IP-like strings (validated separately)
+         r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b",
          CODE, "MEDIUM"),
     Rule("AI_COMMENT_BOILERPLATE",
          r"^\s*#\s*(This (function|method|class|module)|The following)\s+(is used to|responsible for|will|provides|represents)\b",
@@ -369,6 +366,22 @@ ABSTRACT_PATTERNS = re.compile(
 )
 
 
+def is_private_or_special_ip(ip_str: str) -> bool:
+    """Check if IP is private, loopback, link-local, or otherwise special/reserved."""
+    try:
+        ip = ipaddress.ip_address(ip_str)
+        return (
+            ip.is_private or
+            ip.is_loopback or
+            ip.is_link_local or
+            ip.is_reserved or
+            ip.is_multicast
+        )
+    except ValueError:
+        # Not a valid IP address
+        return False
+
+
 def check_file(path: str, min_severity: str = "LOW", config: Optional[Dict] = None) -> List[Dict]:
     """Scan a file for violations."""
     p = Path(path)
@@ -384,6 +397,9 @@ def check_file(path: str, min_severity: str = "LOW", config: Optional[Dict] = No
     if p.suffix.lower() in IGNORE_EXTS:
         return []
     if any(p.name.endswith(ext) for ext in ['.min.js', '.min.css']):
+        return []
+    # Skip large files (> 1MB) to avoid performance issues
+    if p.stat().st_size > 1_000_000:
         return []
     if is_binary(p):
         return []
@@ -479,13 +495,20 @@ def check_file(path: str, min_severity: str = "LOW", config: Optional[Dict] = No
                 if not target:
                     continue
 
-                if rule.search(target):
+                match = rule._compiled.search(target)
+                if match:
                     # Skip STUB_IMPL for abstract methods/protocols
                     if rule.name == "STUB_IMPL":
                         # Check previous lines for abstract/protocol context
                         context_start = max(0, i - 5)
                         context = "\n".join(lines[context_start:i + 1])
                         if ABSTRACT_PATTERNS.search(context):
+                            continue
+
+                    # Skip HARDCODED_IP for private/special IPs
+                    if rule.name == "HARDCODED_IP":
+                        ip_str = match.group(1)  # Extract IP from capturing group
+                        if is_private_or_special_ip(ip_str):
                             continue
 
                     violations.append({
