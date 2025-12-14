@@ -65,7 +65,7 @@ Since state is just files, you are always in control:
 ### **Price Transparency:** 
 Real-time cost auditing. You see exactly how many tokens were spent on planning vs. coding.
 
-> ```[COST] Total: $3.510 (scout=$0.180, plan=$0.152, implement=$2.615, verify=$0.265, judge=$0.261, summary=$0.038)```
+> ```[COST] Total: $1.966 (scout=$0.063, plan=$0.003, implement=$1.540, verify=$0.099, judge=$0.222, summary=$0.039)```
 <details>
 <summary>Click to see full execution log and cost breakdown</summary>
 
