@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "zen-mode"
-version = "1.0.3"
+version = "1.0.5"
 description = "Minimalist autonomous agent runner"
 readme = "README.md"
 license = "MIT"
