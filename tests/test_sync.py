@@ -32,6 +32,7 @@ SYNCED_FUNCTIONS = [
     # Test output parsing
     "verify_test_output",
     "extract_failure_count",
+    "parse_test_output",
     # File utilities
     "read_file",
     "write_file",
@@ -79,6 +80,7 @@ SYNCED_CONFIG = [
     "JUDGE_SMALL_REFACTOR_LINES",
     "JUDGE_SIMPLE_PLAN_LINES",
     "JUDGE_SIMPLE_PLAN_STEPS",
+    "PARSE_TEST_THRESHOLD",
 ]
 
 

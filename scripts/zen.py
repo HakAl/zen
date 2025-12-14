@@ -338,6 +338,40 @@ def extract_failure_count(output: str) -> Optional[int]:
     return None
 
 
+# Threshold for Haiku parsing (bytes) - skip parsing for small outputs
+PARSE_TEST_THRESHOLD = int(os.getenv("ZEN_PARSE_THRESHOLD", "500"))
+
+
+def parse_test_output(raw_output: str) -> str:
+    """
+    Use Haiku to extract actionable failure info from verbose test output.
+    Reduces token count for Sonnet retry prompts.
+    """
+    if len(raw_output) < PARSE_TEST_THRESHOLD:
+        return raw_output  # Not worth the API call
+
+    prompt = """Extract key failure information from this test output.
+Return a concise summary with:
+- Failed test names
+- Error type and message for each failure
+- Relevant file:line locations
+- Last 2-3 stack frames (if present)
+
+Keep under 400 words. Preserve exact error messages.
+
+<test_output>
+""" + raw_output[:4000] + """
+</test_output>"""
+
+    parsed = run_claude(prompt, model=MODEL_EYES, phase="parse_tests", timeout=45)
+
+    if not parsed or len(parsed) > len(raw_output):
+        return raw_output[:2000]  # Fallback: truncate if parsing failed or bloated
+
+    log(f"[PARSE] Reduced test output: {len(raw_output)} -> {len(parsed)} chars")
+    return parsed
+
+
 def _git_has_head() -> bool:
     """Check if git repo has at least one commit (HEAD exists)."""
     try:
@@ -923,10 +957,14 @@ End with exactly: TESTS_PASS or TESTS_FAIL
                 log(f"[VERIFY] Progress: failures changed (attempt {attempt})")
 
         last_failure_hash = failure_hash
+
+        # Use Haiku to parse verbose output before feeding to Sonnet
+        parsed_output = parse_test_output(test_output)
+
         prompt = f"""Tests still failing. Fix them.
 
 Test output (from {TEST_OUTPUT_PATH}):
-{test_output[:2000]}
+{parsed_output}
 
 Write updated test output to: {TEST_OUTPUT_PATH}
 End with: TESTS_PASS or TESTS_FAIL"""

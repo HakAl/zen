@@ -70,100 +70,83 @@ Real-time cost auditing. You see exactly how many tokens were spent on planning 
 <summary>Click to see full execution log and cost breakdown</summary>
 
 ```bash
-test_repo> zen cleanup.md --reset
+> zen .\cleanup.md --reset
 Reset complete.
 
-[SCOUT] Mapping codebase for cleanup.md...
-  [COST] sonnet scout: $0.1798 (228+1839=2067 tok)
+[SCOUT] Mapping codebase for .\cleanup.md...
+  [COST] haiku scout: $0.0626 (52+1670=1722 tok)
   [SCOUT] Done.
 
 [PLAN] Creating execution plan...
-  [COST] opus plan: $0.1516 (6+948=954 tok)
+  [COST] opus plan: $0.0029 (0+0=0 tok)
   [PLAN] Done.
   [BACKUP] workers\scraper.py
   [BACKUP] requirements.txt
-  [BACKUP] api\v1\tests\conftest.py
-  [BACKUP] api\v1\tests\test_routes.py
   [BACKUP] api\db\models.py
   [BACKUP] api\db\repository.py
+  [BACKUP] api\v1\routes.py
 
-[IMPLEMENT] 16 steps to execute.
+[IMPLEMENT] 12 steps to execute.
 
-[STEP 1] Add scraping dependencies to requirements.txt (tenacity, fak...
-  [COST] sonnet implement: $0.0681 (15+465=480 tok)
+[STEP 1] Create workers/__init__.py to establish workers as a Python ...
+  [COST] sonnet implement: $0.0957 (40+1004=1044 tok)
   [COMPLETE] Step 1
 
-[STEP 2] Create ScraperConfig dataclass for timeout, retries, rate li...
-  [COST] sonnet implement: $0.1010 (35+1040=1075 tok)
+[STEP 2] Add httpx, tenacity, lxml, and pytest-httpx to requirements....
+  [COST] sonnet implement: $0.0473 (15+430=445 tok)
   [COMPLETE] Step 2
 
-[STEP 3] Add retry decorator with exponential backoff using tenacity ...
-  [COST] sonnet implement: $0.1017 (28+1197=1225 tok)
+[STEP 3] Rewrite workers/scraper.py with ScraperConfig dataclass for ...
+  [COST] sonnet implement: $0.1141 (30+2296=2326 tok)
   [COMPLETE] Step 3
 
-[STEP 4] Add rotating user-agent headers using fake-useragent library...
-  [COST] sonnet implement: $0.1010 (27+1110=1137 tok)
+[STEP 4] Add exponential backoff retry logic using tenacity decorator...
+  [COST] sonnet implement: $0.1030 (27+1615=1642 tok)
   [COMPLETE] Step 4
 
-[STEP 5] Add rate limiting with configurable delay between requests...
-  [COST] sonnet implement: $0.1009 (27+1715=1742 tok)
+[STEP 5] Implement session-based HTTP client with httpx supporting co...
+  [COST] sonnet implement: $0.1045 (31+2256=2287 tok)
   [COMPLETE] Step 5
 
-[STEP 6] Add request timeout configuration to fetch_page method...
-  [COST] sonnet implement: $0.0520 (15+524=539 tok)
+[STEP 6] Add custom exception classes for ScraperError, FetchError, a...
+  [COST] sonnet implement: $0.0556 (19+687=706 tok)
   [COMPLETE] Step 6
 
-[STEP 7] Add session management with connection pooling using request...
-  [COST] sonnet implement: $0.1314 (36+1864=1900 tok)
+[STEP 7] Enhance parse_html method with lxml parser and extraction me...
+  [COST] sonnet implement: $0.2189 (50+4265=4315 tok)
   [COMPLETE] Step 7
 
-[STEP 8] Add structured logging with Python logging module to WebScra...
-  [COST] sonnet implement: $0.1961 (31+3517=3548 tok)
+[STEP 8] Add rate limiting with configurable delay between requests i...
+  [COST] sonnet implement: $0.1546 (45+2860=2905 tok)
   [COMPLETE] Step 8
 
-[STEP 9] Create workers/tests directory with __init__.py file...
-  [COST] sonnet implement: $0.0592 (27+426=453 tok)
+[STEP 9] Create workers/tests/__init__.py for test package structure...
+  [COST] sonnet implement: $0.0570 (32+596=628 tok)
   [COMPLETE] Step 9
 
 [STEP 10] Create workers/tests/conftest.py with pytest fixtures for mo...
-  [COST] sonnet implement: $0.0903 (16+1744=1760 tok)
+  [COST] sonnet implement: $0.1695 (37+3084=3121 tok)
   [COMPLETE] Step 10
 
 [STEP 11] Create workers/tests/test_scraper.py with tests for successf...
-  [COST] sonnet implement: $0.1338 (26+3330=3356 tok)
+  [COST] sonnet implement: $0.1753 (16+6621=6637 tok)
   [COMPLETE] Step 11
 
-[STEP 12] Add tests for retry logic on transient failures (5xx errors,...
-  [COST] sonnet implement: $0.2961 (50+5202=5252 tok)
+[STEP 12] Verify changes by running pytest on workers/tests/test_scrap...
+  [COST] sonnet implement: $0.2447 (48+2927=2975 tok)
   [COMPLETE] Step 12
 
-[STEP 13] Add tests for rate limiting behavior...
-  [COST] sonnet implement: $0.2042 (34+3886=3920 tok)
-  [COMPLETE] Step 13
-
-[STEP 14] Add tests for user-agent rotation...
-  [COST] sonnet implement: $0.2357 (2054+3894=5948 tok)
-  [COMPLETE] Step 14
-
-[STEP 15] Add tests for HTML parsing edge cases (empty content, malfor...
-  [COST] sonnet implement: $0.4185 (2071+6290=8361 tok)
-  [COMPLETE] Step 15
-
-[STEP 16] Verify changes and run tests...
-  [COST] sonnet implement: $0.3247 (53+2540=2593 tok)
-  [COMPLETE] Step 16
-
 [VERIFY] Running tests...
-  [COST] sonnet verify: $0.2646 (67+2759=2826 tok)
+  [COST] sonnet verify: $0.0987 (40+1279=1319 tok)
   [VERIFY] Passed.
   [JUDGE] Required: Sensitive file (.scrappy/lancedb/code_chunks.lance/_indices/7e9eadae-cd58-457c-9031-7eeb51f022c4/part_6_tokens.lance)
 
 [JUDGE] Senior Architect review...
   [JUDGE] Review loop 1/2
-  [COST] opus judge: $0.2614 (5+750=755 tok)
+  [COST] opus judge: $0.2224 (6+811=817 tok)
   [JUDGE_APPROVED] Code passed architectural review.
-  [COST] haiku summary: $0.0382 (14+641=655 tok)
-  [COST] Total: $3.510 (scout=$0.180, plan=$0.152, implement=$2.615, verify=$0.265, judge=$0.261, summary=$0.038)
+  [COST] haiku summary: $0.0389 (18+652=670 tok)
+  [COST] Total: $1.966 (scout=$0.063, plan=$0.003, implement=$1.540, verify=$0.099, judge=$0.222, summary=$0.039)
 
 [SUCCESS]
 ```
@@ -223,14 +206,14 @@ Most users lose money with standard AI chats because they pay the **"Context Tax
 
 | Metric | Standard Chat Workflow                                            | Zen Mode                                                    |
 | :--- |:------------------------------------------------------------------|:------------------------------------------------------------|
-| **Context Awareness** | **Blind.** Guesses file paths and imports.                        |  **Scout.** Maps dependency graph first.                    |
+| **Context Awareness** | **Blind.** Guesses file paths and imports.                        | **Scout.** Maps dependency graph first.                     |
 | **User Experience** | **Frustrating.** User acts as the debugger and "copy-paste mule." | **Automated.** Agent writes, runs, and fixes its own tests. |
 | **Success Rate** | Low. Often results in "Code Rot."                                 | High. Changes are verified against real tests.              |
-| **True Cost** | **$1.75 + 2 hours** of your time debugging.                       | **~$3.50** (Flat fee for a finished result).                |
+| **True Cost** | **$1.75 + 2 hours** of your time debugging.                       | **~$2** (Flat fee for a finished result).                   |
 
 ### Example: The "Scraper Refactor"
-In the execution log above, Zen Mode performed a complex 16-step refactor on an existing scraper.
-*   **Total Cost:** `$3.51`
+In the execution log above, Zen Mode performed a complex 12 step refactor on an existing scraper.
+*   **Total Cost:** `$2`
 *   **Human Time:** `0 minutes`
 *   **Result:** It found the files, installed dependencies, wrote the code, **created new tests**, ran them, and self-corrected.
 
