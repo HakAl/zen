@@ -1,0 +1,4 @@
+$05898092-a63c-4966-be6c-761854e8f46e²"id ÿÿÿÿÿÿÿÿÿ*string8Zdefault+	file_path ÿÿÿÿÿÿÿÿÿ*string8Zdefault+
+start_line ÿÿÿÿÿÿÿÿÿ*int648Zdefault)end_line ÿÿÿÿÿÿÿÿÿ*int648Zdefault.content_hash ÿÿÿÿÿÿÿÿÿ*string8Zdefault)content ÿÿÿÿÿÿÿÿÿ*string8Zdefault=vector ÿÿÿÿÿÿÿÿÿ*fixed_size_list:float:38408Zdefault"!
+lance.auto_cleanup.interval20"'
+lance.auto_cleanup.older_than14days
