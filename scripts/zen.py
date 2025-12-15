@@ -631,13 +631,11 @@ def phase_plan(task_file: str) -> None:
 
     log("\n[PLAN] Creating execution plan...")
     scout = read_file(SCOUT_FILE)
-    prompt = f"""<task>
-Create execution plan for: {task_file}
-</task>
-
-<context>
-{scout}
-</context>
+    # Prompt structured for cache optimization: stable content first, variable content last
+    base_prompt = f"""<role>
+You are a senior software architect creating an execution plan.
+Your plans are precise, atomic, and efficient.
+</role>
 
 <rules>
 - Clean Code over Backward Compatibility
@@ -646,9 +644,15 @@ Create execution plan for: {task_file}
 - Final step MUST be verification (test/verify/validate)
 </rules>
 
-<output>
-Write to: {PLAN_FILE}
+<consolidation>
+- Combine related test categories into 1-2 test steps maximum
+- Do NOT create separate steps for: retry tests, validation tests, edge case tests
+- Group: "Create all unit tests for [component]" not "Create tests for X, then Y, then Z"
+- Target: 8-12 steps for typical features, never exceed 15 steps total
+- Use "targeted tests covering key behavior" not "comprehensive tests covering X, Y, Z"
+</consolidation>
 
+<output_format>
 Format (strict markdown, no preamble):
 ## Step 1: <action verb> <specific target>
 ## Step 2: <action verb> <specific target>
@@ -656,17 +660,34 @@ Format (strict markdown, no preamble):
 ## Step N: Verify changes and run tests
 
 Each step: one atomic change. No sub-steps, no bullet lists within steps.
-</output>"""
+</output_format>
 
-    output = run_claude(prompt, model=MODEL_BRAIN, phase="plan")
+<task>
+Create execution plan for: {task_file}
+Write output to: {PLAN_FILE}
+</task>
+
+<context>
+{scout}
+</context>"""
+
+    output = run_claude(base_prompt, model=MODEL_BRAIN, phase="plan")
     if not output:
         log("[PLAN] Failed.")
         sys.exit(1)
 
+    # Write plan if Claude didn't
     if not PLAN_FILE.exists():
         write_file(PLAN_FILE, output)
 
-    log("[PLAN] Done.")
+    # Validate efficiency (warn only, don't retry - Opus doesn't consolidate well)
+    steps = parse_steps(read_file(PLAN_FILE))
+    valid, efficiency_msg = validate_plan_efficiency(steps)
+
+    if not valid:
+        log(f"[PLAN] Warning: {efficiency_msg}")
+
+    log(f"[PLAN] Done. {len(steps)} steps.")
 
 
 def parse_steps(plan: str) -> List[Tuple[int, str]]:
@@ -701,6 +722,31 @@ def parse_steps(plan: str) -> List[Tuple[int, str]]:
     # Last resort: bullets
     bullets = re.findall(r"(?:^|\n)[-*]\s+(.*?)(?=\n[-*]|$)", plan)
     return [(i, txt.strip()) for i, txt in enumerate(bullets, 1) if txt.strip()]
+
+
+def validate_plan_efficiency(steps: List[Tuple[int, str]]) -> Tuple[bool, str]:
+    """Check plan for common inefficiency patterns. Returns (valid, message)."""
+    if not steps:
+        return True, ""
+
+    step_descs = [desc.lower() for _, desc in steps]
+
+    # Check for too many test steps
+    test_steps = [s for s in step_descs if "test" in s]
+    if len(test_steps) > 2:
+        return False, f"CONSOLIDATE: {len(test_steps)} test steps found. Combine into 1-2 steps."
+
+    # Check for excessive steps
+    if len(steps) > 15:
+        return False, f"SIMPLIFY: Plan has {len(steps)} steps (max 15). Look for consolidation."
+
+    # Check for overly granular test patterns
+    granular_patterns = ["add test for", "create test for", "write test for"]
+    granular_count = sum(1 for s in step_descs if any(p in s for p in granular_patterns))
+    if granular_count > 2:
+        return False, "CONSOLIDATE: Multiple 'add/create/write test for X' steps. Group into single test step."
+
+    return True, ""
 
 
 def get_completed_steps() -> set:
@@ -808,6 +854,26 @@ End with: STEP_COMPLETE or STEP_BLOCKED: <reason>
 
         prompt = base_prompt
         last_error_summary = ""
+        is_test_step = "test" in step_desc.lower()
+
+        # Try Haiku first for test steps (cheap shot - doesn't count against retries)
+        if is_test_step:
+            log(f"  Trying {MODEL_EYES} for test step...")
+            haiku_output = run_claude(prompt, model=MODEL_EYES, phase="implement_test", timeout=TIMEOUT_EXEC) or ""
+
+            if "STEP_COMPLETE" in haiku_output:
+                passed, lint_out = run_linter()
+                if passed:
+                    log(f"[COMPLETE] Step {step_num} ({MODEL_EYES})")
+                    seen_lint_hashes.clear()
+                    continue  # Next step - Haiku succeeded!
+                else:
+                    log(f"  {MODEL_EYES} passed but lint failed, falling back to {MODEL_HANDS}...")
+                    # Capture lint error for Sonnet's context
+                    last_error_summary = "\n".join(lint_out.splitlines()[:10])
+                    prompt += f"\n\nPrevious attempt failed lint:\n{last_error_summary}\n\nFix the issues."
+            else:
+                log(f"  {MODEL_EYES} didn't complete, falling back to {MODEL_HANDS}...")
 
         for attempt in range(1, MAX_RETRIES + 1):
             if attempt > 1:
