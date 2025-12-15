@@ -2,6 +2,68 @@
 
 Changes organized by priority.
 
+## P1: High Priority
+
+## Recommended Strategy Enhancements
+
+### 1. Plan Step Consolidation Guidance (High Impact)
+
+Add to PLAN phase prompt:
+
+```
+CONSOLIDATION RULES:
+- Combine related test categories into 1-2 test steps maximum
+- Do NOT create separate steps for: retry tests, validation tests, edge case tests
+- Group: "Create all unit tests for [component]" not "Create tests for X, then Y, then Z"
+- Target: 8-12 steps for typical features, never exceed 15
+```
+
+**Estimated savings: ~$0.90/task**
+
+### 2. Plan Efficiency Validator
+
+Reject inefficient plans before execution:
+
+```python
+def validate_plan_efficiency(steps: list[str]) -> tuple[bool, str]:
+    """Check plan for common inefficiency patterns."""
+    test_steps = [s for s in steps if "test" in s.lower()]
+
+    if len(test_steps) > 2:
+        return False, "CONSOLIDATE: Too many test steps. Combine into 1-2 steps."
+
+    if len(steps) > 15:
+        return False, "SIMPLIFY: Plan exceeds 15 steps. Look for consolidation."
+
+    # Check for overly granular patterns
+    granular_patterns = ["add test for", "create test for", "write test for"]
+    granular_count = sum(1 for s in steps if any(p in s.lower() for p in granular_patterns))
+    if granular_count > 2:
+        return False, "CONSOLIDATE: Multiple 'add test for X' steps. Group into single test step."
+
+    return True, None
+```
+
+**Benefit: Prevents bloated plans before expensive execution**
+
+### 3. Prompt Structure for Cache Optimization
+
+V3's plan phase cost $0.003 vs $0.15-0.18 in V1/V2 (likely cache hit).
+
+Structure prompts for maximum cache reuse:
+```
+[STABLE - cacheable]
+1. System prompt
+2. CLAUDE.md constitution
+3. Role instructions
+
+[VARIABLE - at end]
+4. Scout output
+5. Task description
+```
+
+**Estimated savings: ~$0.15/task on cache hits**
+
 
 ## P2: Medium Priority (Cost & Quality)
 
@@ -172,8 +234,11 @@ def rule_applies_to_file(rule_name: str, filepath: Path) -> bool:
   | Simple step      | ~$0.06 (Sonnet) | ~$0.01 (Haiku)   |
 
   ---
-  Recommendation
 
-  Start with #1 only (triage in verify). It's the highest ROI and lowest risk. Add #2 and #3 later if it works well.
 
-  Want me to implement this?
+Environment variables
+You can use the following environment variables, which must be full model names (or equivalent for your API provider), to control the model names that the aliases map to.
+Environment variable	Description
+ANTHROPIC_DEFAULT_OPUS_MODEL	The model to use for opus, or for opusplan when Plan Mode is active.
+ANTHROPIC_DEFAULT_SONNET_MODEL	The model to use for sonnet, or for opusplan when Plan Mode is not active.
+ANTHROPIC_DEFAULT_HAIKU_MODEL	The model to use for haiku, or background functionality

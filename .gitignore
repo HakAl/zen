@@ -9,3 +9,4 @@ build/
 .zen-*/
 .env
 .claude
+.scrappy
