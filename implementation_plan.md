@@ -2,67 +2,24 @@
 
 Changes organized by priority.
 
-## P1: High Priority
+
+## P1: High Priority -- TESTING 1-3 NOW
 
 ## Recommended Strategy Enhancements
 
-### 1. Plan Step Consolidation Guidance (High Impact)
+### 1. Step Complexity Routing (From implementation_plan.md)
 
-Add to PLAN phase prompt:
-
-```
-CONSOLIDATION RULES:
-- Combine related test categories into 1-2 test steps maximum
-- Do NOT create separate steps for: retry tests, validation tests, edge case tests
-- Group: "Create all unit tests for [component]" not "Create tests for X, then Y, then Z"
-- Target: 8-12 steps for typical features, never exceed 15
-```
-
-**Estimated savings: ~$0.90/task**
-
-### 2. Plan Efficiency Validator
-
-Reject inefficient plans before execution:
+The existing Haiku-First plan addresses this. Triage before Sonnet:
 
 ```python
-def validate_plan_efficiency(steps: list[str]) -> tuple[bool, str]:
-    """Check plan for common inefficiency patterns."""
-    test_steps = [s for s in steps if "test" in s.lower()]
-
-    if len(test_steps) > 2:
-        return False, "CONSOLIDATE: Too many test steps. Combine into 1-2 steps."
-
-    if len(steps) > 15:
-        return False, "SIMPLIFY: Plan exceeds 15 steps. Look for consolidation."
-
-    # Check for overly granular patterns
-    granular_patterns = ["add test for", "create test for", "write test for"]
-    granular_count = sum(1 for s in steps if any(p in s.lower() for p in granular_patterns))
-    if granular_count > 2:
-        return False, "CONSOLIDATE: Multiple 'add test for X' steps. Group into single test step."
-
-    return True, None
+# Rate step complexity before execution
+complexity = run_claude(
+    f"Rate 1-3 (1=trivial, 3=complex):\n{step_desc}",
+    model=MODEL_EYES, timeout=20
+)
+model = MODEL_EYES if "1" in complexity else MODEL_HANDS
 ```
 
-**Benefit: Prevents bloated plans before expensive execution**
-
-### 3. Prompt Structure for Cache Optimization
-
-V3's plan phase cost $0.003 vs $0.15-0.18 in V1/V2 (likely cache hit).
-
-Structure prompts for maximum cache reuse:
-```
-[STABLE - cacheable]
-1. System prompt
-2. CLAUDE.md constitution
-3. Role instructions
-
-[VARIABLE - at end]
-4. Scout output
-5. Task description
-```
-
-**Estimated savings: ~$0.15/task on cache hits**
 
 
 ## P2: Medium Priority (Cost & Quality)
@@ -236,9 +193,24 @@ def rule_applies_to_file(rule_name: str, filepath: Path) -> bool:
   ---
 
 
-Environment variables
-You can use the following environment variables, which must be full model names (or equivalent for your API provider), to control the model names that the aliases map to.
-Environment variable	Description
-ANTHROPIC_DEFAULT_OPUS_MODEL	The model to use for opus, or for opusplan when Plan Mode is active.
-ANTHROPIC_DEFAULT_SONNET_MODEL	The model to use for sonnet, or for opusplan when Plan Mode is not active.
-ANTHROPIC_DEFAULT_HAIKU_MODEL	The model to use for haiku, or background functionality
+  For cost savings, the only levers are:
+  1. Tier down: Sonnet → Haiku (12x cheaper)
+  2. Fewer tokens: Shorter prompts, truncate context
+  3. Fewer calls: Consolidate steps, skip phases
+  4. Cache hits: Prompt prefix caching (when it works)
+
+
+IDEA: Track context and start new sessions when we reach threshold(s) instead of new context for each step.
+ The tradeoff:
+
+  Stateless (current)          vs    Stateful with threshold reset
+  ─────────────────────────────────────────────────────────────────
+  + Predictable, resumable          + Could batch work across steps
+  + Easy to debug/retry             + Model builds on its own context
+  + Consistent results              + Fewer "re-read the plan" overhead
+  ─────────────────────────────────────────────────────────────────
+  - Each step re-discovers state    - Results become path-dependent
+  - Can't learn from step N-1       - Harder to resume mid-run
+  - Repeated context overhead       - Context drift risk
+
+---
