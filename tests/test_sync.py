@@ -52,6 +52,7 @@ SYNCED_FUNCTIONS = [
     "phase_implement",
     "phase_verify",
     "phase_judge",
+    "validate_plan_efficiency",
 ]
 
 # Functions that are INTENTIONALLY different
