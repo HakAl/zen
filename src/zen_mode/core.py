@@ -843,26 +843,6 @@ End with: STEP_COMPLETE or STEP_BLOCKED: <reason>
 
         prompt = base_prompt
         last_error_summary = ""
-        is_test_step = "test" in step_desc.lower()
-
-        # Try Haiku first for test steps (cheap shot - doesn't count against retries)
-        if is_test_step:
-            log(f"  Trying {MODEL_EYES} for test step...")
-            haiku_output = run_claude(prompt, model=MODEL_EYES, phase="implement_test", timeout=TIMEOUT_EXEC) or ""
-
-            if "STEP_COMPLETE" in haiku_output:
-                passed, lint_out = run_linter()
-                if passed:
-                    log(f"[COMPLETE] Step {step_num} ({MODEL_EYES})")
-                    seen_lint_hashes.clear()
-                    continue  # Next step - Haiku succeeded!
-                else:
-                    log(f"  {MODEL_EYES} passed but lint failed, falling back to {MODEL_HANDS}...")
-                    # Capture lint error for Sonnet's context
-                    last_error_summary = "\n".join(lint_out.splitlines()[:10])
-                    prompt += f"\n\nPrevious attempt failed lint:\n{last_error_summary}\n\nFix the issues."
-            else:
-                log(f"  {MODEL_EYES} didn't complete, falling back to {MODEL_HANDS}...")
 
         for attempt in range(1, MAX_RETRIES + 1):
             if attempt > 1:

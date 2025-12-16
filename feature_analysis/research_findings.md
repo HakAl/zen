@@ -269,9 +269,239 @@ Each contains: `log.md`, `plan.md`, `scout.md`, `final_notes.md`, `test_output.t
 
 ---
 
+## Runs 4-9: Plan Validation & Haiku-First Tests
+
+Extended testing to validate optimization strategies.
+
+### Run Summary (Runs 4-9)
+
+| Run | Steps | Total Cost | Key Test | Outcome |
+|-----|-------|------------|----------|---------|
+| 4 | 9 | $2.80 | Baseline with warning | Success |
+| 5 | 9 | N/A | Rate limit hit | Failed (external) |
+| 6 | 8 | $1.83 | Warning-only validation | **Best baseline** |
+| 7 | 8 | $2.57 | Plan retry loop | Retry made plan worse (3→4 test steps) |
+| 8 | 10 | $4.85 | New feedback prompt | Prompt never triggered, micro-steps bloat |
+| 9 | 8 | $1.94 | **Haiku-first tests** | **4/4 test steps succeeded with Haiku** |
+
+---
+
+### Finding: Plan Retry Doesn't Work
+
+**Run 7 tested** in-loop plan validation with retry:
+```
+[07:38:40] [PLAN] Inefficient (3 test steps), retrying...
+[07:39:28] [PLAN] Warning: 4 test steps found (proceeding anyway)
+```
+
+**Result:** Opus produced a *worse* plan after feedback. Retry cost an extra ~$0.12 for negative value.
+
+**Run 8 tested** explicit feedback prompt showing actual steps to merge:
+```python
+prompt = base_prompt + f"""
+<feedback>
+REJECTED: Your plan has {len(test_steps)} test steps. Maximum allowed: 2.
+MERGE these into a single step:
+{actual_test_steps_list}
+</feedback>"""
+```
+
+**Result:** Plan only had 1 test step (validation never triggered), but 10 total steps with micro-implementation granularity. Cost $4.85 - highest yet.
+
+**Conclusion:** Opus plan quality is highly variable regardless of feedback. Reverted to warning-only. Detection kept for observability, retry removed.
+
+---
+
+### Finding: Haiku Writes Tests Successfully
+
+**Hypothesis:** Tests are formulaic (setup → action → assert), constrained scope, repetitive patterns. Haiku should handle them.
+
+**Run 9 Implementation:**
+```python
+is_test_step = "test" in step_desc.lower()
+
+if is_test_step:
+    log(f"  Trying {MODEL_EYES} for test step...")
+    haiku_output = run_claude(prompt, model=MODEL_EYES, ...)
+
+    if "STEP_COMPLETE" in haiku_output:
+        passed, lint_out = run_linter()
+        if passed:
+            log(f"[COMPLETE] Step {step_num} ({MODEL_EYES})")
+            continue  # Success - next step
+    # Fall back to Sonnet if Haiku fails
+```
+
+**Run 9 Results:**
+| Step | Description | Model | Cost |
+|------|-------------|-------|------|
+| 1 | requirements.txt ("testing" deps) | haiku | $0.015 |
+| 6 | conftest.py | haiku | $0.100 |
+| 7 | test_scraper.py | haiku | $0.170 |
+| 8 | Verify/run tests | haiku | $0.149 |
+| **Total test steps** | | **haiku** | **$0.434** |
+
+**Comparison - Implementation Phase Cost:**
+| Run | Haiku | Sonnet | Total Impl |
+|-----|-------|--------|------------|
+| 6 (baseline) | $0 | $1.18 | $1.18 |
+| 8 (worst) | $0 | $3.15 | $3.15 |
+| **9 (haiku-first)** | **$0.43** | **$0.48** | **$0.91** |
+
+**Success rate:** 4/4 test steps completed by Haiku with zero fallbacks.
+
+**Bonus finding:** Step 1 matched "test" due to "testing dependencies" in description. Simple mechanical updates are also good Haiku candidates.
+
+---
+
+### Updated Cost Breakdown
+
+| Phase | V1 | V6 (best baseline) | V9 (haiku-first) |
+|-------|-----|-----|-----|
+| Scout | $0.180 | $0.073 | $0.107 |
+| Plan | $0.152 | $0.145 | $0.163 |
+| Implement | $2.615 | $1.176 | $0.914 |
+| Verify | $0.265 | $0.132 | $0.368 |
+| Judge | $0.261 | $0.253 | $0.296 |
+| **Total** | **$3.51** | **$1.83** | **$1.94** |
+
+V9 total slightly higher than V6 due to verify variance, but **implementation cost is lowest yet** at $0.91.
+
+---
+
+### Implemented Changes
+
+1. **Plan validation** - Warning-only (no retry)
+   - Detects inefficient plans for observability
+   - Does not attempt to fix (Opus ignores feedback)
+
+2. **Haiku-first for test steps** - Enabled
+   - Detects via `"test" in step_desc.lower()`
+   - Tries Haiku first, falls back to Sonnet on failure
+   - Does not count against retry budget
+
+---
+
+### Test Data Locations
+
+```
+├── .1____zen___1\    # V1: 16 steps, $3.51
+├── .2___zen___2\     # V2: 9 steps, $2.25
+├── .3___zen__3\      # V3: 12 steps, $1.97
+├── .4___zen___4\     # 9 steps, $2.80, warning-only baseline
+├── .5___zen___5\     # 9 steps, failed (rate limit)
+├── .6___zen___6\     # 8 steps, $1.83, best baseline
+├── .7___zen___7\     # 8 steps, $2.57, plan retry test (failed)
+├── .8___zen___8\     # 10 steps, $4.85, explicit feedback (never triggered)
+├── .9___zen___9\     # 8 steps, $1.94, haiku-first tests (success)
+├── .10___zen___10\   # 9 steps, $2.22, haiku-first all steps
+└── .11___zen___11\   # 12 steps, $3.82, sonnet planning + haiku implement
+```
+
+---
+
+## Runs 10-11: Haiku-First & Sonnet Planning Experiments
+
+### Run 10: Haiku-First for All Implementation Steps
+
+**Hypothesis:** Haiku is 10x cheaper per token. If success rate >10%, net savings.
+
+**Implementation:**
+```python
+# Try Haiku first for ALL steps
+log(f"  Trying {MODEL_EYES}...")
+haiku_output = run_claude(prompt, model=MODEL_EYES, phase="implement_haiku", ...)
+
+if "STEP_COMPLETE" in haiku_output and lint_passes:
+    continue  # Haiku succeeded
+# Fall back to Sonnet
+```
+
+**Results:**
+| Step | Description | Tokens | Cost |
+|------|-------------|--------|------|
+| 1 | requirements.txt | 563 | $0.015 |
+| 5 | Rewrite scraper.py | 3,861 | $0.082 |
+| 8 | test_scraper.py | 23,076 | $0.665 |
+| **Total** | 9/9 Haiku success | | **$1.38 impl** |
+
+**Finding: Haiku writes ~10x more code than Sonnet**
+
+The test file was 729 lines (23k tokens). Haiku succeeded but verbosity eliminated cost savings.
+
+---
+
+### Run 11: Sonnet for Planning
+
+**Hypothesis:** Sonnet follows instructions better. Might produce tighter plans.
+
+**Results:**
+| Metric | Run 10 (Opus plan) | Run 11 (Sonnet plan) |
+|--------|-------------------|---------------------|
+| Steps | 9 | 12 |
+| Plan cost | $0.17 | $0.11 |
+| Implement cost | $1.38 | $3.01 |
+| **Total** | **$2.22** | **$3.82** |
+
+**Sonnet plan problems:**
+- 12 steps (vs 8-9 typical for Opus)
+- Split requirements into 2 steps
+- Split scraper into 6 micro-steps (5-10)
+- Still said "comprehensive tests" despite "targeted" guidance
+
+**Finding: Sonnet plans are worse despite following format**
+
+Opus produces tighter plans even when ignoring some consolidation rules.
+
+---
+
+### Haiku Verbosity Analysis
+
+Token output comparison (same task):
+
+| Step Type | Sonnet (typical) | Haiku (run 10/11) |
+|-----------|------------------|-------------------|
+| config.py | ~1,000 tok | 4,000-5,000 tok |
+| scraper.py | ~3,000 tok | 10,000-13,000 tok |
+| test_scraper.py | ~7,000 tok | 20,000-23,000 tok |
+
+**The math doesn't work:**
+- Haiku: 10x cheaper per token
+- Haiku: 10x more tokens output
+- **Net cost: ~same (or worse)**
+
+Plus verbose code has downsides:
+- More to review
+- More potential bugs
+- Harder to maintain
+
+---
+
+### Conclusions: Model Assignment
+
+**Optimal configuration (validated):**
+
+| Phase | Model | Reasoning |
+|-------|-------|-----------|
+| Scout | Haiku | Mapping is formulaic, works well |
+| Plan | **Opus** | Produces tighter plans, good architectural sense |
+| Implement | **Sonnet** | Concise code, follows instructions |
+| Verify | Sonnet | Test running is straightforward |
+| Judge | Opus | Critical review needs best reasoning |
+
+**Rejected experiments:**
+- Haiku-first implement: Verbosity kills savings
+- Sonnet planning: Produces bloated micro-step plans
+-  Plan retry loop: Opus ignores consolidation feedback
+
+---
+
 ## Next Steps
 
-1. Add plan consolidation guidance to PLAN phase prompt
-2. Implement plan efficiency validator
-3. Test context pruning on next few runs
-4. Monitor cache hit rates after prompt restructuring
+1. ~~Add plan consolidation guidance to PLAN phase prompt~~ Done
+2. ~~Implement plan efficiency validator~~ Done (warning-only)
+3. ~~Haiku-first for test steps~~ Tested, reverted (verbosity issue)
+4. ~~Haiku-first for all steps~~ Tested, reverted (verbosity issue)
+5. ~~Sonnet for planning~~ Tested, reverted (worse plans)
+6. Test context pruning on next few runs
+7. Monitor cache hit rates after prompt restructuring
