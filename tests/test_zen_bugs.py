@@ -43,9 +43,11 @@ class TestRetryFlagWrongLogFile:
         reassignment_line = None
 
         for i, line in enumerate(lines):
-            if '"--retry"' in line and 'flags' in line:
+            # Look for --retry handling with argparse (args.retry)
+            if '"--retry"' in line or 'args.retry' in line:
                 retry_line = i
-            if 'WORK_DIR = PROJECT_ROOT' in line or 'WORK_DIR =' in line and 'ZEN_ID' in line:
+            # Look for WORK_DIR being reassigned
+            if 'WORK_DIR = PROJECT_ROOT' in line or ('WORK_DIR =' in line and 'ZEN_ID' in line):
                 reassignment_line = i
 
         assert retry_line is not None, "Could not find --retry handling"
@@ -143,32 +145,26 @@ class TestTaskFileNotValidated:
         source = inspect.getsource(zen.main)
 
         # Should validate task_file exists before using it
-        # Look for Path(task_file).exists() or similar validation
-        has_validation = (
-            "task_file" in source and
-            (".exists()" in source or "is_file()" in source) and
-            "task_file" in source.split(".exists()")[0].split("\n")[-1]
-            if ".exists()" in source else False
-        )
-
-        # Alternative: check if there's any file existence check near task_file usage
+        # Look for Path(task_file).exists() or task_path.exists() or similar validation
         lines = source.split('\n')
         validates_task_file = False
         for i, line in enumerate(lines):
-            if 'task_file' in line and ('exists' in line or 'is_file' in line):
+            # Check for task_file or task_path with exists/is_file check
+            if ('task_file' in line or 'task_path' in line) and ('exists' in line or 'is_file' in line):
                 validates_task_file = True
                 break
-            # Check if Path(task_file) is validated in nearby lines
-            if 'task_file = sys.argv[1]' in line:
+            # Check if task_file is assigned and validated in nearby lines
+            if 'task_file = args.task_file' in line or 'task_file = sys.argv[1]' in line:
                 # Look at next few lines for validation
                 for j in range(i + 1, min(i + 10, len(lines))):
-                    if 'exist' in lines[j].lower() and 'task' in lines[j].lower():
+                    if 'exist' in lines[j].lower() and ('task' in lines[j].lower() or 'path' in lines[j].lower()):
                         validates_task_file = True
                         break
 
         assert validates_task_file, (
             "BUG: task_file is never validated. A typo in the path sends garbage to Claude."
         )
+
 
 class TestEscapeSequenceHandling:
     """BUG #10: Escape handling checks previous char incorrectly."""
@@ -300,3 +296,81 @@ class TestStepBlockedDetection:
             "Output like 'I won't say STEP_BLOCKED' would incorrectly trigger. "
             "Should check last line or use regex ^STEP_BLOCKED:"
         )
+
+
+class TestScopeInjection:
+    """FEATURE: SCOPE XML block injected when --allowed-files is provided."""
+
+    def test_scope_injected_when_allowed_files_set(self, monkeypatch, tmp_path):
+        """Test that SCOPE block is injected into prompt when ALLOWED_FILES is set."""
+        import sys
+        from pathlib import Path
+
+        # Add src to path so we can import zen_mode
+        src_path = Path(__file__).parent.parent / "src"
+        sys.path.insert(0, str(src_path))
+
+        # Create fake work directory
+        work_dir = tmp_path / ".zen"
+        work_dir.mkdir()
+
+        # Create minimal plan.md
+        plan_file = work_dir / "plan.md"
+        plan_file.write_text("## Step 1: Test step\nSome description.")
+
+        import zen_mode.core as core
+        monkeypatch.setattr(core, "WORK_DIR", work_dir)
+        monkeypatch.setattr(core, "PLAN_FILE", plan_file)
+        monkeypatch.setattr(core, "LOG_FILE", work_dir / "log.md")
+        monkeypatch.setattr(core, "ALLOWED_FILES", "src/**/*.py")
+
+        # Mock run_claude to capture the prompt
+        captured_prompts = []
+        def mock_run_claude(prompt, **kwargs):
+            captured_prompts.append(prompt)
+            return "STEP_COMPLETE"
+
+        monkeypatch.setattr(core, "run_claude", mock_run_claude)
+        monkeypatch.setattr(core, "run_linter", lambda: (True, ""))
+
+        core.phase_implement()
+
+        assert len(captured_prompts) > 0, "run_claude was not called"
+        prompt = captured_prompts[0]
+        assert "<SCOPE>" in prompt, "SCOPE block not injected into prompt"
+        assert "src/**/*.py" in prompt, "Allowed files pattern not in SCOPE block"
+        assert "You MUST ONLY modify files matching this glob pattern:" in prompt
+
+    def test_scope_not_injected_when_allowed_files_none(self, monkeypatch, tmp_path):
+        """Test that SCOPE block is NOT injected when ALLOWED_FILES is None."""
+        import sys
+        from pathlib import Path
+
+        src_path = Path(__file__).parent.parent / "src"
+        sys.path.insert(0, str(src_path))
+
+        work_dir = tmp_path / ".zen"
+        work_dir.mkdir()
+
+        plan_file = work_dir / "plan.md"
+        plan_file.write_text("## Step 1: Test step\nSome description.")
+
+        import zen_mode.core as core
+        monkeypatch.setattr(core, "WORK_DIR", work_dir)
+        monkeypatch.setattr(core, "PLAN_FILE", plan_file)
+        monkeypatch.setattr(core, "LOG_FILE", work_dir / "log.md")
+        monkeypatch.setattr(core, "ALLOWED_FILES", None)
+
+        captured_prompts = []
+        def mock_run_claude(prompt, **kwargs):
+            captured_prompts.append(prompt)
+            return "STEP_COMPLETE"
+
+        monkeypatch.setattr(core, "run_claude", mock_run_claude)
+        monkeypatch.setattr(core, "run_linter", lambda: (True, ""))
+
+        core.phase_implement()
+
+        assert len(captured_prompts) > 0, "run_claude was not called"
+        prompt = captured_prompts[0]
+        assert "<SCOPE>" not in prompt, "SCOPE block should not be injected when ALLOWED_FILES is None"
