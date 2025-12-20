@@ -33,7 +33,7 @@ _DIGIT = re.compile(r"\d+")
 # -----------------------------------------------------------------------------
 WORK_DIR_NAME = os.getenv("ZEN_WORK_DIR", ".zen")
 MODEL_BRAIN = os.getenv("ZEN_MODEL_BRAIN", "opus")
-MODEL_HANDS = os.getenv("ZEN_MODEL_HANDS", "sonnet")
+MODEL_HANDS = os.getenv("ZEN_MODEL_HANDS", "haiku")
 MODEL_EYES = os.getenv("ZEN_MODEL_EYES", "haiku")
 TIMEOUT_EXEC = int(os.getenv("ZEN_TIMEOUT", "600"))
 TIMEOUT_LINTER = int(os.getenv("ZEN_LINTER_TIMEOUT", "120"))
@@ -635,9 +635,31 @@ Your plans are precise, atomic, and efficient.
 - Combine related test categories into 1-2 test steps maximum
 - Do NOT create separate steps for: retry tests, validation tests, edge case tests
 - Group: "Create all unit tests for [component]" not "Create tests for X, then Y, then Z"
-- Target: 8-12 steps for typical features, never exceed 15 steps total
 - Use "targeted tests covering key behavior" not "comprehensive tests covering X, Y, Z"
 </consolidation>
+
+<EXAMPLES>
+BAD PLAN (10 steps, bloated):
+## Step 1: Add retry dependency
+## Step 2: Create config class
+## Step 3: Add retry decorator
+## Step 4: Add timeout handling
+## Step 5: Add rate limiting
+## Step 6: Add logging
+## Step 7: Create test file
+## Step 8: Add test for success
+## Step 9: Add test for timeout
+## Step 10: Add test for retry
+...
+
+GOOD PLAN (6 steps, efficient):
+## Step 1: Add dependencies and configuration
+## Step 2: Implement retry logic with timeout and rate limiting
+## Step 3: Add structured logging
+## Step 4: Add unit tests for core functionality
+## Step 5: Update requirements.txt
+## Step 6: Verify all tests pass
+</EXAMPLES>
 
 <output_format>
 Format (strict markdown, no preamble):
@@ -836,6 +858,12 @@ Full plan:
 - UPDATE callers immediately
 - No broken imports
 </rules>
+
+<RESTRICTIONS>
+1. TESTS: If writing tests, maximum 3 functions. Cover: happy path, one error, one edge.
+2. SCOPE: Do not implement "future proofing" or extra helper functions.
+3. CONCISENESS: If a standard library function exists, use it. Do not reinvent utils.
+</RESTRICTIONS>
 
 <output>
 End with: STEP_COMPLETE or STEP_BLOCKED: <reason>

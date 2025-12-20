@@ -2,6 +2,37 @@
 
 Changes organized by priority.
 
+## P1: High Priority
+
+
+### Problem 3: Agree with B (pre-flight)
+Machine-parseable `[YES/NO]` is good. Simpler format for regex:
+```
+PREFLIGHT: FILES=YES, TASK=YES
+```
+<PREFLIGHT>
+Verification required before coding:
+1. Do you have the source code for the files you need to edit? [YES/NO]
+2. Is the task clearly defined? [YES/NO]
+
+If NO to either, stop and output: STEP_BLOCKED: <reason>
+</PREFLIGHT>
+
+
+### Problem 4: Agree with B
+Zen already has `MAX_RETRIES` - just need pause logic.
+### Failure-triggered pause
+```python
+# After 2 consecutive retries on different steps, pause
+if consecutive_retries >= 2:
+    log("[CHECKPOINT] Multiple retries detected. Something may be wrong with plan.")
+```
+
+What to do when preflight fails.
+- Abort + log reason. User can `--retry` after fixing plan.
+
+---
+
 ## P2: Medium Priority (Cost & Quality)
 
 ### 2.2 Linter: Per-Line Disable Comments
