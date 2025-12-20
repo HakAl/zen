@@ -65,7 +65,7 @@ Since state is just files, you are always in control:
 ### **Price Transparency:** 
 Real-time cost auditing. You see exactly how many tokens were spent on planning vs. coding.
 
-> ```[COST] Total: $1.966 (scout=$0.063, plan=$0.003, implement=$1.540, verify=$0.099, judge=$0.222, summary=$0.039)```
+> ```[COST] Total: $0.71 (scout=$0.07, plan=$0.13, implement=$0.26, verify=$0.08, judge=$0.16, summary=$0.00)```
 <details>
 <summary>Click to see full execution log and cost breakdown</summary>
 
@@ -74,79 +74,50 @@ Real-time cost auditing. You see exactly how many tokens were spent on planning 
 Reset complete.
 
 [SCOUT] Mapping codebase for .\cleanup.md...
-  [COST] haiku scout: $0.0626 (52+1670=1722 tok)
+  [COST] haiku scout: $0.0712 (3461+2271=5732 tok)
   [SCOUT] Done.
 
 [PLAN] Creating execution plan...
-  [COST] opus plan: $0.0029 (0+0=0 tok)
-  [PLAN] Done.
+  [COST] opus plan: $0.1335 (731+846=1577 tok)
+  [PLAN] Warning: CONSOLIDATE: 3 test steps found. Combine into 1-2 steps.
+  [PLAN] Done. 4 steps.
   [BACKUP] workers\scraper.py
   [BACKUP] requirements.txt
+  [BACKUP] scripts\run_scraper.py
+  [BACKUP] test_urls.json
   [BACKUP] api\db\models.py
-  [BACKUP] api\db\repository.py
+  [BACKUP] api\v1\tests\conftest.py
   [BACKUP] api\v1\routes.py
+  [BACKUP] test_results.txt
 
-[IMPLEMENT] 12 steps to execute.
+[IMPLEMENT] 4 steps to execute.
 
-[STEP 1] Create workers/__init__.py to establish workers as a Python ...
-  [COST] sonnet implement: $0.0957 (40+1004=1044 tok)
+[STEP 1] Update requirements.txt with async, retry, and testing depen...
+  [COST] haiku implement: $0.0187 (12+483=495 tok)
   [COMPLETE] Step 1
 
-[STEP 2] Add httpx, tenacity, lxml, and pytest-httpx to requirements....
-  [COST] sonnet implement: $0.0473 (15+430=445 tok)
+[STEP 2] Rewrite workers/scraper.py with async support and robustness...
+  [COST] haiku implement: $0.0600 (28+3155=3183 tok)
   [COMPLETE] Step 2
 
-[STEP 3] Rewrite workers/scraper.py with ScraperConfig dataclass for ...
-  [COST] sonnet implement: $0.1141 (30+2296=2326 tok)
+[STEP 3] Create workers/tests directory and test_scraper.py with unit...
+  [COST] haiku implement: $0.0974 (92+5643=5735 tok)
   [COMPLETE] Step 3
 
-[STEP 4] Add exponential backoff retry logic using tenacity decorator...
-  [COST] sonnet implement: $0.1030 (27+1615=1642 tok)
+[STEP 4] Verify all tests pass and scraper integrates with run_scrape...
+  [COST] haiku implement: $0.0840 (757+2428=3185 tok)
   [COMPLETE] Step 4
 
-[STEP 5] Implement session-based HTTP client with httpx supporting co...
-  [COST] sonnet implement: $0.1045 (31+2256=2287 tok)
-  [COMPLETE] Step 5
-
-[STEP 6] Add custom exception classes for ScraperError, FetchError, a...
-  [COST] sonnet implement: $0.0556 (19+687=706 tok)
-  [COMPLETE] Step 6
-
-[STEP 7] Enhance parse_html method with lxml parser and extraction me...
-  [COST] sonnet implement: $0.2189 (50+4265=4315 tok)
-  [COMPLETE] Step 7
-
-[STEP 8] Add rate limiting with configurable delay between requests i...
-  [COST] sonnet implement: $0.1546 (45+2860=2905 tok)
-  [COMPLETE] Step 8
-
-[STEP 9] Create workers/tests/__init__.py for test package structure...
-  [COST] sonnet implement: $0.0570 (32+596=628 tok)
-  [COMPLETE] Step 9
-
-[STEP 10] Create workers/tests/conftest.py with pytest fixtures for mo...
-  [COST] sonnet implement: $0.1695 (37+3084=3121 tok)
-  [COMPLETE] Step 10
-
-[STEP 11] Create workers/tests/test_scraper.py with tests for successf...
-  [COST] sonnet implement: $0.1753 (16+6621=6637 tok)
-  [COMPLETE] Step 11
-
-[STEP 12] Verify changes by running pytest on workers/tests/test_scrap...
-  [COST] sonnet implement: $0.2447 (48+2927=2975 tok)
-  [COMPLETE] Step 12
-
 [VERIFY] Running tests...
-  [COST] sonnet verify: $0.0987 (40+1279=1319 tok)
+  [COST] haiku verify: $0.0824 (96+2049=2145 tok)
   [VERIFY] Passed.
-  [JUDGE] Required: Sensitive file (.scrappy/lancedb/code_chunks.lance/_indices/7e9eadae-cd58-457c-9031-7eeb51f022c4/part_6_tokens.lance)
 
 [JUDGE] Senior Architect review...
   [JUDGE] Review loop 1/2
-  [COST] opus judge: $0.2224 (6+811=817 tok)
+  [COST] opus judge: $0.1609 (2+647=649 tok)
   [JUDGE_APPROVED] Code passed architectural review.
-  [COST] haiku summary: $0.0389 (18+652=670 tok)
-  [COST] Total: $1.966 (scout=$0.063, plan=$0.003, implement=$1.540, verify=$0.099, judge=$0.222, summary=$0.039)
+  [COST] haiku summary: $0.0043 (1+124=125 tok)
+  [COST] Total: $0.713 (scout=$0.071, plan=$0.134, implement=$0.260, verify=$0.082, judge=$0.161, summary=$0.004)
 
 [SUCCESS]
 ```
@@ -209,13 +180,13 @@ Most users lose money with standard AI chats because they pay the **"Context Tax
 | **Context Awareness** | **Blind.** Guesses file paths and imports.                        | **Scout.** Maps dependency graph first.                     |
 | **User Experience** | **Frustrating.** User acts as the debugger and "copy-paste mule." | **Automated.** Agent writes, runs, and fixes its own tests. |
 | **Success Rate** | Low. Often results in "Code Rot."                                 | High. Changes are verified against real tests.              |
-| **True Cost** | **$1.75 + 2 hours** of your time debugging.                       | **~$2** (Flat fee for a finished result).                   |
+| **True Cost** | **$1.75 + 2 hours** of your time debugging.                       | **~$0.71** (Flat fee for a finished result).                |
 
 ### Example: The "Scraper Refactor"
-In the execution log above, Zen Mode performed a complex 12 step refactor on an existing scraper.
-*   **Total Cost:** `$2`
+In the execution log above, Zen Mode performed a 4-step refactor on an existing scraper.
+*   **Total Cost:** `$0.71`
 *   **Human Time:** `0 minutes`
-*   **Result:** It found the files, installed dependencies, wrote the code, **created new tests**, ran them, and self-corrected.
+*   **Result:** It found the files, installed dependencies, wrote the code, **created new tests**, ran them, and passed architectural review.
 
 > **For the non-coder:** Zen Mode acts like a Senior Engineer pairing with you. It doesn't just write code; it plans, verifies, and cleans up after itself, making software development accessible even if you don't know how to run a debugger.
 

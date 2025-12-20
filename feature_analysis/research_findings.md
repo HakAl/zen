@@ -496,6 +496,144 @@ Plus verbose code has downsides:
 
 ---
 
+## Prompt Engineering Experiments (Runs 12-13)
+
+### Problem: Haiku Code Bloat
+
+Prior runs showed Haiku writes ~10x more code than Sonnet (23k tokens for test files vs ~7k). This eliminates cost savings.
+
+**Root cause analysis:**
+- Haiku lacks constraint awareness - writes "comprehensive" code by default
+- No explicit limits on test functions, helper utilities, etc.
+- Writes 800-line test files with 40+ test functions
+
+---
+
+### Solution: RESTRICTIONS Block
+
+Added explicit constraints to the implement phase prompt:
+
+```xml
+<RESTRICTIONS>
+1. TESTS: If writing tests, maximum 3 functions. Cover: happy path, one error, one edge.
+2. SCOPE: Do not implement "future proofing" or extra helper functions.
+3. CONCISENESS: If a standard library function exists, use it. Do not reinvent utils.
+</RESTRICTIONS>
+```
+
+**Placement:** Between `<rules>` and `<output>` sections in implement prompt.
+
+**Run 12 Results (with RESTRICTIONS):**
+| Phase | Before | After | Change |
+|-------|--------|-------|--------|
+| Scout | $0.073 | $0.037 | -49% |
+| Plan | $0.145 | $0.232 | +60% (more analysis) |
+| Implement | $2.615 | $0.264 | **-90%** |
+| Verify | $0.265 | $0.289 | +9% |
+| Judge | $0.261 | $0.345 | +32% |
+| **Total** | **$3.51** | **$1.167** | **-67%** |
+
+**Key finding:** Implement phase dropped from $2.61 to $0.26 (10x reduction).
+
+---
+
+### Solution: Few-Shot Plan Examples
+
+Opus was producing 16-step plans despite consolidation guidance. Added concrete examples:
+
+```xml
+<EXAMPLES>
+BAD PLAN (10 steps, bloated):
+## Step 1: Add retry dependency
+## Step 2: Create config class
+## Step 3: Add retry decorator
+...10 separate micro-steps...
+
+GOOD PLAN (6 steps, efficient):
+## Step 1: Add dependencies and configuration
+## Step 2: Implement retry logic with timeout and rate limiting
+## Step 3: Add structured logging
+## Step 4: Add unit tests for core functionality
+## Step 5: Update requirements.txt
+## Step 6: Verify all tests pass
+</EXAMPLES>
+```
+
+**Run 13 Results (RESTRICTIONS + EXAMPLES):**
+| Phase | Run 12 | Run 13 | Change |
+|-------|--------|--------|--------|
+| Scout | $0.037 | $0.020 | -46% |
+| Plan | $0.232 | $0.099 | -57% |
+| Implement | $0.264 | $0.363 | +37% |
+| Verify | $0.289 | $0.111 | -62% |
+| Judge | $0.345 | $0.117 | -66% |
+| **Total** | **$1.167** | **$0.710** | **-39%** |
+
+**Plan step count:** 16 → 4 steps (75% reduction)
+
+---
+
+### Combined Results
+
+| Metric | Baseline (V1) | Run 12 | Run 13 | Total Improvement |
+|--------|---------------|--------|--------|-------------------|
+| Total Cost | $3.51 | $1.17 | $0.71 | **5x reduction** |
+| Steps | 16 | 5 | 4 | **75% fewer steps** |
+| Implement | $2.61 | $0.26 | $0.36 | **7-10x reduction** |
+
+**Opus now follows consolidation guidance** when given concrete examples. Few-shot > abstract rules.
+
+---
+
+### Superpowers Framework Comparison
+
+Analyzed the [superpowers](https://github.com/anthropics/superpowers) project for insights:
+
+| Aspect | Superpowers | Zen |
+|--------|-------------|-----|
+| Orchestration | AI self-manages | Python orchestrator |
+| Model control | None (inherits from Claude Code) | Explicit per-phase |
+| Execution | Interactive (human-in-loop) | Autonomous batch |
+| Skills | Prompt injection via hooks | Phase-specific prompts |
+| Paradigm | Guided conversation | State machine |
+
+**Key insight from superpowers:** Pre-flight sanity checks. Before coding, verify:
+1. Do you have source code for files to edit? [YES/NO]
+2. Is the task clearly defined? [YES/NO]
+
+If NO → stop and output `STEP_BLOCKED: <reason>`
+
+**Adopted in Zen:** Added to prompt_experiments.md as Problem 3. Prevents guessing when context is missing.
+
+---
+
+### Implemented Changes
+
+| Change | Location | Status |
+|--------|----------|--------|
+| RESTRICTIONS block | core.py lines 840-844, zen.py | Implemented |
+| Few-shot EXAMPLES | core.py PLAN prompt, zen.py | Implemented |
+| Pre-flight check | prompt_experiments.md | Designed, not yet implemented |
+| Failure-triggered pause | prompt_experiments.md | Designed, not yet implemented |
+
+---
+
+### Remaining TODOs (from prompt_experiments.md)
+
+1. **PREFLIGHT check** - Machine-parseable verification before coding
+   ```
+   PREFLIGHT: FILES=YES, TASK=YES
+   ```
+   If NO → `STEP_BLOCKED: <reason>`
+
+2. **Failure-triggered pause** - After 2 consecutive retries, checkpoint
+   ```python
+   if consecutive_retries >= 2:
+       log("[CHECKPOINT] Multiple retries detected. Plan may be wrong.")
+   ```
+
+---
+
 ## Next Steps
 
 1. ~~Add plan consolidation guidance to PLAN phase prompt~~ Done
@@ -503,5 +641,9 @@ Plus verbose code has downsides:
 3. ~~Haiku-first for test steps~~ Tested, reverted (verbosity issue)
 4. ~~Haiku-first for all steps~~ Tested, reverted (verbosity issue)
 5. ~~Sonnet for planning~~ Tested, reverted (worse plans)
-6. Test context pruning on next few runs
-7. Monitor cache hit rates after prompt restructuring
+6. ~~RESTRICTIONS block~~ **Done - 10x implement cost reduction**
+7. ~~Few-shot EXAMPLES~~ **Done - 75% step reduction**
+8. Implement PREFLIGHT check
+9. Implement failure-triggered pause
+10. Test context pruning on next few runs
+11. Monitor cache hit rates after prompt restructuring
