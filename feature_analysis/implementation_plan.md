@@ -4,6 +4,8 @@ Changes organized by priority.
 
 ## P1: High Priority
 
+stuck detection for swarm workers
+swarm backup dirs all share same file
 
 ### Problem 3: Agree with B (pre-flight)
 Machine-parseable `[YES/NO]` is good. Simpler format for regex:

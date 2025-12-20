@@ -69,6 +69,7 @@ JUDGE_FEEDBACK_FILE = WORK_DIR / "judge_feedback.md"
 DRY_RUN = False
 
 CLAUDE_EXE: Optional[str] = None
+ALLOWED_FILES: Optional[str] = None
 
 
 def _init_claude() -> str:
@@ -205,7 +206,7 @@ def run_claude(prompt: str, model: str, *, phase: str = "unknown", timeout: Opti
 
         data = _parse_json_response(stdout)
         if not isinstance(data, dict):
-            log(f"[WARN] Failed to parse JSON response, cost not tracked")
+            log("[WARN] Failed to parse JSON response, cost not tracked")
             return stdout  # Continue without cost data
 
         try:
@@ -258,7 +259,7 @@ def _write_cost_summary() -> None:
 
     # Append to final_notes.md
     with NOTES_FILE.open("a", encoding="utf-8") as f:
-        f.write(f"\n## Cost Summary\n")
+        f.write("\n## Cost Summary\n")
         f.write(f"Total: ${total:.3f}\n")
         f.write(f"Tokens: {total_in} in, {total_out} out, {total_cache} cache read\n")
         f.write(f"Breakdown: {breakdown}\n")
@@ -554,15 +555,11 @@ def should_skip_judge() -> bool:
 
 
 # -----------------------------------------------------------------------------
-# Phases
+# Shared Prompts
 # -----------------------------------------------------------------------------
-def phase_scout(task_file: str) -> None:
-    if SCOUT_FILE.exists():
-        log("[SCOUT] Cached. Skipping.")
-        return
-
-    log(f"\n[SCOUT] Mapping codebase for {task_file}...")
-    prompt = f"""<task>
+def build_scout_prompt(task_file: str, output_file: str) -> str:
+    """Build scout prompt for mapping codebase. Used by both core and swarm."""
+    return f"""<task>
 Scout codebase for: {task_file}
 </task>
 
@@ -583,7 +580,7 @@ Map code relevant to the task. Quality over quantity.
 </constraints>
 
 <output>
-Write to: {SCOUT_FILE}
+Write to: {output_file}
 
 Format (markdown, all 4 sections required, use "None" if empty):
 ## Targeted Files (Must Change)
@@ -598,6 +595,18 @@ Format (markdown, all 4 sections required, use "None" if empty):
 ## Open Questions
 - Question about ambiguity
 </output>"""
+
+
+# -----------------------------------------------------------------------------
+# Phases
+# -----------------------------------------------------------------------------
+def phase_scout(task_file: str) -> None:
+    if SCOUT_FILE.exists():
+        log("[SCOUT] Cached. Skipping.")
+        return
+
+    log(f"\n[SCOUT] Mapping codebase for {task_file}...")
+    prompt = build_scout_prompt(task_file, str(SCOUT_FILE))
 
     output = run_claude(prompt, model=MODEL_EYES, phase="scout")
     if not output:
@@ -681,12 +690,12 @@ Write output to: {PLAN_FILE}
 </context>"""
 
     output = run_claude(base_prompt, model=MODEL_BRAIN, phase="plan")
-    if not output:
-        log("[PLAN] Failed.")
-        sys.exit(1)
 
-    # Write plan if Claude didn't
+    # Write plan if Claude didn't use Write tool
     if not PLAN_FILE.exists():
+        if not output:
+            log("[PLAN] Failed.")
+            sys.exit(1)
         write_file(PLAN_FILE, output)
 
     # Validate efficiency (warn only, don't retry - Opus doesn't consolidate well)
@@ -860,7 +869,7 @@ Full plan:
 </rules>
 
 <RESTRICTIONS>
-1. TESTS: If writing tests, maximum 3 functions. Cover: happy path, one error, one edge.
+1. TESTS: If writing tests, maximum 3 functions. Cover: happy path, one error, one edge. Use temp directories for file I/O.
 2. SCOPE: Do not implement "future proofing" or extra helper functions.
 3. CONCISENESS: If a standard library function exists, use it. Do not reinvent utils.
 </RESTRICTIONS>
@@ -868,6 +877,17 @@ Full plan:
 <output>
 End with: STEP_COMPLETE or STEP_BLOCKED: <reason>
 </output>"""
+
+        # Inject SCOPE XML block if allowed_files is provided
+        if ALLOWED_FILES:
+            base_prompt += f"""
+
+<SCOPE>
+You MUST ONLY modify files matching this glob pattern:
+{ALLOWED_FILES}
+
+Do not create, modify, or delete any files outside this scope.
+</SCOPE>"""
 
         prompt = base_prompt
         last_error_summary = ""
@@ -1215,16 +1235,19 @@ End with: FIXES_COMPLETE or FIXES_BLOCKED: <reason>
 # -----------------------------------------------------------------------------
 # Public API
 # -----------------------------------------------------------------------------
-def run(task_file: str, flags: Optional[set] = None) -> None:
+def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str] = None, allowed_files: Optional[str] = None) -> None:
     """
     Run the Zen workflow on a task file.
 
     Args:
         task_file: Path to task markdown file
         flags: Set of flags (--reset, --retry, --dry-run)
+        scout_context: Optional path to pre-computed scout context file
+        allowed_files: Optional glob pattern for allowed files to modify
     """
-    global DRY_RUN, WORK_DIR, SCOUT_FILE, PLAN_FILE, LOG_FILE, NOTES_FILE, BACKUP_DIR, TEST_OUTPUT_FILE, JUDGE_FEEDBACK_FILE
+    global DRY_RUN, WORK_DIR, SCOUT_FILE, PLAN_FILE, LOG_FILE, NOTES_FILE, BACKUP_DIR, TEST_OUTPUT_FILE, JUDGE_FEEDBACK_FILE, ALLOWED_FILES
 
+    ALLOWED_FILES = allowed_files
     flags = flags or set()
 
     task_path = Path(task_file)
@@ -1254,7 +1277,7 @@ def run(task_file: str, flags: Optional[set] = None) -> None:
 
     if "--retry" in flags and LOG_FILE.exists():
         lines = read_file(LOG_FILE).splitlines()
-        cleaned = "\n".join(l for l in lines if "[COMPLETE] Step" not in l)
+        cleaned = "\n".join(line for line in lines if "[COMPLETE] Step" not in line)
         write_file(LOG_FILE, cleaned)
         print("Cleared completion markers.")
 
@@ -1265,7 +1288,17 @@ def run(task_file: str, flags: Optional[set] = None) -> None:
     skip_judge = "--skip-judge" in flags
 
     try:
-        phase_scout(task_file)
+        # If scout_context provided, copy it to SCOUT_FILE instead of running phase_scout
+        if scout_context:
+            scout_path = Path(scout_context)
+            if not scout_path.exists():
+                print(f"ERROR: Scout context file not found: {scout_context}")
+                sys.exit(1)
+            WORK_DIR.mkdir(exist_ok=True)
+            shutil.copy(str(scout_path), str(SCOUT_FILE))
+            log(f"[SCOUT] Using provided context: {scout_context}")
+        else:
+            phase_scout(task_file)
         phase_plan(task_file)
         phase_implement()
         if not phase_verify():

@@ -12,11 +12,14 @@ USAGE:
   python zen.py <TASK_FILE> [flags]
 
 FLAGS:
-  --reset     Reset work directory and start fresh
-  --retry     Clear completion markers to retry failed steps
-  --dry-run   Show what would happen without executing
+  --reset           Reset work directory and start fresh
+  --retry           Clear completion markers to retry failed steps
+  --dry-run         Show what would happen without executing
+  --skip-judge      Skip judge phase
+  --scout-context   Path to pre-computed scout context file
 """
 from __future__ import annotations
+import argparse
 import hashlib
 import json
 import os
@@ -78,6 +81,7 @@ TEST_OUTPUT_PATH = WORK_DIR_STR + "/test_output.txt"  # For prompts (forward sla
 JUDGE_FEEDBACK_FILE = WORK_DIR / "judge_feedback.md"
 
 DRY_RUN = False
+ALLOWED_FILES: Optional[str] = None
 
 CLAUDE_EXE = shutil.which("claude") or os.getenv("CLAUDE_EXE")
 if not CLAUDE_EXE:
@@ -259,7 +263,7 @@ def _write_cost_summary() -> None:
 
     # Append to final_notes.md
     with NOTES_FILE.open("a", encoding="utf-8") as f:
-        f.write(f"\n## Cost Summary\n")
+        f.write("\n## Cost Summary\n")
         f.write(f"Total: ${total:.3f}\n")
         f.write(f"Tokens: {total_in} in, {total_out} out, {total_cache} cache read\n")
         f.write(f"Breakdown: {breakdown}\n")
@@ -648,7 +652,6 @@ Your plans are precise, atomic, and efficient.
 - Combine related test categories into 1-2 test steps maximum
 - Do NOT create separate steps for: retry tests, validation tests, edge case tests
 - Group: "Create all unit tests for [component]" not "Create tests for X, then Y, then Z"
-- Target: 8-12 steps for typical features, never exceed 15 steps total
 - Use "targeted tests covering key behavior" not "comprehensive tests covering X, Y, Z"
 </consolidation>
 
@@ -695,12 +698,12 @@ Write output to: {PLAN_FILE}
 </context>"""
 
     output = run_claude(base_prompt, model=MODEL_BRAIN, phase="plan")
-    if not output:
-        log("[PLAN] Failed.")
-        sys.exit(1)
 
-    # Write plan if Claude didn't
+    # Write plan if Claude didn't use Write tool
     if not PLAN_FILE.exists():
+        if not output:
+            log("[PLAN] Failed.")
+            sys.exit(1)
         write_file(PLAN_FILE, output)
 
     # Validate efficiency (warn only, don't retry - Opus doesn't consolidate well)
@@ -872,7 +875,7 @@ Full plan:
 </rules>
 
 <RESTRICTIONS>
-1. TESTS: If writing tests, maximum 3 functions. Cover: happy path, one error, one edge.
+1. TESTS: If writing tests, maximum 3 functions. Cover: happy path, one error, one edge. Use temp directories for file I/O.
 2. SCOPE: Do not implement "future proofing" or extra helper functions.
 3. CONCISENESS: If a standard library function exists, use it. Do not reinvent utils.
 </RESTRICTIONS>
@@ -880,6 +883,17 @@ Full plan:
 <output>
 End with: STEP_COMPLETE or STEP_BLOCKED: <reason>
 </output>"""
+
+        # Inject SCOPE XML block if allowed_files is provided
+        if ALLOWED_FILES:
+            base_prompt += f"""
+
+<SCOPE>
+You MUST ONLY modify files matching this glob pattern:
+{ALLOWED_FILES}
+
+Do not create, modify, or delete any files outside this scope.
+</SCOPE>"""
 
         prompt = base_prompt
         last_error_summary = ""
@@ -1228,13 +1242,20 @@ End with: FIXES_COMPLETE or FIXES_BLOCKED: <reason>
 # Main
 # -----------------------------------------------------------------------------
 def main():
-    global DRY_RUN, WORK_DIR, SCOUT_FILE, PLAN_FILE, LOG_FILE, NOTES_FILE, BACKUP_DIR, TEST_OUTPUT_FILE, JUDGE_FEEDBACK_FILE
+    global DRY_RUN, WORK_DIR, SCOUT_FILE, PLAN_FILE, LOG_FILE, NOTES_FILE, BACKUP_DIR, TEST_OUTPUT_FILE, JUDGE_FEEDBACK_FILE, ALLOWED_FILES
 
-    if len(sys.argv) < 2:
-        print(__doc__)
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Zen Mode workflow")
+    parser.add_argument("task_file", help="Path to task markdown file")
+    parser.add_argument("--reset", action="store_true", help="Reset work directory and start fresh")
+    parser.add_argument("--retry", action="store_true", help="Clear completion markers to retry failed steps")
+    parser.add_argument("--dry-run", action="store_true", help="Show what would happen without executing")
+    parser.add_argument("--skip-judge", action="store_true", help="Skip judge phase")
+    parser.add_argument("--scout-context", type=str, help="Path to pre-computed scout context file")
+    parser.add_argument("--allowed-files", type=str, help="Glob pattern for allowed files to modify")
 
-    task_file = sys.argv[1]
+    args = parser.parse_args()
+
+    task_file = args.task_file
     task_path = Path(task_file)
 
     # Security: Validate task file is within project root (prevent path traversal)
@@ -1246,8 +1267,6 @@ def main():
     if not task_path.exists():
         print(f"ERROR: Task file not found: {task_file}")
         sys.exit(1)
-
-    flags = set(sys.argv[2:])
 
     # Set up paths first (before any flag handling that uses them)
     WORK_DIR = PROJECT_ROOT / WORK_DIR_STR
@@ -1262,7 +1281,7 @@ def main():
     # Handle legacy work dir (without PID suffix) for --reset
     legacy_work_dir = PROJECT_ROOT / WORK_DIR_NAME
 
-    if "--reset" in flags:
+    if args.reset:
         # Clean up only this instance's work directory
         if legacy_work_dir.exists():
             shutil.rmtree(legacy_work_dir)
@@ -1271,20 +1290,32 @@ def main():
         print("Reset complete.")
         WORK_DIR.mkdir(exist_ok=True)
 
-    if "--retry" in flags and LOG_FILE.exists():
+    if args.retry and LOG_FILE.exists():
         lines = read_file(LOG_FILE).splitlines()
-        cleaned = "\n".join(l for l in lines if "[COMPLETE] Step" not in l)
+        cleaned = "\n".join(line for line in lines if "[COMPLETE] Step" not in line)
         write_file(LOG_FILE, cleaned)
         print("Cleared completion markers.")
 
-    if "--dry-run" in flags:
+    if args.dry_run:
         DRY_RUN = True
         print("Dry-run mode enabled.")
 
-    skip_judge = "--skip-judge" in flags
+    skip_judge = args.skip_judge
+    scout_context = args.scout_context
+    ALLOWED_FILES = args.allowed_files
 
     try:
-        phase_scout(task_file)
+        # If scout_context provided, copy it to SCOUT_FILE instead of running phase_scout
+        if scout_context:
+            scout_path = Path(scout_context)
+            if not scout_path.exists():
+                print(f"ERROR: Scout context file not found: {scout_context}")
+                sys.exit(1)
+            WORK_DIR.mkdir(exist_ok=True)
+            shutil.copy(str(scout_path), str(SCOUT_FILE))
+            log(f"[SCOUT] Using provided context: {scout_context}")
+        else:
+            phase_scout(task_file)
         phase_plan(task_file)
         phase_implement()
         if not phase_verify():

@@ -2,7 +2,6 @@
 Zen Mode CLI - argparse-based command line interface.
 """
 import argparse
-import os
 import sys
 from pathlib import Path
 
@@ -31,7 +30,7 @@ def cmd_init(args):
         except Exception as e:
             print(f"Warning: Could not copy default CLAUDE.md: {e}")
     else:
-        print(f"CLAUDE.md already exists, skipping.")
+        print("CLAUDE.md already exists, skipping.")
 
     print(f"Initialized {zen_dir}")
     print("Run 'zen <task.md>' to start.")
@@ -55,6 +54,12 @@ def cmd_run(args):
             cmd.append("--dry-run")
         if args.skip_judge:
             cmd.append("--skip-judge")
+        if args.scout_context:
+            cmd.append("--scout-context")
+            cmd.append(args.scout_context)
+        if args.allowed_files:
+            cmd.append("--allowed-files")
+            cmd.append(args.allowed_files)
         sys.exit(subprocess.call(cmd))
 
     # Use package core
@@ -70,7 +75,49 @@ def cmd_run(args):
     if args.skip_judge:
         flags.add("--skip-judge")
 
-    core.run(task_file, flags)
+    core.run(task_file, flags, scout_context=args.scout_context, allowed_files=args.allowed_files)
+
+
+def cmd_swarm(args):
+    """Execute multiple tasks in parallel with conflict detection."""
+    from . import swarm
+
+    if not args.tasks:
+        print("Error: At least one task file required")
+        sys.exit(1)
+
+    # Validate task files
+    for task_file in args.tasks:
+        task_path = Path(task_file)
+        if not task_path.exists():
+            print(f"Error: Task file not found: {task_file}")
+            sys.exit(1)
+
+    # Build config with validation
+    try:
+        config = swarm.SwarmConfig(
+            tasks=args.tasks,
+            workers=args.workers,
+            dry_run=args.dry_run,
+            project_root=Path.cwd()
+        )
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+    # Execute
+    dispatcher = swarm.SwarmDispatcher(config)
+    try:
+        summary = dispatcher.execute()
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+    # Print report
+    print(summary.pass_fail_report())
+
+    # Exit with failure if any tasks failed
+    sys.exit(0 if summary.failed == 0 else 1)
 
 
 def cmd_eject(args):
@@ -188,6 +235,15 @@ def main():
                 pass
             cmd_eject(Args())
             return
+        elif cmd == "swarm":
+            # zen swarm <task1.md> [task2.md ...] [--workers N] [--dry-run]
+            parser = argparse.ArgumentParser(prog="zen swarm")
+            parser.add_argument("tasks", nargs="+", help="Task files to execute in parallel")
+            parser.add_argument("--workers", type=int, default=2, help="Number of parallel workers (default: 2)")
+            parser.add_argument("--dry-run", action="store_true", help="Show what would happen without executing")
+            args = parser.parse_args(sys.argv[2:])
+            cmd_swarm(args)
+            return
         elif cmd in ("--help", "-h"):
             pass  # Let argparse handle it
         elif cmd in ("--version", "-V"):
@@ -201,6 +257,8 @@ def main():
             parser.add_argument("--retry", action="store_true", help="Clear completion markers")
             parser.add_argument("--dry-run", action="store_true", help="Show what would happen")
             parser.add_argument("--skip-judge", action="store_true", help="Skip Judge phase review")
+            parser.add_argument("--scout-context", type=str, default=None, help="Path to pre-computed scout context file")
+            parser.add_argument("--allowed-files", type=str, default=None, help="Glob pattern for allowed files to modify")
             args = parser.parse_args(sys.argv[1:])
             cmd_run(args)
             return
@@ -209,21 +267,24 @@ def main():
     print(f"""zen-mode {__version__} - Minimalist Autonomous Agent Runner
 
 Usage:
-  zen init              Initialize .zen/ directory
-  zen <task.md>         Run the 4-phase workflow
-  zen eject             Copy scripts to local directory
+  zen init                    Initialize .zen/ directory
+  zen <task.md>               Run the 4-phase workflow
+  zen swarm <task1.md> ...    Execute multiple tasks in parallel
+  zen eject                   Copy scripts to local directory
 
 Options:
-  --reset               Reset work directory and start fresh
-  --retry               Clear completion markers to retry failed steps
-  --dry-run             Show what would happen without executing
-  --skip-judge          Skip Judge phase review (Opus architectural review)
+  --reset                     Reset work directory and start fresh
+  --retry                     Clear completion markers to retry failed steps
+  --dry-run                   Show what would happen without executing
+  --skip-judge                Skip Judge phase review (Opus architectural review)
+  --workers N                 Number of parallel workers for swarm (default: 2)
 
 Examples:
   zen init
   zen task.md
   zen task.md --reset
   zen task.md --skip-judge
+  zen swarm task1.md task2.md --workers 4
   zen eject
 """)
 
