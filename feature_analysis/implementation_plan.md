@@ -4,6 +4,10 @@ Changes organized by priority.
 
 ## P1: High Priority
 
+---
+Complexity heuristics for swarm tasks: Simple tasks (add comment, rename) cost $1 because zen runs full lifecycle (scout→plan→implement→verify). Need heuristics to detect trivial tasks and skip/simplify phases. E.g., skip verify for comment-only changes, reduce planning for single-file edits.
+---
+---
 Detect task completion at beginning of zen run from previous zen run
 ---
 ---

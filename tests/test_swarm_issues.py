@@ -786,6 +786,82 @@ class TestSwarmSummaryReport:
 # ============================================================================
 # Allowed Files Handling
 # ============================================================================
+class TestModifiedFilesFiltering:
+    """Tests for _get_modified_files filtering zen internal files."""
+
+    def test_excludes_log_md(self, tmp_path):
+        """log.md should not be reported as modified."""
+        work_dir = tmp_path / ".zen_test"
+        work_dir.mkdir()
+        (work_dir / "log.md").write_text("log content")
+        (work_dir / "real_file.py").write_text("code")
+
+        modified = _get_modified_files(work_dir)
+        normalized = [p.replace(os.sep, "/") for p in modified]
+
+        assert "real_file.py" in normalized
+        assert "log.md" not in normalized
+
+    def test_excludes_plan_md(self, tmp_path):
+        """plan.md should not be reported as modified."""
+        work_dir = tmp_path / ".zen_test"
+        work_dir.mkdir()
+        (work_dir / "plan.md").write_text("plan content")
+        (work_dir / "src").mkdir()
+        (work_dir / "src" / "app.py").write_text("code")
+
+        modified = _get_modified_files(work_dir)
+        normalized = [p.replace(os.sep, "/") for p in modified]
+
+        assert "src/app.py" in normalized
+        assert "plan.md" not in normalized
+
+    def test_excludes_scout_md(self, tmp_path):
+        """scout.md should not be reported as modified."""
+        work_dir = tmp_path / ".zen_test"
+        work_dir.mkdir()
+        (work_dir / "scout.md").write_text("scout content")
+
+        modified = _get_modified_files(work_dir)
+        assert "scout.md" not in modified
+
+    def test_excludes_backup_directory(self, tmp_path):
+        """backup/ directory contents should not be reported as modified."""
+        work_dir = tmp_path / ".zen_test"
+        work_dir.mkdir()
+        (work_dir / "backup").mkdir()
+        (work_dir / "backup" / "old_file.py").write_text("backup")
+        (work_dir / "new_file.py").write_text("new code")
+
+        modified = _get_modified_files(work_dir)
+        normalized = [p.replace(os.sep, "/") for p in modified]
+
+        assert "new_file.py" in normalized
+        assert "backup/old_file.py" not in normalized
+        assert not any("backup" in p for p in normalized)
+
+    def test_excludes_test_output_txt(self, tmp_path):
+        """test_output.txt should not be reported as modified."""
+        work_dir = tmp_path / ".zen_test"
+        work_dir.mkdir()
+        (work_dir / "test_output.txt").write_text("test results")
+        (work_dir / "test_output_1.txt").write_text("more results")
+
+        modified = _get_modified_files(work_dir)
+
+        assert "test_output.txt" not in modified
+        assert "test_output_1.txt" not in modified
+
+    def test_excludes_final_notes_md(self, tmp_path):
+        """final_notes.md should not be reported as modified."""
+        work_dir = tmp_path / ".zen_test"
+        work_dir.mkdir()
+        (work_dir / "final_notes.md").write_text("notes")
+
+        modified = _get_modified_files(work_dir)
+        assert "final_notes.md" not in modified
+
+
 class TestAllowedFilesHandling:
     """Tests for --allowed-files argument construction."""
 
