@@ -206,34 +206,18 @@ TARGETS: src/zen_mode/swarm.py
 
 ---
 
-## Phase 3: News Ticker UI (~$0.75 estimate)
+## Phase 3: News Ticker UI ✓ DONE
 
 **Problem:** Parallel logs are chaotic.
 
 **Solution:** Single-line status updates with carriage return.
 
-**Task file:** `tasks/news_ticker.md`
-```markdown
-TARGETS: src/zen_mode/swarm.py
-
-# News Ticker UI for Swarm
-
-## Requirements
-1. Replace scattered print statements with status line:
-   ```
-   [SWARM] 3/5 tasks | Active: 2 | Cost: $0.45 | auth: Step 3/6, db: Step 1/4
-   ```
-
-2. Use `\r` carriage return to update in place
-
-3. On completion, print full summary (existing pass_fail_report)
-
-4. Add `--verbose` flag for traditional streaming logs
-
-## Out of Scope
-- Curses/rich library dependencies
-- Interactive controls
-```
+**Implemented (manual, $0.00):**
+- `parse_worker_log()` - Extract phase, step, cost from worker logs
+- `format_status_line()` - Format ticker: `[SWARM] 2/3 done | Active: 1 | $1.45 | abc: 3/5`
+- Background monitoring thread polls logs every 5 seconds
+- `\r` carriage return for in-place updates on TTY
+- `--verbose` flag for full streaming logs
 
 ---
 
@@ -248,10 +232,10 @@ $1.47 actual cost. Implemented via `--allowed-files` flag and `<SCOPE>` prompt i
 **Completed:**
 1. ✓ **Shared Scout** - Done
 2. ✓ **Agent Scope** - Done
+3. ✓ **News Ticker** - Done (manual implementation)
 
 **Remaining:**
-3. **Git Worktrees** - Bigger change, needs more testing (defer until needed)
-4. **News Ticker** - Polish, lowest priority
+4. **Git Worktrees** - Bigger change, needs more testing (defer until needed)
 5. **Tech Debt Fixes** - Address Known Issues above
 
 ---
@@ -426,6 +410,108 @@ Workers completed 17 of 18 steps. Timeout hit during VERIFY/test phase.
 - **Output:** 22+ files created/modified, production-ready
 - **Speed:** ~10 min wall clock for 3 parallel tasks
 - **Issue:** Timeout during verify phase, not implementation
+
+---
+
+### Test Run 2: 3 Feature Tasks
+
+**Date:** 2024-12-21
+
+**Tasks:** Small feature additions targeting different parts of the codebase
+
+```bash
+zen swarm .zen/tasks/task1_article_stats.md .zen/tasks/task2_loading_states.md .zen/tasks/task3_worker_logging.md --workers 3
+```
+
+### Worker Analysis
+
+**Worker 75740e7c - Article Stats API (Java)**
+| Phase | Cost | Tokens | Duration |
+|-------|------|--------|----------|
+| Plan (opus) | $0.29 | 1,042 | 44s |
+| Step 1: ArticleStatsResponse DTO | $0.07 | 816 | 22s |
+| Step 2: StatsService | $0.08 | 2,605 | 47s |
+| Step 3: StatsController | $0.06 | 1,369 | 51s |
+| Step 4: StatsControllerTest | $0.22 | 8,497 | 217s |
+| Step 5: Run tests | $0.07 | 1,067 | 41s |
+| **Total** | **$0.79** | 15,396 | ~7 min |
+| Status | ✓ All 5 steps complete, timed out on VERIFY |
+
+**Worker 57d32fea - Loading States (Frontend)**
+| Phase | Cost | Tokens | Duration |
+|-------|------|--------|----------|
+| Plan (opus) | $0.36 | 1,989 | 60s |
+| Step 1: CSS spinner/skeleton | $0.03 | 1,234 | 18s |
+| Step 2: showLoading/hideLoading utils | $0.02 | 690 | 14s |
+| Step 3: Update dashboard.js | $0.05 | 1,181 | 24s |
+| Step 4: Browser verification | $0.32 | 10,088 | 214s |
+| **Total** | **$0.78** | 15,182 | ~5.5 min |
+| Status | ✓ All 4 steps complete, timed out on VERIFY |
+
+**Worker 49029815 - Structured Logging (Python)**
+| Phase | Cost | Tokens | Duration |
+|-------|------|--------|----------|
+| Plan (opus) | $0.17 | 660 | 34s |
+| Step 1: Add python-json-logger | $0.02 | 405 | 12s |
+| Step 2: Create logger.py | $0.04 | 1,583 | 28s |
+| Step 3: Update main.py | $0.10 | 2,273 | 36s |
+| Step 4: Verify logger | $0.31 | 13,672 | 203s |
+| **Total** | **$0.64** | 18,593 | ~5 min |
+| Status | ✓ All 4 steps complete, timed out on VERIFY |
+
+### Cost Summary
+
+| Component | Cost |
+|-----------|------|
+| Shared Scout (haiku) | ~$0.10 |
+| Worker: Article Stats | $0.79 |
+| Worker: Loading States | $0.78 |
+| Worker: Structured Logging | $0.64 |
+| **Total** | **~$2.31** |
+
+### Timeline Analysis
+
+```
+06:06:49  All 3 workers start (shared scout done)
+06:07:23  Worker 49029815 plan done (34s) - fastest
+06:07:33  Worker 75740e7c plan done (44s)
+06:07:49  Worker 57d32fea plan done (60s) - slowest
+06:12:03  Worker 49029815 all steps complete (enters VERIFY)
+06:12:20  Worker 57d32fea all steps complete (enters VERIFY)
+06:13:53  Worker 75740e7c all steps complete (enters VERIFY)
+06:14:03  Worker 49029815 VERIFY timeout (120s)
+06:14:20  Worker 57d32fea VERIFY timeout (120s)
+06:15:53  Worker 75740e7c VERIFY timeout (120s)
+```
+
+**Key observation:** All 3 workers completed IMPLEMENT in 5-7 minutes, then timed out 120s into VERIFY.
+
+### Critical Finding: Swarm Fails at VERIFY
+
+All 6 workers across 2 test runs show the same pattern:
+1. ✓ SCOUT phase completes
+2. ✓ PLAN phase completes
+3. ✓ IMPLEMENT phase completes (all steps)
+4. ✗ Times out during VERIFY phase
+
+**Fact:** Zen works fine when run directly. The problem only occurs through swarm.
+
+**Unknown:** Root cause not yet identified.
+
+### Attempted Fixes
+
+| Fix | File | Result |
+|-----|------|--------|
+| stdin isolation | swarm.py | Not yet tested |
+| Debug logging | core.py | Not yet tested |
+| News ticker | swarm.py | UX improvement, not a fix |
+| --verbose flag | cli.py | UX improvement, not a fix |
+
+### Outcome
+
+**Implementation works.** All 13 steps across 3 workers completed successfully.
+
+**Problem unsolved.** Need to run swarm again with fixes to see if they help.
 
 ---
 

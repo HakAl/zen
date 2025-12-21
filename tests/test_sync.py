@@ -31,6 +31,7 @@ SYNCED_FUNCTIONS = [
     "_is_test_or_doc",
     # Test output parsing
     "verify_test_output",
+    "detect_no_tests",
     "extract_failure_count",
     "parse_test_output",
     # File utilities
@@ -41,6 +42,7 @@ SYNCED_FUNCTIONS = [
     # Plan parsing
     "parse_steps",
     "get_completed_steps",
+    "build_scout_prompt",
     # Cost tracking
     "_extract_cost",
     "_parse_json_response",
@@ -73,6 +75,7 @@ SYNCED_CONFIG = [
     "MODEL_HANDS",
     "MODEL_EYES",
     "TIMEOUT_EXEC",
+    "TIMEOUT_VERIFY",
     "TIMEOUT_LINTER",
     "TIMEOUT_SUMMARY",
     "MAX_RETRIES",

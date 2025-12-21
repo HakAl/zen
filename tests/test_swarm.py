@@ -46,7 +46,7 @@ class TestSwarmDispatcher:
 
         with patch("zen_mode.swarm.ProcessPoolExecutor") as mock_executor_class:
             mock_executor = Mock()
-            mock_executor_class.return_value.__enter__.return_value = mock_executor
+            mock_executor_class.return_value = mock_executor
 
             # Simulate futures completing
             futures = {Mock(): task for task in ["task1.md", "task2.md"]}
@@ -459,7 +459,7 @@ class TestSwarmDispatcherPreflight:
 
         with patch("zen_mode.swarm.ProcessPoolExecutor") as mock_executor_class:
             mock_executor = Mock()
-            mock_executor_class.return_value.__enter__.return_value = mock_executor
+            mock_executor_class.return_value = mock_executor
 
             # Create mock futures
             mock_futures = [Mock(), Mock()]
@@ -566,7 +566,7 @@ class TestScoutContext:
 
             with patch("zen_mode.swarm.ProcessPoolExecutor") as mock_executor_class:
                 mock_executor = Mock()
-                mock_executor_class.return_value.__enter__.return_value = mock_executor
+                mock_executor_class.return_value = mock_executor
 
                 # Create mock futures
                 mock_futures = [Mock(), Mock()]
@@ -640,7 +640,7 @@ class TestKnownIssues:
 
         with patch("zen_mode.swarm.ProcessPoolExecutor") as mock_executor_class:
             mock_executor = Mock()
-            mock_executor_class.return_value.__enter__.return_value = mock_executor
+            mock_executor_class.return_value = mock_executor
 
             # Simulate worker raising exception
             mock_future = Mock()
@@ -655,3 +655,102 @@ class TestKnownIssues:
                 assert summary.failed == 1, "Should handle worker exception gracefully"
                 assert summary.succeeded == 0
                 assert "Worker exploded" in summary.task_results[0].stderr
+
+
+class TestStatusMonitorSync:
+    """Tests for status monitor thread synchronization with main thread."""
+
+    def test_completed_tasks_not_shown_in_status(self):
+        """Completed tasks should be removed from status display."""
+        from zen_mode.swarm import format_status_block
+
+        # Simulate 3 tasks: 1 completed (not in list), 2 active
+        worker_statuses = [
+            (2, "step", 3, 5),   # Task 2: step 3/5
+            (3, "verify", 0, 0),  # Task 3: verify
+            # Task 1 is completed, not in list
+        ]
+
+        lines = format_status_block(
+            completed=1,
+            total=3,
+            active=2,
+            total_cost=1.50,
+            worker_statuses=worker_statuses
+        )
+
+        # Should show only active tasks
+        output = "\n".join(lines)
+        assert "Task 1" not in output, "Completed task should not appear"
+        assert "Task 2: 3/5" in output
+        assert "Task 3: verify" in output
+        assert "1/3 done" in output
+
+    def test_parse_worker_log_phases(self):
+        """Test log parsing detects different phases."""
+        from zen_mode.swarm import parse_worker_log
+        import tempfile
+        import os
+
+        # Create temp file in current directory to avoid Windows permission issues
+        fd, log_path = tempfile.mkstemp(suffix=".md", dir=".")
+        try:
+            log_file = Path(log_path)
+
+            # Test plan phase
+            log_file.write_text("[PLAN] Done. 5 steps.\n")
+            phase, current, total, cost = parse_worker_log(log_file)
+            assert phase == "plan"
+            assert total == 5
+
+            # Test step phase
+            log_file.write_text("[PLAN] Done. 3 steps.\n[STEP 2] Doing something\n")
+            phase, current, total, cost = parse_worker_log(log_file)
+            assert phase == "step"
+            assert current == 2
+            assert total == 3
+
+            # Test verify phase
+            log_file.write_text("[PLAN] Done. 3 steps.\n[VERIFY] Running tests\n")
+            phase, current, total, cost = parse_worker_log(log_file)
+            assert phase == "verify"
+
+            # Test error phase
+            log_file.write_text("[ERROR] Something went wrong\n")
+            phase, current, total, cost = parse_worker_log(log_file)
+            assert phase == "error"
+        finally:
+            os.close(fd)
+            os.unlink(log_path)
+
+    def test_shared_state_thread_safety(self):
+        """Test that completed_tasks dict is properly synchronized."""
+        import threading
+
+        # Simulate the shared state pattern from execute()
+        completed_tasks = {}
+        completed_lock = threading.Lock()
+
+        def mark_complete(work_dir):
+            with completed_lock:
+                completed_tasks[work_dir] = True
+
+        def read_completed():
+            with completed_lock:
+                return set(completed_tasks.keys())
+
+        # Simulate concurrent updates
+        threads = []
+        for i in range(10):
+            t = threading.Thread(target=mark_complete, args=(f"worker_{i}",))
+            threads.append(t)
+            t.start()
+
+        for t in threads:
+            t.join()
+
+        # All should be marked
+        completed = read_completed()
+        assert len(completed) == 10
+        for i in range(10):
+            assert f"worker_{i}" in completed

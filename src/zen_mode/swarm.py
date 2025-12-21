@@ -7,14 +7,148 @@ import os
 import re
 import shutil
 import subprocess
+import sys
+import threading
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 from uuid import uuid4
 
 # Configuration (mirrors core.py)
 TIMEOUT_WORKER = int(os.getenv("ZEN_TIMEOUT", "600"))
+STATUS_UPDATE_INTERVAL = 5  # seconds between status line updates
+
+
+# ============================================================================
+# News Ticker: Log Parsing and Status Display
+# ============================================================================
+def parse_worker_log(log_path: Path) -> Tuple[str, int, int, float]:
+    """
+    Parse worker log file to extract current status.
+
+    Args:
+        log_path: Path to worker's log.md file
+
+    Returns:
+        Tuple of (phase, current_step, total_steps, cost)
+        phase: "scout", "plan", "step", "verify", "done", "error"
+    """
+    if not log_path.exists():
+        return ("starting", 0, 0, 0.0)
+
+    try:
+        content = log_path.read_text(encoding="utf-8", errors="replace")
+    except (IOError, OSError):
+        return ("starting", 0, 0, 0.0)
+
+    phase = "starting"
+    current_step = 0
+    total_steps = 0
+    cost = 0.0
+
+    # Parse total steps from [PLAN] Done. N steps.
+    plan_match = re.search(r"\[PLAN\] Done\. (\d+) steps?\.", content)
+    if plan_match:
+        total_steps = int(plan_match.group(1))
+        phase = "plan"
+
+    # Parse current step from [STEP N] or [COMPLETE] Step N
+    step_matches = re.findall(r"\[STEP (\d+)\]", content)
+    if step_matches:
+        current_step = int(step_matches[-1])  # Last step mentioned
+        phase = "step"
+
+    complete_matches = re.findall(r"\[COMPLETE\] Step (\d+)", content)
+    if complete_matches:
+        current_step = int(complete_matches[-1])
+
+    # Check for verify phase
+    if "[VERIFY]" in content:
+        phase = "verify"
+
+    # Check for errors
+    if "[ERROR]" in content:
+        phase = "error"
+
+    # Sum up all costs
+    cost_matches = re.findall(r"\[COST\].*?\$(\d+\.?\d*)", content)
+    for c in cost_matches:
+        try:
+            cost += float(c)
+        except ValueError:
+            pass
+
+    return (phase, current_step, total_steps, cost)
+
+
+def format_status_block(
+    completed: int,
+    total: int,
+    active: int,
+    total_cost: float,
+    worker_statuses: List[Tuple[int, str, int, int]]
+) -> List[str]:
+    """
+    Format the news ticker as multiple lines.
+
+    Args:
+        completed: Number of completed tasks
+        total: Total number of tasks
+        active: Number of currently active workers
+        total_cost: Aggregated cost so far
+        worker_statuses: List of (task_num, phase, current_step, total_steps)
+
+    Returns:
+        List of lines to display
+    """
+    lines = []
+
+    # Task status lines
+    for task_num, phase, current, total_steps in worker_statuses:
+        if phase == "step" and total_steps > 0:
+            lines.append(f"  Task {task_num}: {current}/{total_steps}")
+        elif phase == "verify":
+            lines.append(f"  Task {task_num}: verify")
+        elif phase == "error":
+            lines.append(f"  Task {task_num}: ERROR")  # Show errors, don't hide
+        elif phase == "done":
+            pass  # Don't show completed (they're removed from list anyway)
+        elif phase == "starting":
+            lines.append(f"  Task {task_num}: starting")
+        else:
+            lines.append(f"  Task {task_num}: {phase}")
+
+    # Summary line
+    lines.append(f"[SWARM] {completed}/{total} done | Active: {active} | ${total_cost:.2f}")
+
+    return lines
+
+
+# Track previous line count for clearing
+_prev_line_count = 0
+
+
+def print_status_block(lines: List[str], is_tty: bool = True):
+    """Print status block, clearing previous output."""
+    global _prev_line_count
+
+    if is_tty:
+        # Move up and clear previous lines
+        if _prev_line_count > 0:
+            sys.stdout.write(f"\033[{_prev_line_count}A")
+
+        # Print new lines
+        for line in lines:
+            sys.stdout.write(f"\r{line}\033[K\n")
+        sys.stdout.flush()
+
+        _prev_line_count = len(lines)
+    else:
+        # Non-TTY: just print summary line
+        if lines:
+            print(lines[-1])
 
 
 # ============================================================================
@@ -62,16 +196,24 @@ def expand_targets(targets: List[str], project_root: Path) -> Set[Path]:
     expanded: Set[Path] = set()
 
     for target in targets:
+        # Skip absolute paths (security: don't allow targeting files outside project)
+        if Path(target).is_absolute():
+            continue
+
         # Resolve relative to project root
         pattern_path = project_root / target
 
         # Try glob expansion first
-        matches = list(project_root.glob(target))
-        if matches:
-            expanded.update(matches)
-        elif pattern_path.exists():
-            # If no glob matches but literal path exists, add it
-            expanded.add(pattern_path)
+        try:
+            matches = list(project_root.glob(target))
+            if matches:
+                expanded.update(matches)
+            elif pattern_path.exists():
+                # If no glob matches but literal path exists, add it
+                expanded.add(pattern_path)
+        except (NotImplementedError, ValueError):
+            # Skip invalid glob patterns
+            continue
 
     return expanded
 
@@ -126,6 +268,7 @@ class SwarmConfig:
     dry_run: bool = False  # Show what would run without executing
     project_root: Optional[Path] = None  # Project root directory
     work_dir_base: str = ".zen"  # Base directory for work folders
+    verbose: bool = False  # Show full streaming logs instead of ticker
 
     def __post_init__(self):
         """Validate and normalize configuration."""
@@ -214,6 +357,7 @@ def execute_worker_task(task_path: str, work_dir: str, project_root: Path,
         proc = subprocess.run(
             cmd,
             cwd=project_root,
+            stdin=subprocess.DEVNULL,  # Prevent stdin inheritance issues in worker processes
             capture_output=True,
             text=True,
             timeout=TIMEOUT_WORKER,
@@ -284,9 +428,11 @@ def detect_file_conflicts(results: List[WorkerResult]) -> Dict[str, List[str]]:
 
     for result in results:
         for file_path in result.modified_files:
-            if file_path not in file_to_tasks:
-                file_to_tasks[file_path] = []
-            file_to_tasks[file_path].append(result.task_path)
+            # Normalize path separators for cross-platform consistency
+            normalized = file_path.replace("\\", "/")
+            if normalized not in file_to_tasks:
+                file_to_tasks[normalized] = []
+            file_to_tasks[normalized].append(result.task_path)
 
     # Return only files with conflicts (modified by multiple tasks)
     return {
@@ -408,6 +554,7 @@ class SwarmDispatcher:
         """
         Execute all tasks in parallel using ProcessPoolExecutor.
         Runs scout once with the first task and shares the context.
+        Shows news ticker status updates during execution.
 
         Returns:
             SwarmSummary with aggregated results and cost
@@ -422,6 +569,13 @@ class SwarmDispatcher:
                 conflict_msg += f"[CONFLICT] {file_path} targeted by: {', '.join(tasks)}\n"
             raise ValueError(conflict_msg.rstrip())
 
+        # Reset status display state
+        global _prev_line_count
+        _prev_line_count = 0
+
+        # Show startup message
+        print(f"[SWARM] Starting {len(self.config.tasks)} tasks with {self.config.workers} workers...")
+
         # Run scout once for all tasks using the first task as reference
         scout_context = None
         swarm_id = uuid4().hex[:8]
@@ -430,6 +584,7 @@ class SwarmDispatcher:
         scout_file = swarm_scout_dir / "scout.md"
 
         if not self.config.dry_run:
+            print("[SWARM] Running shared scout...")
             first_task = self.config.tasks[0]
             scout_context = self._run_shared_scout(first_task, swarm_scout_dir, scout_file)
 
@@ -440,29 +595,112 @@ class SwarmDispatcher:
             for task in self.config.tasks
         ]
 
-        # Execute with ProcessPoolExecutor
-        with ProcessPoolExecutor(max_workers=self.config.workers) as executor:
+        # Track work directories for status monitoring
+        # Map: work_dir -> (task_path, task_num)
+        work_dir_map: Dict[str, Tuple[str, int]] = {}
+        for idx, (task, work_dir, _, _, _) in enumerate(task_configs):
+            work_dir_map[work_dir] = (task, idx + 1)  # 1-indexed task numbers
+
+        # Status monitoring state - shared between main thread and monitor
+        stop_monitoring = threading.Event()
+        is_tty = sys.stdout.isatty()
+        completed_tasks: Dict[str, bool] = {}  # work_dir -> completed (shared state)
+        completed_lock = threading.Lock()
+        total_tasks = len(self.config.tasks)
+
+        def status_monitor():
+            """Background thread that polls worker logs and updates status."""
+            while not stop_monitoring.wait(STATUS_UPDATE_INTERVAL):
+                # Collect status from all workers
+                worker_statuses = []
+                total_cost = 0.0
+
+                with completed_lock:
+                    completed_count = len(completed_tasks)
+                    completed_set = set(completed_tasks.keys())
+
+                for work_dir, (task_path, task_num) in work_dir_map.items():
+                    # Skip tasks that main thread marked as completed
+                    if work_dir in completed_set:
+                        continue
+
+                    log_path = self.config.project_root / work_dir / "log.md"
+                    phase, current, total, cost = parse_worker_log(log_path)
+                    total_cost += cost
+                    worker_statuses.append((task_num, phase, current, total))
+
+                # Sort by task number for consistent display
+                worker_statuses.sort(key=lambda x: x[0])
+
+                active = len(worker_statuses)
+                lines = format_status_block(
+                    completed_count, total_tasks, active, total_cost, worker_statuses
+                )
+                print_status_block(lines, is_tty)
+
+        # Start monitoring thread (unless verbose mode or dry run)
+        monitor_thread = None
+        if not self.config.verbose and not self.config.dry_run:
+            monitor_thread = threading.Thread(target=status_monitor, daemon=True)
+            monitor_thread.start()
+
+        # Execute with ProcessPoolExecutor (manually managed to control shutdown)
+        executor = ProcessPoolExecutor(max_workers=self.config.workers)
+        timed_out = False
+        try:
             # Submit all tasks
             futures = {
                 executor.submit(execute_worker_task, task, work_dir, project_root,
-                                dry_run, scout_context): task
+                                dry_run, scout_context): (task, work_dir)
                 for task, work_dir, project_root, dry_run, scout_context in task_configs
             }
 
-            # Collect results as they complete
-            for future in as_completed(futures):
-                task = futures[future]
-                try:
-                    result = future.result()
-                except Exception as e:
-                    # Worker crashed - create failed result instead of crashing swarm
-                    result = WorkerResult(
-                        task_path=task,
-                        work_dir="",
-                        returncode=1,
-                        stderr=f"Worker exception: {e}",
-                    )
-                self.results.append(result)
+            # Collect results as they complete (with timeout to prevent infinite hang)
+            try:
+                for future in as_completed(futures, timeout=TIMEOUT_WORKER):
+                    task, work_dir = futures[future]
+                    try:
+                        result = future.result()
+                    except Exception as e:
+                        # Worker crashed - create failed result instead of crashing swarm
+                        result = WorkerResult(
+                            task_path=task,
+                            work_dir=work_dir,
+                            returncode=1,
+                            stderr=f"Worker exception: {e}",
+                        )
+                    self.results.append(result)
+                    # Mark task as completed for the monitor thread
+                    with completed_lock:
+                        completed_tasks[work_dir] = True
+            except TimeoutError:
+                # Swarm-level timeout - some workers didn't complete
+                timed_out = True
+                print(f"\n[SWARM] ERROR: Timeout after {TIMEOUT_WORKER}s waiting for workers")
+                for future, (task, work_dir) in futures.items():
+                    if not future.done():
+                        print(f"  - {task} still running")
+                        future.cancel()
+                        self.results.append(WorkerResult(
+                            task_path=task,
+                            work_dir=work_dir,
+                            returncode=124,
+                            stderr=f"Swarm timeout: worker did not complete within {TIMEOUT_WORKER}s",
+                        ))
+        finally:
+            # Shutdown executor - don't wait if we timed out
+            if timed_out:
+                executor.shutdown(wait=False, cancel_futures=True)
+            else:
+                executor.shutdown(wait=True)
+
+        # Stop monitoring thread
+        if monitor_thread:
+            stop_monitoring.set()
+            monitor_thread.join(timeout=1)
+            # Print final newline to move past status line
+            if is_tty:
+                print()
 
         # Cleanup work directories for successful tasks
         for result in self.results:
