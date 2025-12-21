@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Task Manager</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .task-item { padding: 10px; margin: 5px 0; background: #f5f5f5; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Task Manager</h1>
+        <div id="task-list">
+            <div class="task-item">Sample Task 1</div>
+            <div class="task-item">Sample Task 2</div>
+        </div>
+        <button onclick="addTask()">Add Task</button>
+    </div>
+
+    <script>
+        function addTask() {
+            const taskList = document.getElementById('task-list');
+            const newTask = document.createElement('div');
+            newTask.className = 'task-item';
+            newTask.textContent = 'New Task ' + (taskList.children.length + 1);
+            taskList.appendChild(newTask);
+        }
+    </script>
+</body>
+</html>

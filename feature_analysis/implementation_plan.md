@@ -4,8 +4,146 @@ Changes organized by priority.
 
 ## P1: High Priority
 
-stuck detection for swarm workers
-swarm backup dirs all share same file
+Detect task completion at beginning of zen run from previous zen run
+---
+---
+create number of workers based on task, why flag?
+---
+
+  Problems:
+  1. False conflict detection - backup/, log.md, plan.md, scout.md are internal zen files, not real conflicts
+  2. Exit code 1 - tasks failed but we don't know why
+  3. Ticker display bug - showed "2/3 done" then "1/3 done" (went backwards)
+
+--
+
+---
+## REFINEMENT
+
+  Current Implementation
+
+  | Aspect               | Current              | Requirement     |
+  |----------------------|----------------------|-----------------|
+  | Max attempts         | MAX_RETRIES + 2 = 4  | 5               |
+  | Per-attempt timeout  | 600s (10 min)        | 120s            |
+  | Stuck detection      | Same error 2x → exit | Same error 3x   |
+  | "No tests" detection | ❌ None              | Skip gracefully |
+  | --skip-verify flag   | ❌ None              | For infra tasks |
+
+  Gaps & Solutions
+
+  1. "No tests found" detection (biggest gap)
+
+  The agent can loop forever if tests don't exist. Need to detect patterns like:
+  "no tests ran"
+  "collected 0 items"
+  "no test files found"
+
+  Options:
+  - A) Prompt-level: Tell agent to output NO_TESTS_FOUND marker → we skip verify
+  - B) Output parsing: Check test_output for "0 collected" / "no tests ran" patterns
+  - C) Both: Parse + fallback marker
+
+  2. Timeout issue (600s is too long)
+
+  If tests hang, we wait 10 minutes per attempt.
+
+  Options:
+  - A) Reduce default: TIMEOUT_EXEC = 120
+  - B) Separate timeout: TIMEOUT_VERIFY = 120 (keep EXEC at 600 for implement phase)
+
+  3. --skip-verify flag
+
+  Simple CLI flag. Just skip phase_verify() if set.
+
+  ---
+  My recommendation: Option B for #1 (parse output), Option B for #2 (separate timeout), straightforward for #3.
+
+  Which gap do you want to tackle first, or do you have a preferred approach?
+---
+
+
+**Gap #1 ("No tests found")** is the highest risk because it causes infinite loops and token waste.
+
+### 1. The "No Tests Found" Strategy
+**Recommendation: Option C (Hybrid Approach)**
+
+Reling solely on the LLM (Option A) is expensive and non-deterministic. Relying solely on regex (Option B) is brittle across languages. You need a tiered approach.
+
+*   **Layer 1: Hard-coded Heuristics (Fast & Cheap)**
+    Before sending the output to the LLM, run a lightweight check on `stdout/stderr`.
+    *   *Pytest:* Exit code 5 usually means "no tests collected."
+    *   *Jest/Mocha:* Regex for `0 matching` or `Test Suites: 0 failed, 0 passed, 0 total`.
+    *   **Action:** If these are detected, immediate early exit from the loop with a status of `SKIPPED_VERIFICATION`.
+
+*   **Layer 2: Prompt Instruction (The Safety Net)**
+    If the regex misses it (e.g., a weird custom test runner), update the system prompt for the verification phase.
+    *   *Prompt:* "Analyze the output. If the test runner executed successfully but found no tests to run (e.g., '0 collected'), output `NO_TESTS_FOUND` and stop. Do not try to write new tests."
+
+**Why this direction?** It solves the "loop" problem deterministically for 90% of cases (Layer 1) while handling edge cases with intelligence (Layer 2).
+
+---
+
+### 2. The Timeout Strategy
+**Recommendation: Option B (Separate Timeouts)**
+
+You definitely want `TIMEOUT_VERIFY = 120s` while keeping `TIMEOUT_IMPLEMENT = 600s`.
+
+*   **The Logic:**
+    *   **Implementation Phase:** Often involves `npm install`, `pip install`, or compiling binaries (Rust/Go/C++). These validly take >2 minutes. Cutting this to 120s will cause false failures on heavy setups.
+    *   **Verification Phase:** If a test suite hangs for >120s *after* compilation, it's almost certainly a deadlock or an infinite loop in the code. Failing fast here is crucial to save time.
+
+**Implementation Tip:** Pass a `timeout` argument to your shell execution function that varies based on which `phase` the agent is currently in.
+
+---
+
+### 3. The `--skip-verify` Flag
+**Recommendation: explicit state handling.**
+
+Don't just skip the function call. You must inject this context into the Agent's prompt or state.
+
+*   If you just skip `phase_verify()`, the Agent might finish `phase_implement()` and think, "Wait, I should run tests to be sure," and try to run them manually in the implementation phase.
+*   **Fix:** If `--skip-verify` is on, add a system prompt line: "User has explicitly requested to skip testing. Do not run test commands. Mark the task as complete once code changes are applied."
+
+---
+
+### Summary of Changes (The "To-Do" List)
+
+Here is the recommended order of operations to close the gap:
+
+1.  **Configuration Tweak (Easy):**
+    *   Bump `MAX_RETRIES` to `5`.
+    *   Bump Stuck Detection to `3`.
+2.  **Architecture Change (Medium):**
+    *   Split the timeout logic. Define `DEFAULT_TIMEOUT=600` and `TEST_TIMEOUT=120`. Apply `TEST_TIMEOUT` only when the tool call is identified as a test command (or during the verify loop).
+3.  **Logic Logic (Hard - The "No Tests" Gap):**
+    *   Implement a `scan_for_empty_tests(output)` helper function.
+    *   Add regex patterns for your supported languages (Python, JS, Go).
+    *   If matches -> return `True`, log "No tests found, skipping verification", and exit the loop gracefully.
+4.  **CLI (Easy):**
+    *   Add the arg parser for `--skip-verify`.
+
+**Does this distinction between "Hard-coded Heuristics" vs "Prompt Instructions" make sense for your architecture?**
+
+---
+
+### Priority 2: News Ticker (UX)
+
+**Problem:** Swarm workers are silent. User sees nothing for 10 minutes.
+
+**Requirements:**
+1. Single status line with `\r` updates:
+   ```
+   [SWARM] 2/3 done | Active: 1 | $1.45 | worker_abc: Step 4/6
+   ```
+2. Update every 5s by polling worker logs
+3. Final summary on completion
+4. `--verbose` flag for full streaming logs
+
+**Target files:** `src/zen_mode/swarm.py`
+
+**Estimated cost:** ~$0.75
+
 
 ### Problem 3: Agree with B (pre-flight)
 Machine-parseable `[YES/NO]` is good. Simpler format for regex:

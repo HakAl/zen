@@ -16,6 +16,7 @@ FLAGS:
   --retry           Clear completion markers to retry failed steps
   --dry-run         Show what would happen without executing
   --skip-judge      Skip judge phase
+  --skip-verify     Skip verify phase (for infra-only tasks)
   --scout-context   Path to pre-computed scout context file
 """
 from __future__ import annotations
@@ -49,6 +50,7 @@ MODEL_BRAIN = os.getenv("ZEN_MODEL_BRAIN", "opus")
 MODEL_HANDS = os.getenv("ZEN_MODEL_HANDS", "haiku")
 MODEL_EYES = os.getenv("ZEN_MODEL_EYES", "haiku")
 TIMEOUT_EXEC = int(os.getenv("ZEN_TIMEOUT", "600"))
+TIMEOUT_VERIFY = int(os.getenv("ZEN_VERIFY_TIMEOUT", "120"))  # 2 min per verify attempt
 TIMEOUT_LINTER = int(os.getenv("ZEN_LINTER_TIMEOUT", "120"))
 TIMEOUT_SUMMARY = int(os.getenv("ZEN_SUMMARY_TIMEOUT", "180"))  # 3 min for summary
 MAX_RETRIES = int(os.getenv("ZEN_RETRIES", "2"))
@@ -202,7 +204,20 @@ def run_claude(prompt: str, model: str, *, phase: str = "unknown", timeout: Opti
             encoding="utf-8",
             errors="replace"
         )
-        stdout, stderr = proc.communicate(input=prompt, timeout=timeout)
+        # Write prompt and close stdin immediately to send EOF
+        # This prevents child processes (gradle) from blocking on stdin reads
+        try:
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+        except BrokenPipeError:
+            log(f"[WARN] Claude ({model}) stdin closed early")
+        stdout, stderr = proc.communicate(timeout=timeout)
+
+        # Debug: log raw output length for troubleshooting
+        if phase == "verify":
+            log(f"[DEBUG] Claude verify: returncode={proc.returncode}, stdout_len={len(stdout)}, stderr_len={len(stderr)}")
+            if stderr:
+                log(f"[DEBUG] stderr: {stderr[:200]}")
 
         if proc.returncode != 0:
             log(f"[ERROR] Claude ({model}): {stderr[:300]}")
@@ -230,7 +245,12 @@ def run_claude(prompt: str, model: str, *, phase: str = "unknown", timeout: Opti
         if proc:
             proc.terminate()
             try:
-                proc.communicate(timeout=5)
+                stdout, stderr = proc.communicate(timeout=5)
+                # Debug: capture partial output on timeout
+                if phase == "verify":
+                    log(f"[DEBUG] Timeout partial: stdout_len={len(stdout) if stdout else 0}, stderr_len={len(stderr) if stderr else 0}")
+                    if stderr:
+                        log(f"[DEBUG] stderr: {stderr[:300]}")
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.communicate()
@@ -310,6 +330,40 @@ def verify_test_output(output: str) -> bool:
     ]
 
     for pattern in real_test_patterns:
+        if re.search(pattern, output, re.MULTILINE | re.IGNORECASE):
+            return True
+
+    return False
+
+
+def detect_no_tests(output: str) -> bool:
+    """
+    Detect if test output indicates no tests exist or were collected.
+    Returns True if no tests were found.
+    """
+    if not output:
+        return False
+
+    no_test_patterns = [
+        # pytest
+        r"no tests ran",
+        r"collected 0 items",
+        r"no tests collected",
+        # jest/npm
+        r"no tests found",
+        r"Test Suites:\s+0",
+        # cargo
+        r"running 0 tests",
+        r"0 passed; 0 failed; 0 ignored",
+        # go
+        r"\?\s+.*no test files",
+        r"no test files",
+        # generic
+        r"^0 tests",
+        r"no tests? (found|exist|defined|available)",
+    ]
+
+    for pattern in no_test_patterns:
         if re.search(pattern, output, re.MULTILINE | re.IGNORECASE):
             return True
 
@@ -570,16 +624,9 @@ def should_skip_judge() -> bool:
     return False
 
 
-# -----------------------------------------------------------------------------
-# Phases
-# -----------------------------------------------------------------------------
-def phase_scout(task_file: str) -> None:
-    if SCOUT_FILE.exists():
-        log("[SCOUT] Cached. Skipping.")
-        return
-
-    log(f"\n[SCOUT] Mapping codebase for {task_file}...")
-    prompt = f"""<task>
+def build_scout_prompt(task_file: str, output_file: str) -> str:
+    """Build scout prompt for mapping codebase. Used by both core and swarm."""
+    return f"""<task>
 Scout codebase for: {task_file}
 </task>
 
@@ -600,7 +647,7 @@ Map code relevant to the task. Quality over quantity.
 </constraints>
 
 <output>
-Write to: {SCOUT_FILE}
+Write to: {output_file}
 
 Format (markdown, all 4 sections required, use "None" if empty):
 ## Targeted Files (Must Change)
@@ -615,6 +662,18 @@ Format (markdown, all 4 sections required, use "None" if empty):
 ## Open Questions
 - Question about ambiguity
 </output>"""
+
+
+# -----------------------------------------------------------------------------
+# Phases
+# -----------------------------------------------------------------------------
+def phase_scout(task_file: str) -> None:
+    if SCOUT_FILE.exists():
+        log("[SCOUT] Cached. Skipping.")
+        return
+
+    log(f"\n[SCOUT] Mapping codebase for {task_file}...")
+    prompt = build_scout_prompt(task_file, str(SCOUT_FILE))
 
     output = run_claude(prompt, model=MODEL_EYES, phase="scout")
     if not output:
@@ -997,7 +1056,7 @@ End with exactly: TESTS_PASS or TESTS_FAIL
     prompt = base_prompt
 
     for attempt in range(1, MAX_RETRIES + 2):  # +1 for initial + retries
-        output = run_claude(prompt, model=MODEL_HANDS, phase="verify", timeout=TIMEOUT_EXEC)
+        output = run_claude(prompt, model=MODEL_HANDS, phase="verify", timeout=TIMEOUT_VERIFY)
 
         if not output:
             log("[VERIFY] No output from agent.")
@@ -1020,6 +1079,11 @@ End with exactly: TESTS_PASS or TESTS_FAIL
             log("[VERIFY] File doesn't contain valid test output.")
             prompt = base_prompt + "\n\nThe file must contain actual test framework output, not a summary."
             continue
+
+        # Check if no tests exist - skip gracefully
+        if detect_no_tests(test_output):
+            log("[VERIFY] No tests found. Skipping verification.")
+            return True
 
         # Check for failures
         failure_count = extract_failure_count(test_output)
@@ -1250,6 +1314,7 @@ def main():
     parser.add_argument("--retry", action="store_true", help="Clear completion markers to retry failed steps")
     parser.add_argument("--dry-run", action="store_true", help="Show what would happen without executing")
     parser.add_argument("--skip-judge", action="store_true", help="Skip judge phase")
+    parser.add_argument("--skip-verify", action="store_true", help="Skip verify phase (for infra-only tasks)")
     parser.add_argument("--scout-context", type=str, help="Path to pre-computed scout context file")
     parser.add_argument("--allowed-files", type=str, help="Glob pattern for allowed files to modify")
 
@@ -1301,6 +1366,7 @@ def main():
         print("Dry-run mode enabled.")
 
     skip_judge = args.skip_judge
+    skip_verify = args.skip_verify
     scout_context = args.scout_context
     ALLOWED_FILES = args.allowed_files
 
@@ -1318,7 +1384,9 @@ def main():
             phase_scout(task_file)
         phase_plan(task_file)
         phase_implement()
-        if not phase_verify():
+        if skip_verify:
+            log("[VERIFY] Skipped (--skip-verify flag)")
+        elif not phase_verify():
             sys.exit(1)
 
         if not skip_judge and not should_skip_judge():

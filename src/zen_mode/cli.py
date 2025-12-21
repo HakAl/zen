@@ -54,6 +54,8 @@ def cmd_run(args):
             cmd.append("--dry-run")
         if args.skip_judge:
             cmd.append("--skip-judge")
+        if args.skip_verify:
+            cmd.append("--skip-verify")
         if args.scout_context:
             cmd.append("--scout-context")
             cmd.append(args.scout_context)
@@ -74,6 +76,8 @@ def cmd_run(args):
         flags.add("--dry-run")
     if args.skip_judge:
         flags.add("--skip-judge")
+    if args.skip_verify:
+        flags.add("--skip-verify")
 
     core.run(task_file, flags, scout_context=args.scout_context, allowed_files=args.allowed_files)
 
@@ -99,7 +103,8 @@ def cmd_swarm(args):
             tasks=args.tasks,
             workers=args.workers,
             dry_run=args.dry_run,
-            project_root=Path.cwd()
+            project_root=Path.cwd(),
+            verbose=getattr(args, 'verbose', False)
         )
     except ValueError as e:
         print(f"Error: {e}")
@@ -236,11 +241,12 @@ def main():
             cmd_eject(Args())
             return
         elif cmd == "swarm":
-            # zen swarm <task1.md> [task2.md ...] [--workers N] [--dry-run]
+            # zen swarm <task1.md> [task2.md ...] [--workers N] [--dry-run] [--verbose]
             parser = argparse.ArgumentParser(prog="zen swarm")
             parser.add_argument("tasks", nargs="+", help="Task files to execute in parallel")
             parser.add_argument("--workers", type=int, default=2, help="Number of parallel workers (default: 2)")
             parser.add_argument("--dry-run", action="store_true", help="Show what would happen without executing")
+            parser.add_argument("--verbose", "-v", action="store_true", help="Show full logs instead of status ticker")
             args = parser.parse_args(sys.argv[2:])
             cmd_swarm(args)
             return
@@ -257,6 +263,7 @@ def main():
             parser.add_argument("--retry", action="store_true", help="Clear completion markers")
             parser.add_argument("--dry-run", action="store_true", help="Show what would happen")
             parser.add_argument("--skip-judge", action="store_true", help="Skip Judge phase review")
+            parser.add_argument("--skip-verify", action="store_true", help="Skip Verify phase (for infra-only tasks)")
             parser.add_argument("--scout-context", type=str, default=None, help="Path to pre-computed scout context file")
             parser.add_argument("--allowed-files", type=str, default=None, help="Glob pattern for allowed files to modify")
             args = parser.parse_args(sys.argv[1:])
@@ -277,7 +284,9 @@ Options:
   --retry                     Clear completion markers to retry failed steps
   --dry-run                   Show what would happen without executing
   --skip-judge                Skip Judge phase review (Opus architectural review)
+  --skip-verify               Skip Verify phase (for infra-only tasks)
   --workers N                 Number of parallel workers for swarm (default: 2)
+  --verbose, -v               Show full logs instead of status ticker (swarm)
 
 Examples:
   zen init
@@ -285,6 +294,7 @@ Examples:
   zen task.md --reset
   zen task.md --skip-judge
   zen swarm task1.md task2.md --workers 4
+  zen swarm task1.md task2.md --verbose
   zen eject
 """)
 
