@@ -402,7 +402,15 @@ def _get_modified_files(work_dir: Path) -> List[str]:
     """
     Extract list of modified files from work directory.
     Returns paths relative to work_dir (e.g., "src/file.py").
+    Excludes zen's internal files (log.md, plan.md, backup/, etc.)
     """
+    # Zen internal files to exclude
+    EXCLUDED_FILES = {
+        "log.md", "plan.md", "scout.md", "final_notes.md",
+        "test_output.txt", "test_output_1.txt", "test_output_2.txt",
+    }
+    EXCLUDED_DIRS = {"backup"}
+
     modified = []
     if not work_dir.exists():
         return modified
@@ -411,7 +419,18 @@ def _get_modified_files(work_dir: Path) -> List[str]:
     # These represent modifications that occurred during task execution
     for item in work_dir.rglob("*"):
         if item.is_file():
-            modified.append(str(item.relative_to(work_dir)))
+            rel_path = item.relative_to(work_dir)
+            rel_str = str(rel_path).replace("\\", "/")
+
+            # Skip zen internal files
+            if rel_path.name in EXCLUDED_FILES:
+                continue
+
+            # Skip files in excluded directories
+            if any(part in EXCLUDED_DIRS for part in rel_path.parts):
+                continue
+
+            modified.append(str(rel_path))
 
     return modified
 
@@ -702,12 +721,33 @@ class SwarmDispatcher:
             if is_tty:
                 print()
 
-        # Cleanup work directories for successful tasks
+        # Preserve worker logs in .zen/workers/ before cleanup
+        workers_log_dir = self.config.project_root / self.config.work_dir_base / "workers"
+        workers_log_dir.mkdir(parents=True, exist_ok=True)
+
         for result in self.results:
-            if result.is_success() and result.work_dir:
+            if result.work_dir:
                 work_path = self.config.project_root / result.work_dir
                 if work_path.exists():
-                    shutil.rmtree(work_path, ignore_errors=True)
+                    # Copy log.md to workers/ with task name
+                    src_log = work_path / "log.md"
+                    if src_log.exists():
+                        task_name = Path(result.task_path).stem
+                        dst_log = workers_log_dir / f"{task_name}.log.md"
+                        shutil.copy2(src_log, dst_log)
+
+                    # Delete work directory for successful tasks
+                    if result.is_success():
+                        shutil.rmtree(work_path, ignore_errors=True)
+
+        # Append worker summaries to main log
+        main_log = self.config.project_root / self.config.work_dir_base / "log.md"
+        with main_log.open("a", encoding="utf-8") as f:
+            f.write(f"\n[SWARM] Completed {len(self.results)} tasks\n")
+            for result in self.results:
+                status = "✓" if result.is_success() else "✗"
+                f.write(f"  {status} {result.task_path} (${result.cost:.4f})\n")
+            f.write(f"[SWARM] Worker logs saved to {workers_log_dir}\n")
 
         # Cleanup scout directory
         if swarm_scout_dir.exists():

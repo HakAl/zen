@@ -90,7 +90,7 @@ def _init_claude() -> str:
 # Core Utils
 # -----------------------------------------------------------------------------
 def log(msg: str) -> None:
-    WORK_DIR.mkdir(exist_ok=True)
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
     ts = time.strftime("%H:%M:%S")
     line = f"[{ts}] {msg}"
     with LOG_FILE.open("a", encoding="utf-8") as f:
