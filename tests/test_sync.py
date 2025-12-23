@@ -15,10 +15,11 @@ from pathlib import Path
 
 import pytest
 
-# Paths to the two files
+# Paths to the files
 REPO_ROOT = Path(__file__).parent.parent
 SCRIPT_PATH = REPO_ROOT / "scripts" / "zen.py"
 PACKAGE_PATH = REPO_ROOT / "src" / "zen_mode" / "core.py"
+PACKAGE_CONFIG_PATH = REPO_ROOT / "src" / "zen_mode" / "config.py"
 
 # Functions that MUST stay in sync between script and package
 # These are the core logic functions that have no intentional differences
@@ -29,11 +30,6 @@ SYNCED_FUNCTIONS = [
     "get_changed_filenames",
     "should_skip_judge",
     "_is_test_or_doc",
-    # Test output parsing
-    "verify_test_output",
-    "detect_no_tests",
-    "extract_failure_count",
-    "parse_test_output",
     # File utilities
     "read_file",
     "write_file",
@@ -52,7 +48,6 @@ SYNCED_FUNCTIONS = [
     "phase_scout",
     "phase_plan",
     "phase_implement",
-    "phase_verify",
     "phase_judge",
     "validate_plan_efficiency",
 ]
@@ -67,6 +62,13 @@ INTENTIONALLY_DIFFERENT = {
     "run": "Package-only public API",
     "_init_claude": "Package-only lazy initialization",
     "find_linter": "Script-only external linter discovery",
+    "project_has_tests": "Package uses linter.TEST_FILE_PATTERNS, script imports directly",
+    # Moved to verify.py in package (script still has them inline)
+    "verify_test_output": "Package imports from verify.py, script has inline",
+    "detect_no_tests": "Package imports from verify.py, script has inline",
+    "extract_failure_count": "Package imports from verify.py, script has inline",
+    "parse_test_output": "Package imports from verify.py, script has inline",
+    "phase_verify": "Package uses verify_and_fix() from verify.py, script has inline phase_verify",
 }
 
 # Configuration constants that should have same defaults
@@ -134,6 +136,12 @@ class TestScriptPackageSync:
         source = PACKAGE_PATH.read_text(encoding="utf-8")
         return ast.parse(source)
 
+    @pytest.fixture(scope="class")
+    def package_config_ast(self):
+        """Parse the package config file."""
+        source = PACKAGE_CONFIG_PATH.read_text(encoding="utf-8")
+        return ast.parse(source)
+
     @pytest.mark.parametrize("func_name", SYNCED_FUNCTIONS)
     def test_function_in_sync(self, script_ast, package_ast, func_name):
         """Verify that synced functions have identical logic."""
@@ -157,19 +165,19 @@ class TestScriptPackageSync:
             )
 
     @pytest.mark.parametrize("config_name", SYNCED_CONFIG)
-    def test_config_defaults_match(self, script_ast, package_ast, config_name):
+    def test_config_defaults_match(self, script_ast, package_config_ast, config_name):
         """Verify configuration defaults are the same."""
         script_value = get_config_value(script_ast, config_name)
-        package_value = get_config_value(package_ast, config_name)
+        package_value = get_config_value(package_config_ast, config_name)
 
         assert script_value is not None, f"Config {config_name} missing from scripts/zen.py"
-        assert package_value is not None, f"Config {config_name} missing from src/zen_mode/core.py"
+        assert package_value is not None, f"Config {config_name} missing from src/zen_mode/config.py"
 
         if script_value != package_value:
             pytest.fail(
                 f"Config '{config_name}' has different defaults:\n"
-                f"  scripts/zen.py:        {script_value}\n"
-                f"  src/zen_mode/core.py:  {package_value}\n"
+                f"  scripts/zen.py:           {script_value}\n"
+                f"  src/zen_mode/config.py:   {package_value}\n"
             )
 
     def test_synced_functions_list_is_current(self, script_ast, package_ast):

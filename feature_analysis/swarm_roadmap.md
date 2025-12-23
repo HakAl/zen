@@ -486,7 +486,7 @@ zen swarm .zen/tasks/task1_article_stats.md .zen/tasks/task2_loading_states.md .
 
 **Key observation:** All 3 workers completed IMPLEMENT in 5-7 minutes, then timed out 120s into VERIFY.
 
-### Critical Finding: Swarm Fails at VERIFY
+### Critical Finding: VERIFY Fails for Java Projects
 
 All 6 workers across 2 test runs show the same pattern:
 1. ✓ SCOUT phase completes
@@ -494,9 +494,7 @@ All 6 workers across 2 test runs show the same pattern:
 3. ✓ IMPLEMENT phase completes (all steps)
 4. ✗ Times out during VERIFY phase
 
-**Fact:** Zen works fine when run directly. The problem only occurs through swarm.
-
-**Unknown:** Root cause not yet identified.
+**Update (2024-12-22):** Originally thought this was swarm-specific. Now confirmed to be **Java-specific**. Python projects work in both swarm and direct zen runs. See "Investigation Update: Java-Specific Failure" section below.
 
 ### Attempted Fixes
 
@@ -515,11 +513,49 @@ All 6 workers across 2 test runs show the same pattern:
 
 ---
 
+## Investigation: Why VERIFY Hangs (2024-12-22) - OUTDATED
+
+**NOTE:** This section contains earlier investigation notes. See "Investigation Update: Java-Specific Failure" below for current understanding.
+
+### Original Symptom
+
+From worker logs:
+```
+[19:44:15] [COMPLETE] Step 4
+[19:44:15] [VERIFY] Running tests...
+[19:46:15] [ERROR] Claude (sonnet) timed out
+[19:46:15] [DEBUG] Timeout partial: stdout_len=0, stderr_len=0
+[19:46:15] [VERIFY] No output from agent.
+```
+
+**Key observation:** `stdout_len=0` - Claude CLI produces **zero output** for 120 seconds then times out.
+
+### What We Ruled Out
+
+Tests created in `test_swarm_completion.py` (all pass):
+- ✓ subprocess with file-based stdout
+- ✓ subprocess with stdin=DEVNULL parent
+- ✓ ProcessPoolExecutor with subprocesses
+- ✓ Concurrent subprocess execution
+- ✓ File handle inheritance
+
+**Conclusion:** The subprocess/executor mechanics work correctly. The issue is NOT in how we spawn processes.
+
+### Original Hypotheses (Most Now Disproven)
+
+1. ~~**Swarm-specific**~~ - DISPROVEN: fails in direct zen run too
+2. ~~**Rate limiting**~~ - DISPROVEN: fails with single worker
+3. ~~**Timeout too short**~~ - DISPROVEN: fails with 600s timeout
+4. ~~**Prompt content**~~ - DISPROVEN: same prompt works for Python
+5. **Java/Gradle specific** - CONFIRMED: only fails for Java projects
+
+---
+
 ## Next Phase: Stuck Detection + News Ticker
 
-### Priority 1: Stuck Detection (Critical)
+### Priority 1: Stuck Detection (Critical) -- LIKELY INCORRECT ASSUMPTION
 
-**Problem:** VERIFY phase loops forever if tests hang or don't exist.
+**Problem:** VERIFY phase loops forever -- **UPDATE: Actually, Claude CLI hangs with no output. Not a loop issue.**
 
 **Scope:** This is a core zen issue, not swarm-specific. Fix in `core.py`, swarm benefits automatically.
 
@@ -536,22 +572,95 @@ All 6 workers across 2 test runs show the same pattern:
 
 ---
 
-### Priority 2: News Ticker (UX)
+## Investigation Update: Java-Specific Failure (2024-12-22)
 
-**Problem:** Swarm workers are silent. User sees nothing for 10 minutes.
+### Key Discovery
 
-**Requirements:**
-1. Single status line with `\r` updates:
-   ```
-   [SWARM] 2/3 done | Active: 1 | $1.45 | worker_abc: Step 4/6
-   ```
-2. Update every 5s by polling worker logs
-3. Final summary on completion
-4. `--verbose` flag for full streaming logs
+**The issue is NOT swarm-specific. It's Java-specific.**
 
-**Target files:** `src/zen_mode/swarm.py`
+| Scenario | Python | Java |
+|----------|--------|------|
+| Single zen run (verify) | ✓ Works | ✗ Hangs |
+| Swarm (verify) | ✓ Works | ✗ Hangs |
 
-**Estimated cost:** ~$0.75
+### Proof: Python Works
+
+```
+PS C:\Users\anyth\MINE\dev\test_repo> zen .\cleanup.md --reset
+[SCOUT] Done.
+[PLAN] Done. 4 steps.
+[IMPLEMENT] 4 steps to execute.
+[STEP 1-4] All complete
+[VERIFY] Running tests...
+  [COST] sonnet verify: $0.1169 (25+791=816 tok)
+  [VERIFY] Passed.
+[JUDGE_APPROVED]
+[SUCCESS]
+```
+
+### Java Failure (Both Swarm and Direct)
+
+Worker logs from synopsi (Java/Gradle):
+```
+[STEP 1] Complete
+[STEP 2] Complete
+[VERIFY] Running tests...
+[DEBUG] verify: Popen starting...
+[DEBUG] verify: Popen done, writing 1177 chars to stdin...
+[DEBUG] verify: stdin closed, calling communicate(timeout=120)...
+[ERROR] Claude (sonnet) timed out
+[DEBUG] Timeout partial: stdout_len=0, stderr_len=0
+[VERIFY] No output from agent.
+```
+
+Also tested with `zen task.md` directly (not swarm) - same result.
+
+### What We Know
+
+1. **Tests DO run** - Gradle executes (visible in logs from implement steps)
+2. **Timeout is NOT the issue** - Tested with 600s timeout, still fails
+3. **Prompt is NOT the issue** - Same prompt works for Python
+4. **Swarm is NOT the issue** - Fails in direct zen run too
+5. **Claude CLI hangs** - Produces zero output (`stdout_len=0`)
+
+### Root Cause Hypothesis
+
+**Mechanical failure in subprocess communication for Java/Gradle.**
+
+The same `run_claude()` function:
+- Receives prompt ✓
+- Writes to stdin ✓
+- Closes stdin ✓
+- Calls `communicate()` ✓
+- **Never receives stdout** ✗
+
+Something about Gradle/Java breaks the pipe back to Python. Possibilities:
+1. **Gradle daemon** - Keeps handles open, prevents Claude CLI from flushing
+2. **Output encoding** - Gradle produces output that breaks the pipe
+3. **Windows + Java** - Subprocess handling differs for JVM processes
+4. **Pipe buffer** - Gradle's verbose output causes deadlock
+
+### What's Different
+
+| Aspect | Python | Java |
+|--------|--------|------|
+| Test runner | pytest | ./gradlew test |
+| Daemon process | No | Yes (Gradle daemon) |
+| JVM | No | Yes |
+| Output volume | Low | High (Gradle downloads, compiles) |
+| Startup time | Fast | Slow (JVM + Gradle) |
+
+### Next Steps
+
+1. Test with `--no-daemon` flag in Gradle
+2. Test on Linux to rule out Windows-specific issue
+3. Add environment variable `GRADLE_OPTS=-Dorg.gradle.daemon=false`
+4. Check if issue is stdout buffer size (Gradle is verbose)
+5. Try running Claude CLI manually with verify prompt to observe behavior
+
+### Status
+
+**Blocked** - Need to isolate whether it's Gradle daemon, Windows, or pipe buffering.
 
 ---
 
@@ -560,7 +669,6 @@ All 6 workers across 2 test runs show the same pattern:
 | Order | Task | Why First |
 |-------|------|-----------|
 | 1 | Stuck detection | Blocks everything - workers hang without it |
-| 2 | News ticker | Polish - nice to have but not blocking |
 
 **Option A: Sequential**
 ```bash

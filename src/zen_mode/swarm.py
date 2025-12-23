@@ -16,8 +16,10 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 from uuid import uuid4
 
-# Configuration (mirrors core.py)
-TIMEOUT_WORKER = int(os.getenv("ZEN_TIMEOUT", "600"))
+from zen_mode.config import TIMEOUT_EXEC, MODEL_EYES
+
+# Configuration
+TIMEOUT_WORKER = TIMEOUT_EXEC  # Use same timeout as core
 STATUS_UPDATE_INTERVAL = 5  # seconds between status line updates
 
 
@@ -353,30 +355,35 @@ def execute_worker_task(task_path: str, work_dir: str, project_root: Path,
         env = {**os.environ}
         env["ZEN_WORK_DIR"] = work_dir
 
-        # Execute zen task
-        proc = subprocess.run(
-            cmd,
-            cwd=project_root,
-            stdin=subprocess.DEVNULL,  # Prevent stdin inheritance issues in worker processes
-            capture_output=True,
-            text=True,
-            timeout=TIMEOUT_WORKER,
-            env=env,
-        )
+        # Use file-based output to avoid pipe buffer deadlocks
+        log_file = work_path / "log.md"
+
+        with open(log_file, "a", encoding="utf-8") as log_f:
+            proc = subprocess.run(
+                cmd,
+                cwd=project_root,
+                stdin=subprocess.DEVNULL,
+                stdout=log_f,
+                stderr=log_f,
+                timeout=TIMEOUT_WORKER,
+                env=env,
+            )
 
         result.returncode = proc.returncode
-        result.stdout = proc.stdout
-        result.stderr = proc.stderr
+        result.stdout = log_file.read_text(encoding="utf-8") if log_file.exists() else ""
+        result.stderr = ""
 
         # Extract cost from output
-        result.cost = _extract_cost_from_output(proc.stdout)
+        result.cost = _extract_cost_from_output(result.stdout)
 
         # Detect modified files from work directory
         result.modified_files = _get_modified_files(work_path)
 
     except subprocess.TimeoutExpired:
         result.returncode = 124
-        result.stderr = "Task timed out (600s)"
+        # Read partial output from log file on timeout
+        result.stdout = log_file.read_text(encoding="utf-8") if log_file.exists() else ""
+        result.stderr = f"Task timed out ({TIMEOUT_WORKER}s)"
     except Exception as e:
         result.returncode = 1
         result.stderr = str(e)
@@ -404,7 +411,7 @@ def _get_modified_files(work_dir: Path) -> List[str]:
     Returns paths relative to work_dir (e.g., "src/file.py").
     Excludes zen's internal files (log.md, plan.md, backup/, etc.)
     """
-    # Zen internal files to exclude
+    # Zen internal files to exclude (these live alongside modified source files in work_dir)
     EXCLUDED_FILES = {
         "log.md", "plan.md", "scout.md", "final_notes.md",
         "test_output.txt", "test_output_1.txt", "test_output_2.txt",
@@ -558,7 +565,7 @@ class SwarmDispatcher:
 
         # Build and run scout prompt
         prompt = core.build_scout_prompt(task_path, str(scout_file))
-        output = core.run_claude(prompt, model=core.MODEL_EYES, phase="swarm_scout")
+        output = core.run_claude(prompt, model=MODEL_EYES, phase="swarm_scout")
         if not output:
             return None
 

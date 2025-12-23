@@ -63,6 +63,7 @@ class TestConstitutionInFixPrompt:
     ):
         """When CLAUDE.md exists, it should be included in the fix prompt."""
         from zen_mode.core import phase_judge
+        from zen_mode.verify import TestState
 
         # Create CLAUDE.md in project root
         claude_md = mock_judge_env["project_root"] / "CLAUDE.md"
@@ -92,7 +93,7 @@ class TestConstitutionInFixPrompt:
 
                                 mock_claude.side_effect = capture_prompts
                                 mock_linter.return_value = (True, "")
-                                mock_verify.return_value = True
+                                mock_verify.return_value = (TestState.PASS, "")
 
                                 phase_judge()
 
@@ -116,6 +117,7 @@ class TestConstitutionInFixPrompt:
     ):
         """When CLAUDE.md doesn't exist, should show fallback message."""
         from zen_mode.core import phase_judge
+        from zen_mode.verify import TestState
 
         # DO NOT create CLAUDE.md - it should not exist
 
@@ -140,7 +142,7 @@ class TestConstitutionInFixPrompt:
 
                                 mock_claude.side_effect = capture_prompts
                                 mock_linter.return_value = (True, "")
-                                mock_verify.return_value = True
+                                mock_verify.return_value = (TestState.PASS, "")
 
                                 phase_judge()
 
@@ -160,6 +162,7 @@ class TestConstitutionInFixPrompt:
     ):
         """Constitution section should appear before Changed Files section."""
         from zen_mode.core import phase_judge
+        from zen_mode.verify import TestState
 
         # Create CLAUDE.md
         claude_md = mock_judge_env["project_root"] / "CLAUDE.md"
@@ -186,7 +189,7 @@ class TestConstitutionInFixPrompt:
 
                                 mock_claude.side_effect = capture_prompts
                                 mock_linter.return_value = (True, "")
-                                mock_verify.return_value = True
+                                mock_verify.return_value = (TestState.PASS, "")
 
                                 phase_judge()
 
@@ -210,6 +213,7 @@ class TestConstitutionInFixPrompt:
     ):
         """Constitution section should appear after the judge feedback."""
         from zen_mode.core import phase_judge
+        from zen_mode.verify import TestState
 
         # Create CLAUDE.md
         claude_md = mock_judge_env["project_root"] / "CLAUDE.md"
@@ -237,7 +241,7 @@ class TestConstitutionInFixPrompt:
 
                                 mock_claude.side_effect = capture_prompts
                                 mock_linter.return_value = (True, "")
-                                mock_verify.return_value = True
+                                mock_verify.return_value = (TestState.PASS, "")
 
                                 phase_judge()
 
@@ -261,6 +265,7 @@ class TestConstitutionInFixPrompt:
     ):
         """Constitution content should be preserved exactly as written."""
         from zen_mode.core import phase_judge
+        from zen_mode.verify import TestState
 
         # Create CLAUDE.md with specific formatting
         claude_md = mock_judge_env["project_root"] / "CLAUDE.md"
@@ -300,7 +305,7 @@ class TestConstitutionInFixPrompt:
 
                                 mock_claude.side_effect = capture_prompts
                                 mock_linter.return_value = (True, "")
-                                mock_verify.return_value = True
+                                mock_verify.return_value = (TestState.PASS, "")
 
                                 phase_judge()
 
@@ -325,6 +330,7 @@ class TestConstitutionInFixPrompt:
     ):
         """Fix prompt should have the expected structure with all sections."""
         from zen_mode.core import phase_judge
+        from zen_mode.verify import TestState
 
         # Create CLAUDE.md
         claude_md = mock_judge_env["project_root"] / "CLAUDE.md"
@@ -351,7 +357,7 @@ class TestConstitutionInFixPrompt:
 
                                 mock_claude.side_effect = capture_prompts
                                 mock_linter.return_value = (True, "")
-                                mock_verify.return_value = True
+                                mock_verify.return_value = (TestState.PASS, "")
 
                                 phase_judge()
 

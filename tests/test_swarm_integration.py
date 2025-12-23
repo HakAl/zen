@@ -336,14 +336,21 @@ class TestWorkerResultCollection:
     """Test that results are properly collected from workers."""
 
     def test_result_contains_stdout_stderr(self, tmp_path):
-        """Verify stdout/stderr are captured in WorkerResult."""
-        # Create a minimal task that will fail (no zen installed in test)
-        with patch("zen_mode.swarm.subprocess.run") as mock_run:
-            mock_run.return_value = Mock(
-                returncode=1,
-                stdout="Standard output here",
-                stderr="Error output here",
-            )
+        """Verify stdout/stderr are captured in WorkerResult.
+
+        Note: The implementation writes both stdout and stderr to a log file,
+        then reads it back into result.stdout. result.stderr is always empty.
+        """
+        log_content = "Standard output here\nError output here"
+
+        def write_to_log(cmd, **kwargs):
+            # Write to the log file that was passed as stdout
+            log_file = kwargs.get("stdout")
+            if log_file and hasattr(log_file, "write"):
+                log_file.write(log_content)
+            return Mock(returncode=1)
+
+        with patch("zen_mode.swarm.subprocess.run", side_effect=write_to_log):
             with patch("zen_mode.swarm._get_modified_files", return_value=[]):
                 result = execute_worker_task(
                     task_path="task.md",
@@ -352,8 +359,10 @@ class TestWorkerResultCollection:
                     dry_run=False,
                 )
 
-        assert result.stdout == "Standard output here"
-        assert result.stderr == "Error output here"
+        # Both stdout and stderr are combined into log file, read back as stdout
+        assert "Standard output here" in result.stdout
+        assert "Error output here" in result.stdout
+        assert result.stderr == ""  # stderr is always empty (merged into log file)
         assert result.returncode == 1
 
     def test_result_propagates_through_executor(self):

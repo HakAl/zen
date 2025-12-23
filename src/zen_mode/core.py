@@ -17,55 +17,62 @@ import sys
 import time
 import tempfile
 import threading
-import unicodedata
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-# -----------------------------------------------------------------------------
-# Regex constants
-# -----------------------------------------------------------------------------
-_FAIL_STEM = re.compile(r"\bfail", re.IGNORECASE)
-_CLAUSE_SPLIT = re.compile(r"[,;|()\[\]{}\n]")
-_DIGIT = re.compile(r"\d+")
+from zen_mode.triage import (
+    parse_triage,
+    should_fast_track,
+    generate_synthetic_plan,
+)
+from zen_mode.config import (
+    MODEL_BRAIN,
+    MODEL_HANDS,
+    MODEL_EYES,
+    TIMEOUT_EXEC,
+    TIMEOUT_LINTER,
+    TIMEOUT_SUMMARY,
+    MAX_RETRIES,
+    MAX_JUDGE_LOOPS,
+    JUDGE_TRIVIAL_LINES,
+    JUDGE_SMALL_REFACTOR_LINES,
+    JUDGE_SIMPLE_PLAN_LINES,
+    JUDGE_SIMPLE_PLAN_STEPS,
+    WORK_DIR_NAME,
+    PROJECT_ROOT,
+    WORK_DIR,
+    SHOW_COSTS,
+    PARSE_TEST_THRESHOLD,
+)
+from zen_mode.verify import (
+    TestState,
+    phase_verify,
+    verify_and_fix,
+    project_has_tests,
+    extract_failure_count,
+    detect_no_tests,
+    verify_test_output,
+    parse_test_output,
+)
+
+from . import linter
 
 # -----------------------------------------------------------------------------
-# Configuration
+# Derived Paths (from config)
 # -----------------------------------------------------------------------------
-WORK_DIR_NAME = os.getenv("ZEN_WORK_DIR", ".zen")
-MODEL_BRAIN = os.getenv("ZEN_MODEL_BRAIN", "opus")
-MODEL_HANDS = os.getenv("ZEN_MODEL_HANDS", "haiku")
-MODEL_EYES = os.getenv("ZEN_MODEL_EYES", "haiku")
-TIMEOUT_EXEC = int(os.getenv("ZEN_TIMEOUT", "600"))
-TIMEOUT_VERIFY = int(os.getenv("ZEN_VERIFY_TIMEOUT", "120"))  # 2 min per verify attempt
-TIMEOUT_LINTER = int(os.getenv("ZEN_LINTER_TIMEOUT", "120"))
-TIMEOUT_SUMMARY = int(os.getenv("ZEN_SUMMARY_TIMEOUT", "180"))  # 3 min for summary
-MAX_RETRIES = int(os.getenv("ZEN_RETRIES", "2"))
-MAX_JUDGE_LOOPS = int(os.getenv("ZEN_JUDGE_LOOPS", "2"))
-
-# Cost tracking
-SHOW_COSTS = os.getenv("ZEN_SHOW_COSTS", "true").lower() == "true"
-_phase_costs: Dict[str, float] = {}
-_phase_tokens: Dict[str, Dict[str, int]] = {}
-
-# Judge skip thresholds (lines changed)
-JUDGE_TRIVIAL_LINES = int(os.getenv("ZEN_JUDGE_TRIVIAL", "5"))
-JUDGE_SMALL_REFACTOR_LINES = int(os.getenv("ZEN_JUDGE_SMALL", "20"))
-JUDGE_SIMPLE_PLAN_LINES = int(os.getenv("ZEN_JUDGE_SIMPLE_LINES", "30"))
-JUDGE_SIMPLE_PLAN_STEPS = int(os.getenv("ZEN_JUDGE_SIMPLE_STEPS", "2"))
-
-PROJECT_ROOT = Path.cwd()
-
-# Package uses .zen/ (no PID suffix)
-WORK_DIR = PROJECT_ROOT / WORK_DIR_NAME
-
 SCOUT_FILE = WORK_DIR / "scout.md"
 PLAN_FILE = WORK_DIR / "plan.md"
 LOG_FILE = WORK_DIR / "log.md"
 NOTES_FILE = WORK_DIR / "final_notes.md"
 BACKUP_DIR = WORK_DIR / "backup"
 TEST_OUTPUT_FILE = WORK_DIR / "test_output.txt"
-TEST_OUTPUT_PATH = WORK_DIR_NAME + "/test_output.txt"  # For prompts (forward slash)
 JUDGE_FEEDBACK_FILE = WORK_DIR / "judge_feedback.md"
+
+# -----------------------------------------------------------------------------
+# Cost Tracking (runtime state)
+# -----------------------------------------------------------------------------
+_phase_costs: Dict[str, float] = {}
+_phase_tokens: Dict[str, Dict[str, int]] = {}
 
 DRY_RUN = False
 
@@ -208,12 +215,6 @@ def run_claude(prompt: str, model: str, *, phase: str = "unknown", timeout: Opti
             log(f"[WARN] Claude ({model}) stdin closed early")
         stdout, stderr = proc.communicate(timeout=timeout)
 
-        # Debug: log raw output length for troubleshooting
-        if phase == "verify":
-            log(f"[DEBUG] Claude verify: returncode={proc.returncode}, stdout_len={len(stdout)}, stderr_len={len(stderr)}")
-            if stderr:
-                log(f"[DEBUG] stderr: {stderr[:200]}")
-
         if proc.returncode != 0:
             log(f"[ERROR] Claude ({model}): {stderr[:300]}")
             return None
@@ -282,135 +283,6 @@ def _write_cost_summary() -> None:
         f.write(f"Total: ${total:.3f}\n")
         f.write(f"Tokens: {total_in} in, {total_out} out, {total_cache} cache read\n")
         f.write(f"Breakdown: {breakdown}\n")
-
-
-def verify_test_output(output: str) -> bool:
-    """
-    Verify that agent output contains real test results, not just claims.
-    Returns True if genuine test output is detected.
-    """
-    # Patterns that indicate real test framework output
-    real_test_patterns = [
-        # pytest (verbose and minimal)
-        r"=+\s+\d+\s+passed",
-        r"=+\s+passed in \d+",
-        r"\d+\s+passed",
-        r"passed in [\d.]+s",
-        r"PASSED|FAILED|ERROR",
-        # npm/jest
-        r"Tests:\s+\d+\s+passed",
-        r"Test Suites:\s+\d+\s+passed",
-        # cargo
-        r"test result: ok\.",
-        r"running \d+ tests?",
-        r"\d+ passed; \d+ failed",
-        # go
-        r"^ok\s+\S+\s+[\d.]+s",
-        r"^PASS$",
-        # generic
-        r"\d+\s+tests?\s+(passed|succeeded|ok)",
-        r"All \d+ tests? passed",
-    ]
-
-    for pattern in real_test_patterns:
-        if re.search(pattern, output, re.MULTILINE | re.IGNORECASE):
-            return True
-
-    return False
-
-
-def detect_no_tests(output: str) -> bool:
-    """
-    Detect if test output indicates no tests exist or were collected.
-    Returns True if no tests were found.
-    """
-    if not output:
-        return False
-
-    no_test_patterns = [
-        # pytest
-        r"no tests ran",
-        r"collected 0 items",
-        r"no tests collected",
-        # jest/npm
-        r"no tests found",
-        r"Test Suites:\s+0",
-        # cargo
-        r"running 0 tests",
-        r"0 passed; 0 failed; 0 ignored",
-        # go
-        r"\?\s+.*no test files",
-        r"no test files",
-        # generic
-        r"^0 tests",
-        r"no tests? (found|exist|defined|available)",
-    ]
-
-    for pattern in no_test_patterns:
-        if re.search(pattern, output, re.MULTILINE | re.IGNORECASE):
-            return True
-
-    return False
-
-
-def extract_failure_count(output: str) -> Optional[int]:
-    """Extract failure count from test output. Language-agnostic."""
-    if not output:
-        return None
-
-    # Normalize unicode (smart quotes, dashes, etc.)
-    norm = unicodedata.normalize("NFKC", output)
-    norm = norm.translate({0x2013: 0x2D, 0x2014: 0x2D,
-                           0x2019: 0x27, 0x2018: 0x27,
-                           0x201C: 0x22, 0x201D: 0x22})
-
-    # Split into a list so we can reverse it
-    clauses = _CLAUSE_SPLIT.split(norm)
-
-    # Process from bottom of log to top
-    for clause in reversed(clauses):
-        if not _FAIL_STEM.search(clause):
-            continue
-
-        m = _DIGIT.search(clause)
-        if m:
-            return int(m.group(0))
-
-    return None
-
-
-# Threshold for Haiku parsing (bytes) - skip parsing for small outputs
-PARSE_TEST_THRESHOLD = int(os.getenv("ZEN_PARSE_THRESHOLD", "500"))
-
-
-def parse_test_output(raw_output: str) -> str:
-    """
-    Use Haiku to extract actionable failure info from verbose test output.
-    Reduces token count for Sonnet retry prompts.
-    """
-    if len(raw_output) < PARSE_TEST_THRESHOLD:
-        return raw_output  # Not worth the API call
-
-    prompt = """Extract key failure information from this test output.
-Return a concise summary with:
-- Failed test names
-- Error type and message for each failure
-- Relevant file:line locations
-- Last 2-3 stack frames (if present)
-
-Keep under 400 words. Preserve exact error messages.
-
-<test_output>
-""" + raw_output[:4000] + """
-</test_output>"""
-
-    parsed = run_claude(prompt, model=MODEL_EYES, phase="parse_tests", timeout=45)
-
-    if not parsed or len(parsed) > len(raw_output):
-        return raw_output[:2000]  # Fallback: truncate if parsing failed or bloated
-
-    log(f"[PARSE] Reduced test output: {len(raw_output)} -> {len(parsed)} chars")
-    return parsed
 
 
 def _git_has_head() -> bool:
@@ -628,25 +500,38 @@ Map code relevant to the task. Quality over quantity.
 
 <constraints>
 - Max 30 files total
-- Skip: test*, docs/, node_modules/, venv/, migrations/, __pycache__/
+- Skip: tests and build files: test*, docs/, node_modules/, venv/, migrations/, __pycache__/, etc
 - If unsure whether a file matters, include in Context (not Targeted)
 </constraints>
 
 <output>
 Write to: {output_file}
 
-Format (markdown, all 4 sections required, use "None" if empty):
+Format (markdown, ALL 5 SECTIONS REQUIRED):
 ## Targeted Files (Must Change)
 - `path/to/file.py`: one-line reason
 
 ## Context Files (Read-Only)
-- `path/to/file.py`: one-line reason
+- `path/to/file.py`: one-line reason (or "None")
 
 ## Deletion Candidates
-- `path/to/file.py`: one-line reason
+- `path/to/file.py`: one-line reason (or "None")
 
 ## Open Questions
-- Question about ambiguity
+- Question about ambiguity (or "None")
+
+## Triage
+COMPLEXITY: LOW or HIGH
+CONFIDENCE: 0.0-1.0
+FAST_TRACK: YES or NO
+
+If FAST_TRACK=YES, also include:
+TARGET_FILE: exact/path
+OPERATION: UPDATE|INSERT|DELETE
+INSTRUCTION: one-line change description
+
+FAST_TRACK=YES only if: 1-2 files, obvious fix, no new deps, not auth/payments.
+If unsure, FAST_TRACK=NO.
 </output>"""
 
 
@@ -843,7 +728,6 @@ def get_completed_steps() -> set:
 
 def run_linter() -> Tuple[bool, str]:
     """Run the linter with timeout - package imports directly."""
-    from . import linter
 
     result: List = [False, f"Linter timed out after {TIMEOUT_LINTER}s"]
 
@@ -1009,114 +893,6 @@ You are the senior specialist. Analyze the problem fresh and fix it definitively
             sys.exit(1)
 
 
-def phase_verify() -> bool:
-    """Returns True if verification passed, False otherwise."""
-    log("\n[VERIFY] Running tests...")
-    plan = read_file(PLAN_FILE)
-
-    # Versioned output files for user visibility
-    last_failure_hash: Optional[str] = None
-    stuck_count = 0
-
-    base_prompt = f"""<task>
-Verify implementation is complete.
-</task>
-
-<context>
-IMPORTANT: This is a fresh session. Read files to understand current state.
-
-Plan executed:
-{plan}
-</context>
-
-<actions>
-1. Run the project's test suite with minimal output (e.g., pytest -q --tb=short)
-2. Write test results to: {TEST_OUTPUT_PATH}
-   - If tests PASS: write only the summary line (e.g., "10 passed in 1.23s")
-   - If tests FAIL: write failure tracebacks + summary line (no passing test names)
-3. If tests fail, fix the issues and re-run
-</actions>
-
-<output>
-End with exactly: TESTS_PASS or TESTS_FAIL
-</output>"""
-
-    prompt = base_prompt
-
-    for attempt in range(1, MAX_RETRIES + 2):  # +1 for initial + retries
-        output = run_claude(prompt, model=MODEL_HANDS, phase="verify", timeout=TIMEOUT_VERIFY)
-
-        if not output:
-            log("[VERIFY] No output from agent.")
-            return False
-
-        # Check file exists
-        if not TEST_OUTPUT_FILE.exists():
-            log("[VERIFY] Agent did not write test output file.")
-            prompt = base_prompt + "\n\nYou MUST write test output to the file."
-            continue
-
-        test_output = read_file(TEST_OUTPUT_FILE)
-
-        # Version the file for user
-        versioned = WORK_DIR / f"test_output_{attempt}.txt"
-        shutil.copy2(TEST_OUTPUT_FILE, versioned)
-
-        # Verify it looks like real test output
-        if not verify_test_output(test_output):
-            log("[VERIFY] File doesn't contain valid test output.")
-            prompt = base_prompt + "\n\nThe file must contain actual test framework output, not a summary."
-            continue
-
-        # Check if no tests exist - skip gracefully
-        if detect_no_tests(test_output):
-            log("[VERIFY] No tests found. Skipping verification.")
-            return True
-
-        # Check for failures
-        failure_count = extract_failure_count(test_output)
-
-        if failure_count is None or failure_count == 0:
-            # Success or can't parse (trust TESTS_PASS marker)
-            if "TESTS_PASS" in output:
-                log("[VERIFY] Passed.")
-                break
-
-        # We have failures - check for progress
-        failure_hash = hashlib.md5(test_output.encode()).hexdigest()
-
-        if failure_hash == last_failure_hash:
-            stuck_count += 1
-            if stuck_count >= 2:
-                log(f"[VERIFY] Agent stuck - same failures {stuck_count} times.")
-                print(test_output[:500])
-                return False
-            prompt += "\n\nSame failures as before. Try a DIFFERENT approach."
-        else:
-            stuck_count = 0  # Reset - making progress
-            if last_failure_hash is not None:
-                log(f"[VERIFY] Progress: failures changed (attempt {attempt})")
-
-        last_failure_hash = failure_hash
-
-        # Use Haiku to parse verbose output before feeding to Sonnet
-        parsed_output = parse_test_output(test_output)
-
-        prompt = f"""Tests still failing. Fix them.
-
-Test output (from {TEST_OUTPUT_PATH}):
-{parsed_output}
-
-Write updated test output to: {TEST_OUTPUT_PATH}
-End with: TESTS_PASS or TESTS_FAIL"""
-
-    else:
-        log(f"[VERIFY] Failed after {MAX_RETRIES} attempts.")
-        return False
-
-    return True
-
-
 def phase_judge() -> None:
     """Judge phase: Review implementation for quality and alignment."""
     log("\n[JUDGE] Senior Architect review...")
@@ -1272,10 +1048,14 @@ End with: FIXES_COMPLETE or FIXES_BLOCKED: <reason>
                 print(f"    {line}")
             sys.exit(1)
 
-        # Re-run verify (tests)
-        log("[JUDGE_FIX] Re-verifying tests...")
-        if not phase_verify():
+        # Re-run verify (tests) - just check, don't try to fix
+        log("[JUDGE_FIX] Checking tests...")
+        state, _ = phase_verify()
+        if state == TestState.FAIL:
             log("[JUDGE_FIX] Tests failed after fixes.")
+            sys.exit(1)
+        elif state == TestState.ERROR:
+            log("[JUDGE_FIX] Test runner error.")
             sys.exit(1)
 
         # Update changed files for next judge loop
@@ -1358,19 +1138,51 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
             log(f"[SCOUT] Using provided context: {scout_context}")
         else:
             phase_scout(task_file)
-        phase_plan(task_file)
-        phase_implement()
-        if skip_verify:
-            log("[VERIFY] Skipped (--skip-verify flag)")
-        elif not phase_verify():
-            sys.exit(1)
 
-        if not skip_judge and not should_skip_judge():
-            phase_judge()
-        else:
-            if skip_judge:
-                log("[JUDGE] Skipped (--skip-judge flag)")
-            # else: should_skip_judge() already logged reason
+        # --- TRIAGE CHECK ---
+        scout_output = read_file(SCOUT_FILE)
+        triage = parse_triage(scout_output)
+        fast_track_succeeded = False
+
+        if should_fast_track(triage):
+            log(f"[TRIAGE] FAST_TRACK (confidence={triage.confidence:.2f})")
+
+            # Generate synthetic plan from micro-spec
+            write_file(PLAN_FILE, generate_synthetic_plan(triage))
+
+            phase_implement()
+
+            if skip_verify:
+                log("[VERIFY] Skipped (--skip-verify flag)")
+                fast_track_succeeded = True
+            elif not project_has_tests():
+                log("[VERIFY] Skipped (no test files in project)")
+                fast_track_succeeded = True
+            elif verify_and_fix():
+                log("[TRIAGE] Fast Track verified. Skipping Judge.")
+                fast_track_succeeded = True
+            else:
+                log("[TRIAGE] Fast Track failed verify. Escalating to Planner...")
+                # Fall through to standard path
+        # --- END TRIAGE ---
+
+        if not fast_track_succeeded:
+            # Standard path (fallback or default)
+            phase_plan(task_file)
+            phase_implement()
+            if skip_verify:
+                log("[VERIFY] Skipped (--skip-verify flag)")
+            elif not project_has_tests():
+                log("[VERIFY] Skipped (no test files in project)")
+            elif not verify_and_fix():
+                sys.exit(1)
+
+            if not skip_judge and not should_skip_judge():
+                phase_judge()
+            else:
+                if skip_judge:
+                    log("[JUDGE] Skipped (--skip-judge flag)")
+                # else: should_skip_judge() already logged reason
 
         # Generate summary (once, after all phases complete)
         plan = read_file(PLAN_FILE)
