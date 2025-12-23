@@ -144,10 +144,11 @@ _FILE_LINE_PATTERN = re.compile(r'File "([^"]+)", line (\d+)')
 # -----------------------------------------------------------------------------
 class TestState(Enum):
     """Result of running tests."""
-    PASS = auto()    # All tests passed
-    FAIL = auto()    # Tests ran, some failed
-    NONE = auto()    # No tests found
-    ERROR = auto()   # Command crashed / couldn't run
+    PASS = auto()           # All tests passed
+    FAIL = auto()           # Tests ran, some failed
+    NONE = auto()           # No tests found
+    ERROR = auto()          # Command crashed / couldn't run
+    RUNTIME_MISSING = auto() # Required runtime not installed
 
 
 class FixResult(Enum):
@@ -536,6 +537,43 @@ def project_has_tests() -> bool:
                 return True
 
     return False
+
+
+def detect_project_runtime() -> Tuple[Optional[str], bool]:
+    """
+    Detect project type from config files and check if runtime is available.
+
+    Returns (runtime_name, is_available). If no config detected, returns (None, True)
+    to allow fallback to Python/pytest.
+    """
+    # Config file -> runtime command mapping
+    # Order matters: more specific first
+    checks = [
+        ("package.json", "node"),
+        ("go.mod", "go"),
+        ("build.gradle", "gradle"),
+        ("build.gradle.kts", "gradle"),
+        ("pom.xml", "mvn"),
+        ("Cargo.toml", "cargo"),
+        ("*.csproj", "dotnet"),
+        ("*.fsproj", "dotnet"),
+        ("mix.exs", "elixir"),
+        ("Gemfile", "ruby"),
+        ("composer.json", "php"),
+        ("pubspec.yaml", "dart"),
+        ("Package.swift", "swift"),
+        ("build.zig", "zig"),
+        ("build.sbt", "sbt"),
+        ("CMakeLists.txt", "cmake"),
+        ("*.cabal", "cabal"),
+    ]
+
+    for config_pattern, runtime in checks:
+        if list(PROJECT_ROOT.glob(config_pattern)):
+            return runtime, shutil.which(runtime) is not None
+
+    # No specific config found - assume Python (always available)
+    return None, True
 
 
 def extract_failure_count(output: str) -> Optional[int]:
@@ -1206,12 +1244,18 @@ def phase_verify() -> Tuple[TestState, str]:
     """
     Run tests once, no fixing. Returns (state, raw_output).
 
-    Uses MODEL_EYES (haiku) for cost efficiency.
+    Uses MODEL_HANDS (sonnet) for cost efficiency.
     """
     log("\n[VERIFY] Running tests...")
 
     # Ensure work dir exists
     WORK_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Pre-check: detect project runtime and verify it's installed
+    runtime, available = detect_project_runtime()
+    if not available:
+        log(f"[VERIFY] Runtime '{runtime}' not installed, skipping tests.")
+        return TestState.RUNTIME_MISSING, f"Runtime '{runtime}' not found"
 
     # Get changed files to scope test run
     changed_files = get_changed_filenames()
@@ -1236,6 +1280,7 @@ Run tests relevant to the changed files.
 - Do NOT attempt to fix any failures
 - Do NOT re-run tests
 - Just run relevant tests once and report
+- If required runtime is not installed, report TESTS_ERROR immediately
 </rules>
 
 <output>
@@ -1246,7 +1291,7 @@ End with exactly one of:
 - TESTS_ERROR (could not run tests)
 </output>"""
 
-    output = run_claude(prompt, model=MODEL_EYES, phase="verify", timeout=TIMEOUT_VERIFY)
+    output = run_claude(prompt, model=MODEL_HANDS, phase="verify", timeout=TIMEOUT_VERIFY)
 
     if not output:
         log("[VERIFY] No output from agent.")
@@ -1382,6 +1427,10 @@ def verify_and_fix() -> bool:
 
         if state == TestState.NONE:
             log("[VERIFY] No tests found, skipping verification.")
+            return True
+
+        if state == TestState.RUNTIME_MISSING:
+            log("[VERIFY] Runtime not installed, skipping verification.")
             return True
 
         if state == TestState.ERROR:
@@ -1570,6 +1619,8 @@ End with: FIXES_COMPLETE or FIXES_BLOCKED: <reason>
         elif state == TestState.ERROR:
             log("[JUDGE_FIX] Test runner error.")
             sys.exit(1)
+        elif state == TestState.RUNTIME_MISSING:
+            log("[JUDGE_FIX] Runtime not installed, skipping tests.")
 
         # Update changed files for next judge loop
         changed_files = get_changed_filenames()
