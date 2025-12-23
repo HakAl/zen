@@ -2,6 +2,7 @@
 Zen Lint: Universal "Lazy Coder" Detector.
 Scans for forbidden patterns (TODO, FIXME, SHIM).
 """
+import os
 import sys
 import re
 import json
@@ -12,6 +13,10 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Tuple, Dict, Optional, Set
 from io import StringIO
+
+# Import shared utilities
+from zen_mode import utils
+from zen_mode.utils import IGNORE_DIRS, IGNORE_FILES, BINARY_EXTS
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -135,78 +140,17 @@ LANG_SYNTAX = {
     '.jl': ('#', '#=', '=#'),
 }
 
-IGNORE_DIRS: Set[str] = {
-    # Version control
-    ".git", ".svn", ".hg", ".zen",
-    # Python
-    "__pycache__", "venv", ".venv", "env", ".eggs", "*.egg-info",
-    ".mypy_cache", ".pytest_cache", ".tox", ".nox", ".ruff_cache",
-    "site-packages", "htmlcov", ".hypothesis",
-    # JavaScript/Node
-    "node_modules", "bower_components", ".npm", ".yarn", ".pnpm",
-    # Build outputs
-    "dist", "build", "target", "bin", "obj", "out", "_build",
-    "cmake-build-debug", "cmake-build-release", "CMakeFiles",
-    # IDE/Editor
-    ".idea", ".vscode", ".vs", ".eclipse", ".settings",
-    # Coverage
-    "coverage", ".coverage", ".nyc_output",
-    # Framework-specific
-    ".next", ".nuxt", ".output", ".svelte-kit", ".astro",
-    ".angular", ".docusaurus", ".meteor",
-    # Infrastructure/Deploy
-    ".terraform", ".serverless", ".aws-sam", "cdk.out",
-    ".vercel", ".netlify", ".firebase",
-    # Other languages
-    ".gradle", ".cargo", ".stack-work", "Pods", "Carthage",
-    "DerivedData", "vendor", "deps", "elm-stuff",
-    # Misc
-    "tmp", "temp", "cache", ".cache", "logs",
-}
-
-IGNORE_FILES: Set[str] = {
-    # Lock files
-    "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "go.sum",
-    "Cargo.lock", "Gemfile.lock", "poetry.lock", "composer.lock",
-    "packages.lock.json", "flake.lock", "pubspec.lock",
-    # OS artifacts
-    ".DS_Store", "Thumbs.db", "desktop.ini",
-    # Editor artifacts
-    ".gitignore", ".gitattributes", ".editorconfig",
-    # Docs/meta (not code)
-    "LICENSE", "LICENSE.md", "LICENSE.txt", "LICENCE",
-    "CHANGELOG.md", "CHANGELOG", "HISTORY.md",
-    "AUTHORS", "CONTRIBUTORS", "CODEOWNERS",
-    # Config files (too many false positives)
-    ".prettierrc", ".eslintrc", ".stylelintrc",
-    "tsconfig.json", "jsconfig.json",
-    # Misc
-    ".npmrc", ".nvmrc", ".python-version", ".ruby-version",
-    ".tool-versions", "requirements.txt", "Pipfile",
-    # Environment files (should be gitignored, not our job)
-    ".env", ".env.local", ".env.development", ".env.production",
-    ".env.test", ".env.staging", ".env.example",
-}
-
-IGNORE_EXTS: Set[str] = {
-    # Images
-    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".svg", ".bmp",
-    # Documents (binary)
-    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
-    # Documentation (text) - too many false positives
+# Text file extensions to skip during linting (but not filtered from git)
+# These are text files that could have secrets/TODOs but have too many false positives
+LINT_SKIP_EXTS: Set[str] = {
+    # Documentation (text) - too many false positives for TODOs
     ".md", ".markdown", ".rst", ".txt", ".adoc", ".textile",
-    # Archives
-    ".zip", ".tar", ".gz", ".bz2", ".7z", ".rar",
-    # Binaries
-    ".exe", ".dll", ".so", ".dylib", ".class", ".pyc", ".pyo", ".o", ".a",
-    # Fonts
-    ".woff", ".woff2", ".ttf", ".eot", ".otf",
-    # Media
-    ".mp3", ".mp4", ".wav", ".avi", ".mov", ".mkv", ".flac", ".ogg",
-    # Generated/minified
+    # Generated/minified code
     ".min.js", ".min.css", ".map", ".bundle.js",
-    # Data files
-    ".csv", ".tsv", ".json", ".xml", ".lock",
+    # Data files (could have secrets in templates, but too noisy to lint)
+    ".csv", ".tsv",
+    # Lock files already in IGNORE_FILES, but also by extension
+    ".lock",
 }
 
 # Suppression patterns for different comment styles
@@ -394,9 +338,11 @@ def check_file(path: str, min_severity: str = "LOW", config: Optional[Dict] = No
         return []
     if p.name in IGNORE_FILES:
         return []
-    if p.suffix.lower() in IGNORE_EXTS:
+    # Skip binary files (never lint)
+    if p.suffix.lower() in BINARY_EXTS:
         return []
-    if any(p.name.endswith(ext) for ext in ['.min.js', '.min.css']):
+    # Skip text files with too many false positives
+    if p.suffix.lower() in LINT_SKIP_EXTS:
         return []
     # Skip large files (> 1MB) to avoid performance issues
     if p.stat().st_size > 1_000_000:
@@ -708,16 +654,47 @@ def run_lint(paths: Optional[List[str]] = None, min_severity: str = "LOW",
     all_violations = []
 
     for root_arg in paths:
+        # CRITICAL: Filter out ignored paths before processing
+        # This prevents the "top-level loophole" where explicitly passed
+        # ignored directories (e.g., from git changes) would be scanned
+        if utils.should_ignore_path(root_arg):
+            continue
+
         path = Path(root_arg)
         if path.is_file():
             all_violations.extend(check_file(str(path), min_severity, config))
         elif path.is_dir():
-            for p in path.rglob("*"):
-                if any(part in IGNORE_DIRS or any(fnmatch.fnmatch(part, pattern) for pattern in IGNORE_DIRS)
-                       for part in p.parts):
-                    continue
-                if p.is_file():
-                    all_violations.extend(check_file(str(p), min_severity, config))
+            # Walk directory tree, pruning ignored dirs early for efficiency
+            for root, dirs, files in os.walk(path):
+                # Prune ignored directories IN-PLACE (prevents descending into them)
+                # This is the standard Python pattern for efficient directory filtering
+                def should_keep_dir(d):
+                    # Check exact match
+                    if d in IGNORE_DIRS:
+                        return False
+                    # Check glob patterns (e.g., *.egg-info)
+                    if any(fnmatch.fnmatch(d, pattern) for pattern in IGNORE_DIRS if '*' in pattern):
+                        return False
+                    # Check hidden directories
+                    if d.startswith('.'):
+                        return False
+                    return True
+                dirs[:] = [d for d in dirs if should_keep_dir(d)]
+
+                # Check files in this directory
+                for file in files:
+                    # Skip ignored files
+                    if file in IGNORE_FILES:
+                        continue
+                    # Skip binary extensions (never lint)
+                    if any(file.endswith(ext) for ext in BINARY_EXTS):
+                        continue
+                    # Skip text files with too many false positives
+                    if any(file.endswith(ext) for ext in LINT_SKIP_EXTS):
+                        continue
+
+                    file_path = Path(root) / file
+                    all_violations.extend(check_file(str(file_path), min_severity, config))
 
     output, exit_code = format_report(all_violations, "text")
     return exit_code == 0, output

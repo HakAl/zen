@@ -1,12 +1,20 @@
 # Zen.py Refinements - Implementation Plan
 
+
+```
+docs cleanup
+  The mess is real. We have:
+  - User-facing docs mixed with internal design docs
+  - No clear distinction between "how it works" vs "planned improvements"
+  - No Fast Track documentation at all
+  - No index/navigation
+
+```
+
 Changes organized by priority.
 
 ## P1: High Priority
 
----
-Complexity heuristics for swarm tasks: Simple tasks (add comment, rename) cost $1 because zen runs full lifecycle (scout→plan→implement→verify). Need heuristics to detect trivial tasks and skip/simplify phases. E.g., skip verify for comment-only changes, reduce planning for single-file edits.
----
 ---
 Detect task completion at beginning of zen run from previous zen run
 ---
@@ -36,8 +44,7 @@ create number of workers based on task, why flag?
 
   Gaps & Solutions
 
-  1. "No tests found" detection (biggest gap)
-
+  1. "No tests found" detection
   The agent can loop forever if tests don't exist. Need to detect patterns like:
   "no tests ran"
   "collected 0 items"
@@ -48,22 +55,8 @@ create number of workers based on task, why flag?
   - B) Output parsing: Check test_output for "0 collected" / "no tests ran" patterns
   - C) Both: Parse + fallback marker
 
-  2. Timeout issue (600s is too long)
+  3. --skip-verify flag - Simple CLI flag. Just skip phase_verify() if set.
 
-  If tests hang, we wait 10 minutes per attempt.
-
-  Options:
-  - A) Reduce default: TIMEOUT_EXEC = 120
-  - B) Separate timeout: TIMEOUT_VERIFY = 120 (keep EXEC at 600 for implement phase)
-
-  3. --skip-verify flag
-
-  Simple CLI flag. Just skip phase_verify() if set.
-
-  ---
-  My recommendation: Option B for #1 (parse output), Option B for #2 (separate timeout), straightforward for #3.
-
-  Which gap do you want to tackle first, or do you have a preferred approach?
 ---
 
 
@@ -88,18 +81,6 @@ Reling solely on the LLM (Option A) is expensive and non-deterministic. Relying 
 
 ---
 
-### 2. The Timeout Strategy
-**Recommendation: Option B (Separate Timeouts)**
-
-You definitely want `TIMEOUT_VERIFY = 120s` while keeping `TIMEOUT_IMPLEMENT = 600s`.
-
-*   **The Logic:**
-    *   **Implementation Phase:** Often involves `npm install`, `pip install`, or compiling binaries (Rust/Go/C++). These validly take >2 minutes. Cutting this to 120s will cause false failures on heavy setups.
-    *   **Verification Phase:** If a test suite hangs for >120s *after* compilation, it's almost certainly a deadlock or an infinite loop in the code. Failing fast here is crucial to save time.
-
-**Implementation Tip:** Pass a `timeout` argument to your shell execution function that varies based on which `phase` the agent is currently in.
-
----
 
 ### 3. The `--skip-verify` Flag
 **Recommendation: explicit state handling.**
@@ -111,45 +92,8 @@ Don't just skip the function call. You must inject this context into the Agent's
 
 ---
 
-### Summary of Changes (The "To-Do" List)
 
-Here is the recommended order of operations to close the gap:
-
-1.  **Configuration Tweak (Easy):**
-    *   Bump `MAX_RETRIES` to `5`.
-    *   Bump Stuck Detection to `3`.
-2.  **Architecture Change (Medium):**
-    *   Split the timeout logic. Define `DEFAULT_TIMEOUT=600` and `TEST_TIMEOUT=120`. Apply `TEST_TIMEOUT` only when the tool call is identified as a test command (or during the verify loop).
-3.  **Logic Logic (Hard - The "No Tests" Gap):**
-    *   Implement a `scan_for_empty_tests(output)` helper function.
-    *   Add regex patterns for your supported languages (Python, JS, Go).
-    *   If matches -> return `True`, log "No tests found, skipping verification", and exit the loop gracefully.
-4.  **CLI (Easy):**
-    *   Add the arg parser for `--skip-verify`.
-
-**Does this distinction between "Hard-coded Heuristics" vs "Prompt Instructions" make sense for your architecture?**
-
----
-
-### Priority 2: News Ticker (UX)
-
-**Problem:** Swarm workers are silent. User sees nothing for 10 minutes.
-
-**Requirements:**
-1. Single status line with `\r` updates:
-   ```
-   [SWARM] 2/3 done | Active: 1 | $1.45 | worker_abc: Step 4/6
-   ```
-2. Update every 5s by polling worker logs
-3. Final summary on completion
-4. `--verbose` flag for full streaming logs
-
-**Target files:** `src/zen_mode/swarm.py`
-
-**Estimated cost:** ~$0.75
-
-
-### Problem 3: Agree with B (pre-flight)
+### Pre-flight
 Machine-parseable `[YES/NO]` is good. Simpler format for regex:
 ```
 PREFLIGHT: FILES=YES, TASK=YES
@@ -291,14 +235,6 @@ def rule_applies_to_file(rule_name: str, filepath: Path) -> bool:
 
 ---
 
-## Implementation Order
-
-| Step | Item | Effort | Gate |
-|------|------|--------|------|
-| 1    | 2.2 `# zenlint: ignore` | ~20 LOC | Inline suppression works |
-| 2    | 2.3 Language scoping | ~40 LOC | JS rules don't fire on .md |
-
----
 
   For cost savings, the only levers are:
   1. Fewer tokens: Shorter prompts, truncate context

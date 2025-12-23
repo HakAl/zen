@@ -4,6 +4,7 @@
 Zen Lint: Universal "Lazy Coder" Detector.
 Scans for forbidden patterns (TODO, FIXME, SHIM).
 """
+import os
 import sys
 import re
 import json
@@ -675,6 +676,29 @@ def print_rules():
 # Main
 # -----------------------------------------------------------------------------
 
+def _should_ignore_path(path_str: str) -> bool:
+    """Check if path is in an ignored directory or should be skipped.
+
+    Args:
+        path_str: File or directory path to check
+
+    Returns:
+        True if path should be ignored, False otherwise
+    """
+    path = Path(path_str)
+
+    # Check if any part of the path is an ignored directory
+    for part in path.parts:
+        # Check exact match in IGNORE_DIRS
+        if part in IGNORE_DIRS:
+            return True
+        # Check if starts with dot (hidden directory)
+        if part.startswith('.'):
+            return True
+
+    return False
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Universal Code Quality Linter - Detect lazy coder patterns",
@@ -723,16 +747,33 @@ Config file (.lintrc.json):
     all_violations = []
 
     for root_arg in paths:
+        # CRITICAL: Filter out ignored paths before processing
+        # This prevents the "top-level loophole" where explicitly passed
+        # ignored directories (e.g., from git changes) would be scanned
+        if _should_ignore_path(root_arg):
+            continue
+
         path = Path(root_arg)
         if path.is_file():
             all_violations.extend(check_file(str(path), args.severity, config))
         elif path.is_dir():
-            for p in path.rglob("*"):
-                if any(part in IGNORE_DIRS or any(fnmatch.fnmatch(part, pattern) for pattern in IGNORE_DIRS)
-                       for part in p.parts):
-                    continue
-                if p.is_file():
-                    all_violations.extend(check_file(str(p), args.severity, config))
+            # Walk directory tree, pruning ignored dirs early for efficiency
+            for root, dirs, files in os.walk(path):
+                # Prune ignored directories IN-PLACE (prevents descending into them)
+                # This is the standard Python pattern for efficient directory filtering
+                dirs[:] = [d for d in dirs if d not in IGNORE_DIRS and not d.startswith('.')]
+
+                # Check files in this directory
+                for file in files:
+                    # Skip ignored files
+                    if file in IGNORE_FILES:
+                        continue
+                    # Skip ignored extensions
+                    if any(file.endswith(ext) for ext in IGNORE_EXTS):
+                        continue
+
+                    file_path = Path(root) / file
+                    all_violations.extend(check_file(str(file_path), args.severity, config))
         else:
             print(f"Warning: {root_arg} not found", file=sys.stderr)
 

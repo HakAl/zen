@@ -122,6 +122,17 @@ def generate_synthetic_plan(triage: TriageResult) -> str:
     """Generate plan.md content from micro-spec."""
     description = _sanitize_header(triage.micro_spec)
     target = triage.target_file or "see instructions"
+
+    # Check if this is a verification-only task
+    is_verify = "OPERATION: VERIFY_COMPLETE" in (triage.micro_spec or "")
+
+    if is_verify:
+        return (
+            "# Fast Track Plan (Verification Only)\n\n"
+            f"## Step 1: Verify task is already complete\n\n"
+            f"**Verification:**\n{triage.micro_spec}"
+        )
+
     return (
         "# Fast Track Plan\n\n"
         f"## Step 1: {description}\n\n"
@@ -874,11 +885,14 @@ CONFIDENCE: 0.0-1.0
 FAST_TRACK: YES or NO
 
 If FAST_TRACK=YES, also include:
-TARGET_FILE: exact/path
-OPERATION: UPDATE|INSERT|DELETE
-INSTRUCTION: one-line change description
+TARGET_FILE: exact/path (or "N/A" if VERIFY_COMPLETE)
+OPERATION: UPDATE|INSERT|DELETE|VERIFY_COMPLETE
+INSTRUCTION: one-line change description (or verification summary)
 
-FAST_TRACK=YES only if: 1-2 files, obvious fix, no new deps, not auth/payments.
+FAST_TRACK=YES if:
+- 1-2 files, obvious fix, no new deps, not auth/payments, OR
+- Task already complete with HIGH confidence (use OPERATION: VERIFY_COMPLETE)
+
 If unsure, FAST_TRACK=NO.
 </output>"""
 
@@ -1134,7 +1148,36 @@ def phase_implement() -> None:
 
         log(f"\n[STEP {step_num}] {step_desc[:60]}...")
 
-        base_prompt = f"""<task>
+        # Check if this is a verification-only task (task already complete)
+        is_verify_only = "OPERATION: VERIFY_COMPLETE" in plan
+
+        if is_verify_only:
+            base_prompt = f"""<task>
+Verify that the task described below is already complete.
+</task>
+
+<verification>
+{step_desc}
+</verification>
+
+<context>
+Full plan:
+{plan}
+</context>
+
+<instructions>
+1. READ the relevant files to confirm the task is complete
+2. If complete, explain what was already in place
+3. If NOT complete, explain what's missing
+
+Do NOT make any changes. This is verification only.
+</instructions>
+
+<output>
+End with: STEP_COMPLETE (if verified) or STEP_BLOCKED: <reason> (if not complete)
+</output>"""
+        else:
+            base_prompt = f"""<task>
 Execute Step {step_num}: {step_desc}
 </task>
 
@@ -1257,37 +1300,39 @@ def phase_verify() -> Tuple[TestState, str]:
         log(f"[VERIFY] Runtime '{runtime}' not installed, skipping tests.")
         return TestState.RUNTIME_MISSING, f"Runtime '{runtime}' not found"
 
-    # Get changed files to scope test run
-    changed_files = get_changed_filenames()
+    # Get plan context for intelligent test selection
+    plan = read_file(PLAN_FILE) if PLAN_FILE.exists() else "[No plan available]"
 
     prompt = f"""<task>
-Run tests relevant to the changed files.
+Verify the implementation by running relevant tests.
 </task>
 
-<changed_files>
-{changed_files}
-</changed_files>
+<context>
+Plan that was executed:
+{plan[:2000]}
+</context>
 
 <actions>
-1. Identify test files related to the changed files
-2. Run ONLY those relevant tests (e.g., pytest path/to/test_file.py)
-3. If no relevant tests exist, run the minimal test suite
-4. Write output to: {TEST_OUTPUT_PATH}
+1. Based on the plan, run tests for what was implemented
+2. Use minimal output (e.g., pytest -q --tb=short)
+3. If the plan created new tests, focus on those
+4. If unsure, run the project's minimal test suite
+5. Write test output to: {TEST_OUTPUT_PATH}
 </actions>
 
 <rules>
-- Do NOT run the full test suite
+- Focus on testing what the PLAN implemented, not all changed files
+- Avoid running unrelated tests with pre-existing failures
 - Do NOT attempt to fix any failures
 - Do NOT re-run tests
-- Just run relevant tests once and report
-- If required runtime is not installed, report TESTS_ERROR immediately
+- Just run tests once and report results
 </rules>
 
 <output>
 End with exactly one of:
 - TESTS_PASS (all tests passed)
 - TESTS_FAIL (one or more failures)
-- TESTS_NONE (no tests found for changed files)
+- TESTS_NONE (no tests found)
 - TESTS_ERROR (could not run tests)
 </output>"""
 

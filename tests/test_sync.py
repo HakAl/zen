@@ -27,7 +27,6 @@ SYNCED_FUNCTIONS = [
     # Git helpers
     "_git_has_head",
     "_git_is_repo",
-    "get_changed_filenames",
     "should_skip_judge",
     "_is_test_or_doc",
     # File utilities
@@ -48,7 +47,6 @@ SYNCED_FUNCTIONS = [
     "phase_scout",
     "phase_plan",
     "phase_implement",
-    "phase_judge",
     "validate_plan_efficiency",
 ]
 
@@ -63,6 +61,8 @@ INTENTIONALLY_DIFFERENT = {
     "_init_claude": "Package-only lazy initialization",
     "find_linter": "Script-only external linter discovery",
     "project_has_tests": "Package uses linter.TEST_FILE_PATTERNS, script imports directly",
+    "get_changed_filenames": "Package imports from utils.py, script has inline",
+    "phase_judge": "Package calls utils.get_changed_filenames(), script calls get_changed_filenames()",
     # Moved to verify.py in package (script still has them inline)
     "verify_test_output": "Package imports from verify.py, script has inline",
     "detect_no_tests": "Package imports from verify.py, script has inline",

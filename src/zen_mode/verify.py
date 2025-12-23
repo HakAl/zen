@@ -285,7 +285,7 @@ def phase_verify() -> Tuple[TestState, str]:
     Uses MODEL_HANDS (sonnet).
     """
     # Import here to avoid circular dependency
-    from zen_mode.core import run_claude, log, read_file, get_changed_filenames
+    from zen_mode.core import run_claude, log, read_file
 
     log("\n[VERIFY] Running tests...")
 
@@ -298,37 +298,39 @@ def phase_verify() -> Tuple[TestState, str]:
         log(f"[VERIFY] Runtime '{runtime}' not installed, skipping tests.")
         return TestState.RUNTIME_MISSING, f"Runtime '{runtime}' not found"
 
-    # Get changed files to scope test run
-    changed_files = get_changed_filenames()
+    # Get plan context for intelligent test selection
+    plan = read_file(PLAN_FILE) if PLAN_FILE.exists() else "[No plan available]"
 
     prompt = f"""<task>
-Run tests relevant to the changed files.
+Verify the implementation by running relevant tests.
 </task>
 
-<changed_files>
-{changed_files}
-</changed_files>
+<context>
+Plan that was executed:
+{plan[:2000]}
+</context>
 
 <actions>
-1. Identify test files related to the changed files
-2. Run ONLY those relevant tests (e.g., pytest path/to/test_file.py)
-3. If no relevant tests exist, run the minimal test suite
-4. Write output to: {TEST_OUTPUT_PATH_STR}
+1. Based on the plan, run tests for what was implemented
+2. Use minimal output (e.g., pytest -q --tb=short)
+3. If the plan created new tests, focus on those
+4. If unsure, run the project's minimal test suite
+5. Write test output to: {TEST_OUTPUT_PATH_STR}
 </actions>
 
 <rules>
-- Do NOT run the full test suite
+- Focus on testing what the PLAN implemented, not all changed files
+- Avoid running unrelated tests with pre-existing failures
 - Do NOT attempt to fix any failures
 - Do NOT re-run tests
-- Just run relevant tests once and report
-- If required runtime is not installed, report TESTS_ERROR immediately
+- Just run tests once and report results
 </rules>
 
 <output>
 End with exactly one of:
 - TESTS_PASS (all tests passed)
 - TESTS_FAIL (one or more failures)
-- TESTS_NONE (no tests found for changed files)
+- TESTS_NONE (no tests found)
 - TESTS_ERROR (could not run tests)
 </output>"""
 

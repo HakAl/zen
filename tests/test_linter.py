@@ -8,12 +8,11 @@ from zen_mode.linter import (
     split_code_comment,
     find_string_ranges,
     is_binary,
-    IGNORE_DIRS,
-    IGNORE_FILES,
-    IGNORE_EXTS,
+    LINT_SKIP_EXTS,
     TEST_EXEMPT_RULES,
     TEST_FILE_PATTERNS,
 )
+from zen_mode.utils import IGNORE_DIRS, IGNORE_FILES, BINARY_EXTS
 
 
 class TestIgnoreDirs:
@@ -50,18 +49,18 @@ class TestIgnoreFiles:
 
 
 class TestIgnoreExts:
-    """Test that IGNORE_EXTS skips expected extensions."""
+    """Test that BINARY_EXTS and LINT_SKIP_EXTS skip expected extensions."""
 
-    def test_images_ignored(self):
-        assert ".png" in IGNORE_EXTS
-        assert ".jpg" in IGNORE_EXTS
+    def test_images_in_binary_exts(self):
+        assert ".png" in BINARY_EXTS
+        assert ".jpg" in BINARY_EXTS
 
-    def test_markdown_ignored(self):
-        assert ".md" in IGNORE_EXTS
+    def test_markdown_in_lint_skip_exts(self):
+        assert ".md" in LINT_SKIP_EXTS
 
-    def test_binaries_ignored(self):
-        assert ".exe" in IGNORE_EXTS
-        assert ".dll" in IGNORE_EXTS
+    def test_binaries_in_binary_exts(self):
+        assert ".exe" in BINARY_EXTS
+        assert ".dll" in BINARY_EXTS
 
 
 class TestTestFilePatterns:
@@ -414,6 +413,106 @@ class TestRunLint:
         (tmp_path / "main.py").write_text('x = 1\n')
         passed, output = run_lint([str(tmp_path)])
         assert passed  # Should not find the violation in .zen
+
+    def test_ignores_node_modules_directory(self, tmp_path):
+        """BUG FIX TEST: node_modules should be excluded from scanning."""
+        # Create node_modules with violations
+        node_modules = tmp_path / "node_modules" / "@babel" / "core"
+        node_modules.mkdir(parents=True)
+        (node_modules / "index.js").write_text('<<<<<<< HEAD\nconsole.log("conflict");\n// TODO: fix\n')
+
+        # Create normal project file
+        (tmp_path / "app.js").write_text('const x = 1;\n')
+
+        passed, output = run_lint([str(tmp_path)])
+        # Should pass because node_modules violations are ignored
+        assert passed, f"node_modules should be ignored but got: {output}"
+        assert "node_modules" not in output, "node_modules should not appear in lint output"
+
+    def test_ignores_build_directories(self, tmp_path):
+        """All build/cache/coverage directories should be ignored."""
+        # Create various build/cache directories with violations
+        ignore_dirs = ["build", "dist", ".cache", "coverage", "__pycache__", ".pytest_cache"]
+
+        for dirname in ignore_dirs:
+            dir_path = tmp_path / dirname
+            dir_path.mkdir()
+            (dir_path / "file.py").write_text('YOUR_KEY_HERE = "secret"\n')
+
+        # Create normal file
+        (tmp_path / "main.py").write_text('x = 1\n')
+
+        passed, output = run_lint([str(tmp_path)])
+        assert passed, f"Build dirs should be ignored but got: {output}"
+        for dirname in ignore_dirs:
+            assert dirname not in output, f"{dirname} should not appear in lint output"
+
+    def test_ignores_nested_node_modules(self, tmp_path):
+        """node_modules nested deep in project should be ignored."""
+        # Create nested node_modules (not at root)
+        nested = tmp_path / "packages" / "frontend" / "node_modules" / "react"
+        nested.mkdir(parents=True)
+        (nested / "index.js").write_text('<<<<<<< CONFLICT\n')
+
+        # Normal file
+        (tmp_path / "app.py").write_text('x = 1\n')
+
+        passed, output = run_lint([str(tmp_path)])
+        assert passed, f"Nested node_modules should be ignored but got: {output}"
+        assert "node_modules" not in output
+
+    def test_does_not_ignore_similar_names(self, tmp_path):
+        """Directories with similar names to ignored dirs should NOT be ignored."""
+        # Create dirs with similar but not exact names
+        (tmp_path / "node_modules_backup").mkdir()
+        (tmp_path / "node_modules_backup" / "test.py").write_text('YOUR_KEY_HERE = "x"\n')
+
+        (tmp_path / "my_build").mkdir()
+        (tmp_path / "my_build" / "test.py").write_text('YOUR_KEY_HERE = "x"\n')
+
+        passed, output = run_lint([str(tmp_path)])
+        # Should fail because these directories should be scanned
+        assert not passed, "Similar-named directories should be scanned"
+        assert "node_modules_backup" in output or "my_build" in output
+
+    def test_ignores_deeply_nested_violations(self, tmp_path):
+        """Violations deeply nested in ignored dirs should be skipped."""
+        deep = tmp_path / "node_modules" / "pkg" / "lib" / "vendor" / "src" / "internal"
+        deep.mkdir(parents=True)
+        (deep / "module.js").write_text('<<<<<<< HEAD\n' * 100)  # Many violations
+
+        (tmp_path / "app.js").write_text('const x = 1;\n')
+
+        passed, output = run_lint([str(tmp_path)])
+        assert passed, "Deeply nested node_modules should be ignored"
+
+    def test_ignores_hidden_directories(self, tmp_path):
+        """Directories starting with . should be ignored."""
+        hidden_dirs = [".git", ".vscode", ".idea", ".mypy_cache"]
+
+        for dirname in hidden_dirs:
+            dir_path = tmp_path / dirname
+            dir_path.mkdir()
+            (dir_path / "file.py").write_text('YOUR_KEY_HERE = "x"\n')
+
+        (tmp_path / "main.py").write_text('x = 1\n')
+
+        passed, output = run_lint([str(tmp_path)])
+        assert passed, f"Hidden directories should be ignored but got: {output}"
+
+    def test_scans_normal_directories(self, tmp_path):
+        """Normal project directories should still be scanned."""
+        # Create normal project structure
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "app.py").write_text('YOUR_KEY_HERE = "secret"\n')
+
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test.py").write_text('x = 1\n')
+
+        passed, output = run_lint([str(tmp_path)])
+        # Should fail because src/ has violations
+        assert not passed, "Normal directories should be scanned"
+        assert "src" in output or "app.py" in output
 
 
 class TestViolationDetails:

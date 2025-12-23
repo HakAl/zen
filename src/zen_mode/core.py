@@ -25,6 +25,7 @@ from zen_mode.triage import (
     should_fast_track,
     generate_synthetic_plan,
 )
+from zen_mode import utils
 from zen_mode.config import (
     MODEL_BRAIN,
     MODEL_HANDS,
@@ -309,64 +310,6 @@ def _git_is_repo() -> bool:
         return False
 
 
-def get_changed_filenames() -> str:
-    """Get list of changed files for Sonnet context.
-
-    Handles edge cases:
-    - No git repo: falls back to backup directory
-    - No commits (fresh repo): uses git diff --cached instead of diff HEAD
-    - Untracked files: always checks git ls-files --others
-    """
-    changed_files: set[str] = set()
-
-    if _git_is_repo():
-        # Try git diff against HEAD (works if commits exist)
-        if _git_has_head():
-            try:
-                result = subprocess.run(
-                    ["git", "diff", "--name-only", "HEAD"],
-                    capture_output=True, text=True, cwd=PROJECT_ROOT
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    changed_files.update(result.stdout.strip().splitlines())
-            except Exception:
-                pass
-        else:
-            # No commits yet - use git diff --cached to find staged files
-            try:
-                result = subprocess.run(
-                    ["git", "diff", "--cached", "--name-only"],
-                    capture_output=True, text=True, cwd=PROJECT_ROOT
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    changed_files.update(result.stdout.strip().splitlines())
-            except Exception:
-                pass
-
-        # Always check for untracked files (works even with no commits)
-        try:
-            result = subprocess.run(
-                ["git", "ls-files", "--others", "--exclude-standard"],
-                capture_output=True, text=True, cwd=PROJECT_ROOT
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                changed_files.update(result.stdout.strip().splitlines())
-        except Exception:
-            pass
-
-    # Return git-detected files if any
-    if changed_files:
-        return "\n".join(sorted(changed_files))
-
-    # Fallback: list files from backup directory
-    if BACKUP_DIR.exists():
-        files = [str(f.relative_to(BACKUP_DIR)) for f in BACKUP_DIR.rglob("*") if f.is_file()]
-        if files:
-            return "\n".join(files)
-
-    return "[No files detected]"
-
-
 def should_skip_judge() -> bool:
     """Skip expensive Opus review for trivial/safe changes.
 
@@ -526,11 +469,14 @@ CONFIDENCE: 0.0-1.0
 FAST_TRACK: YES or NO
 
 If FAST_TRACK=YES, also include:
-TARGET_FILE: exact/path
-OPERATION: UPDATE|INSERT|DELETE
-INSTRUCTION: one-line change description
+TARGET_FILE: exact/path (or "N/A" if VERIFY_COMPLETE)
+OPERATION: UPDATE|INSERT|DELETE|VERIFY_COMPLETE
+INSTRUCTION: one-line change description (or verification summary)
 
-FAST_TRACK=YES only if: 1-2 files, obvious fix, no new deps, not auth/payments.
+FAST_TRACK=YES if:
+- 1-2 files, obvious fix, no new deps, not auth/payments, OR
+- Task already complete with HIGH confidence (use OPERATION: VERIFY_COMPLETE)
+
 If unsure, FAST_TRACK=NO.
 </output>"""
 
@@ -787,7 +733,36 @@ def phase_implement() -> None:
 
         log(f"\n[STEP {step_num}] {step_desc[:60]}...")
 
-        base_prompt = f"""<task>
+        # Check if this is a verification-only task (task already complete)
+        is_verify_only = "OPERATION: VERIFY_COMPLETE" in plan
+
+        if is_verify_only:
+            base_prompt = f"""<task>
+Verify that the task described below is already complete.
+</task>
+
+<verification>
+{step_desc}
+</verification>
+
+<context>
+Full plan:
+{plan}
+</context>
+
+<instructions>
+1. READ the relevant files to confirm the task is complete
+2. If complete, explain what was already in place
+3. If NOT complete, explain what's missing
+
+Do NOT make any changes. This is verification only.
+</instructions>
+
+<output>
+End with: STEP_COMPLETE (if verified) or STEP_BLOCKED: <reason> (if not complete)
+</output>"""
+        else:
+            base_prompt = f"""<task>
 Execute Step {step_num}: {step_desc}
 </task>
 
@@ -905,7 +880,7 @@ def phase_judge() -> None:
     constitution_path = PROJECT_ROOT / "CLAUDE.md"
     constitution = read_file(constitution_path) if constitution_path.exists() else "[No CLAUDE.md found]"
 
-    changed_files = get_changed_filenames()
+    changed_files = utils.get_changed_filenames(PROJECT_ROOT, BACKUP_DIR)
     if changed_files == "[No files detected]":
         log("[JUDGE] No changes detected. Auto-approving.")
         return
@@ -998,7 +973,7 @@ Step 1: [specific fix action]
 
         # Apply fixes with Sonnet - include changed files list
         log("[JUDGE_FIX] Applying fixes...")
-        changed_files = get_changed_filenames()
+        changed_files = utils.get_changed_filenames(PROJECT_ROOT, BACKUP_DIR)
 
         fix_prompt = f"""<task>
 JUDGE FEEDBACK - Fixes Required:
@@ -1061,7 +1036,7 @@ End with: FIXES_COMPLETE or FIXES_BLOCKED: <reason>
             log("[JUDGE_FIX] Runtime not installed, skipping tests.")
 
         # Update changed files for next judge loop
-        changed_files = get_changed_filenames()
+        changed_files = utils.get_changed_filenames(PROJECT_ROOT, BACKUP_DIR)
 
         # Clean up feedback file on retry
         if JUDGE_FEEDBACK_FILE.exists():
