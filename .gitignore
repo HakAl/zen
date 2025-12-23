@@ -11,3 +11,4 @@ build/
 .claude
 .scrappy
 nul
+.pytest_*

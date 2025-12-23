@@ -31,8 +31,104 @@ import sys
 import time
 import tempfile
 import unicodedata
+from dataclasses import dataclass
+from enum import Enum, auto
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+import logging
+
+from zen_lint import TEST_FILE_PATTERNS
+
+# -----------------------------------------------------------------------------
+# Triage Module (inlined for standalone script)
+# -----------------------------------------------------------------------------
+_triage_logger = logging.getLogger(__name__)
+
+
+@dataclass
+class TriageResult:
+    """Result of triage analysis."""
+    fast_track: bool = False
+    confidence: float = 0.0
+    micro_spec: Optional[str] = None
+    target_file: Optional[str] = None
+
+
+def parse_triage(scout_output: str) -> TriageResult:
+    """Extract triage decision from scout output."""
+    result = TriageResult()
+
+    triage_match = re.search(r'<TRIAGE>(.*?)</TRIAGE>', scout_output, re.DOTALL | re.IGNORECASE)
+    spec_match = re.search(r'<MICRO_SPEC>(.*?)</MICRO_SPEC>', scout_output, re.DOTALL | re.IGNORECASE)
+
+    if triage_match:
+        content = triage_match.group(1)
+        if re.search(r'FAST_TRACK:\s*YES', content, re.IGNORECASE):
+            result.fast_track = True
+            conf_match = re.search(r'CONFIDENCE:\s*([\d.]+)', content, re.IGNORECASE)
+            if conf_match:
+                try:
+                    result.confidence = float(conf_match.group(1))
+                except ValueError:
+                    _triage_logger.warning("Invalid CONFIDENCE value: %r", conf_match.group(1))
+                    result.confidence = 0.0
+
+    if spec_match:
+        spec_content = spec_match.group(1).strip()
+        result.micro_spec = spec_content
+        target_match = re.search(r'TARGET_FILE:\s*([^\s#]+)', spec_content, re.IGNORECASE)
+        if target_match:
+            result.target_file = target_match.group(1)
+
+    if result.fast_track:
+        if not result.micro_spec:
+            result.fast_track = False
+        else:
+            required_fields = re.search(
+                r'TARGET_FILE:\s*\S+.*OPERATION:\s*(UPDATE|INSERT|DELETE).*INSTRUCTION:\s*\S+',
+                result.micro_spec,
+                re.IGNORECASE | re.DOTALL
+            )
+            if not required_fields:
+                _triage_logger.debug("MICRO_SPEC missing required fields, disabling fast track")
+                result.fast_track = False
+
+    return result
+
+
+def should_fast_track(triage: TriageResult, threshold: float = 0.9) -> bool:
+    """Determine if task should use fast-track path."""
+    return triage.fast_track and triage.confidence >= threshold
+
+
+def _sanitize_header(text: str, max_len: int = 60) -> str:
+    """Sanitize text for use in markdown header."""
+    if not text:
+        return "Apply changes"
+    clean = text.strip().replace('\n', ' ').replace('\r', '')
+    clean = re.sub(r'[#\[\]`]', '', clean)
+    clean = re.sub(r'\s+', ' ', clean)
+    if len(clean) > max_len:
+        cut = clean[:max_len - 3]
+        parts = cut.rsplit(' ', 1)
+        if len(parts) > 1:
+            clean = parts[0] + "..."
+        else:
+            clean = cut + "..."
+    return clean or "Apply changes"
+
+
+def generate_synthetic_plan(triage: TriageResult) -> str:
+    """Generate plan.md content from micro-spec."""
+    description = _sanitize_header(triage.micro_spec)
+    target = triage.target_file or "see instructions"
+    return (
+        "# Fast Track Plan\n\n"
+        f"## Step 1: {description}\n\n"
+        f"**Target:** {target}\n\n"
+        f"**Instructions:**\n{triage.micro_spec}"
+    )
+
 
 # -----------------------------------------------------------------------------
 # Regex constants
@@ -40,6 +136,25 @@ from typing import Dict, List, Optional, Tuple
 _FAIL_STEM = re.compile(r"\bfail", re.IGNORECASE)
 _CLAUSE_SPLIT = re.compile(r"[,;|()\[\]{}\n]")
 _DIGIT = re.compile(r"\d+")
+_FILE_LINE_PATTERN = re.compile(r'File "([^"]+)", line (\d+)')
+
+
+# -----------------------------------------------------------------------------
+# Enums
+# -----------------------------------------------------------------------------
+class TestState(Enum):
+    """Result of running tests."""
+    PASS = auto()    # All tests passed
+    FAIL = auto()    # Tests ran, some failed
+    NONE = auto()    # No tests found
+    ERROR = auto()   # Command crashed / couldn't run
+
+
+class FixResult(Enum):
+    """Result of attempting to fix tests."""
+    APPLIED = auto()
+    BLOCKED = auto()
+
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -47,13 +162,16 @@ _DIGIT = re.compile(r"\d+")
 WORK_DIR_NAME = os.getenv("ZEN_WORK_DIR", ".zen")
 LINTER_NAME = os.getenv("ZEN_LINTER", "zen_lint.py")
 MODEL_BRAIN = os.getenv("ZEN_MODEL_BRAIN", "opus")
-MODEL_HANDS = os.getenv("ZEN_MODEL_HANDS", "haiku")
+MODEL_HANDS = os.getenv("ZEN_MODEL_HANDS", "sonnet")
 MODEL_EYES = os.getenv("ZEN_MODEL_EYES", "haiku")
 TIMEOUT_EXEC = int(os.getenv("ZEN_TIMEOUT", "600"))
-TIMEOUT_VERIFY = int(os.getenv("ZEN_VERIFY_TIMEOUT", "120"))  # 2 min per verify attempt
+TIMEOUT_VERIFY = int(os.getenv("ZEN_VERIFY_TIMEOUT", "180"))  # 3 min for verify only
+TIMEOUT_FIX = int(os.getenv("ZEN_FIX_TIMEOUT", "300"))  # 5 min for fix attempts
 TIMEOUT_LINTER = int(os.getenv("ZEN_LINTER_TIMEOUT", "120"))
 TIMEOUT_SUMMARY = int(os.getenv("ZEN_SUMMARY_TIMEOUT", "180"))  # 3 min for summary
 MAX_RETRIES = int(os.getenv("ZEN_RETRIES", "2"))
+MAX_FIX_ATTEMPTS = int(os.getenv("ZEN_FIX_ATTEMPTS", "2"))
+MAX_TEST_OUTPUT_PROMPT = 2 * 1024  # 2KB for prompts
 MAX_JUDGE_LOOPS = int(os.getenv("ZEN_JUDGE_LOOPS", "2"))
 
 # Cost tracking
@@ -301,6 +419,36 @@ def find_linter() -> Optional[Path]:
     return None
 
 
+def truncate_preserve_tail(text: str, max_chars: int = 2000) -> str:
+    """
+    Truncate text while preserving the tail (where stack traces live).
+    Keeps 30% head, 70% tail.
+    """
+    if len(text) <= max_chars:
+        return text
+
+    head_size = int(max_chars * 0.3)
+    tail_size = max_chars - head_size - 20  # 20 for marker
+
+    return text[:head_size] + "\n... (truncated) ...\n" + text[-tail_size:]
+
+
+def extract_filenames(test_output: str) -> list[str]:
+    """
+    Extract unique filenames from test tracebacks.
+    Returns list of file paths mentioned in 'File "...", line N' patterns.
+    """
+    matches = _FILE_LINE_PATTERN.findall(test_output)
+    # Get unique filenames, preserve order
+    seen = set()
+    result = []
+    for filepath, _ in matches:
+        if filepath not in seen:
+            seen.add(filepath)
+            result.append(filepath)
+    return result
+
+
 def verify_test_output(output: str) -> bool:
     """
     Verify that agent output contains real test results, not just claims.
@@ -366,6 +514,26 @@ def detect_no_tests(output: str) -> bool:
     for pattern in no_test_patterns:
         if re.search(pattern, output, re.MULTILINE | re.IGNORECASE):
             return True
+
+    return False
+
+
+def project_has_tests() -> bool:
+    """Quick filesystem scan to detect if project has any test files."""
+    skip_dirs = {'.git', 'node_modules', 'venv', '.venv', '__pycache__', '.zen'}
+
+    for root, dirs, files in os.walk(PROJECT_ROOT):
+        dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith('.')]
+
+        # Limit depth to 3 levels for speed
+        depth = len(Path(root).relative_to(PROJECT_ROOT).parts)
+        if depth > 3:
+            dirs.clear()
+            continue
+
+        for f in files:
+            if TEST_FILE_PATTERNS.search(str(Path(root) / f)):
+                return True
 
     return False
 
@@ -642,25 +810,38 @@ Map code relevant to the task. Quality over quantity.
 
 <constraints>
 - Max 30 files total
-- Skip: test*, docs/, node_modules/, venv/, migrations/, __pycache__/
+- Skip: tests and build files: test*, docs/, node_modules/, venv/, migrations/, __pycache__/, etc
 - If unsure whether a file matters, include in Context (not Targeted)
 </constraints>
 
 <output>
 Write to: {output_file}
 
-Format (markdown, all 4 sections required, use "None" if empty):
+Format (markdown, ALL 5 SECTIONS REQUIRED):
 ## Targeted Files (Must Change)
 - `path/to/file.py`: one-line reason
 
 ## Context Files (Read-Only)
-- `path/to/file.py`: one-line reason
+- `path/to/file.py`: one-line reason (or "None")
 
 ## Deletion Candidates
-- `path/to/file.py`: one-line reason
+- `path/to/file.py`: one-line reason (or "None")
 
 ## Open Questions
-- Question about ambiguity
+- Question about ambiguity (or "None")
+
+## Triage
+COMPLEXITY: LOW or HIGH
+CONFIDENCE: 0.0-1.0
+FAST_TRACK: YES or NO
+
+If FAST_TRACK=YES, also include:
+TARGET_FILE: exact/path
+OPERATION: UPDATE|INSERT|DELETE
+INSTRUCTION: one-line change description
+
+FAST_TRACK=YES only if: 1-2 files, obvious fix, no new deps, not auth/payments.
+If unsure, FAST_TRACK=NO.
 </output>"""
 
 
@@ -1021,112 +1202,208 @@ You are the senior specialist. Analyze the problem fresh and fix it definitively
             sys.exit(1)
 
 
-def phase_verify() -> bool:
-    """Returns True if verification passed, False otherwise."""
+def phase_verify() -> Tuple[TestState, str]:
+    """
+    Run tests once, no fixing. Returns (state, raw_output).
+
+    Uses MODEL_EYES (haiku) for cost efficiency.
+    """
     log("\n[VERIFY] Running tests...")
-    plan = read_file(PLAN_FILE)
 
-    # Versioned output files for user visibility
-    last_failure_hash: Optional[str] = None
-    stuck_count = 0
+    # Ensure work dir exists
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
 
-    base_prompt = f"""<task>
-Verify implementation is complete.
+    # Get changed files to scope test run
+    changed_files = get_changed_filenames()
+
+    prompt = f"""<task>
+Run tests relevant to the changed files.
 </task>
 
-<context>
-IMPORTANT: This is a fresh session. Read files to understand current state.
-
-Plan executed:
-{plan}
-</context>
+<changed_files>
+{changed_files}
+</changed_files>
 
 <actions>
-1. Run the project's test suite with minimal output (e.g., pytest -q --tb=short)
-2. Write test results to: {TEST_OUTPUT_PATH}
-   - If tests PASS: write only the summary line (e.g., "10 passed in 1.23s")
-   - If tests FAIL: write failure tracebacks + summary line (no passing test names)
-3. If tests fail, fix the issues and re-run
+1. Identify test files related to the changed files
+2. Run ONLY those relevant tests (e.g., pytest path/to/test_file.py)
+3. If no relevant tests exist, run the minimal test suite
+4. Write output to: {TEST_OUTPUT_PATH}
 </actions>
 
+<rules>
+- Do NOT run the full test suite
+- Do NOT attempt to fix any failures
+- Do NOT re-run tests
+- Just run relevant tests once and report
+</rules>
+
 <output>
-End with exactly: TESTS_PASS or TESTS_FAIL
+End with exactly one of:
+- TESTS_PASS (all tests passed)
+- TESTS_FAIL (one or more failures)
+- TESTS_NONE (no tests found for changed files)
+- TESTS_ERROR (could not run tests)
 </output>"""
 
-    prompt = base_prompt
+    output = run_claude(prompt, model=MODEL_EYES, phase="verify", timeout=TIMEOUT_VERIFY)
 
-    for attempt in range(1, MAX_RETRIES + 2):  # +1 for initial + retries
-        output = run_claude(prompt, model=MODEL_HANDS, phase="verify", timeout=TIMEOUT_VERIFY)
+    if not output:
+        log("[VERIFY] No output from agent.")
+        return TestState.ERROR, ""
 
-        if not output:
-            log("[VERIFY] No output from agent.")
-            return False
+    # Check for test output file
+    if not TEST_OUTPUT_FILE.exists():
+        log("[VERIFY] Agent did not write test output file.")
+        return TestState.ERROR, ""
 
-        # Check file exists
-        if not TEST_OUTPUT_FILE.exists():
-            log("[VERIFY] Agent did not write test output file.")
-            prompt = base_prompt + "\n\nYou MUST write test output to the file."
-            continue
+    test_output = read_file(TEST_OUTPUT_FILE)
 
-        test_output = read_file(TEST_OUTPUT_FILE)
+    # Determine state from output markers and test results
+    if "TESTS_NONE" in output or detect_no_tests(test_output):
+        return TestState.NONE, test_output
 
-        # Version the file for user
-        versioned = WORK_DIR / f"test_output_{attempt}.txt"
-        shutil.copy2(TEST_OUTPUT_FILE, versioned)
+    if "TESTS_ERROR" in output:
+        return TestState.ERROR, test_output
 
+    if "TESTS_PASS" in output:
         # Verify it looks like real test output
-        if not verify_test_output(test_output):
-            log("[VERIFY] File doesn't contain valid test output.")
-            prompt = base_prompt + "\n\nThe file must contain actual test framework output, not a summary."
-            continue
+        if verify_test_output(test_output) or not test_output.strip():
+            return TestState.PASS, test_output
 
-        # Check if no tests exist - skip gracefully
-        if detect_no_tests(test_output):
-            log("[VERIFY] No tests found. Skipping verification.")
+    if "TESTS_FAIL" in output:
+        return TestState.FAIL, test_output
+
+    # Fallback: check test output directly
+    failure_count = extract_failure_count(test_output)
+    if failure_count is not None and failure_count > 0:
+        return TestState.FAIL, test_output
+
+    if verify_test_output(test_output):
+        return TestState.PASS, test_output
+
+    # Can't determine state
+    return TestState.ERROR, test_output
+
+
+def phase_fix_tests(test_output: str, attempt: int) -> FixResult:
+    """
+    Fix failing tests based on test output. Returns APPLIED or BLOCKED.
+
+    Uses MODEL_HANDS (sonnet) for code changes.
+    """
+    log(f"[FIX] Analyzing failures (attempt {attempt})...")
+
+    # Parse test output for concise summary
+    parsed = parse_test_output(test_output)
+
+    # Escape hatch: if parse returned nothing useful
+    if not parsed or not parsed.strip():
+        parsed = truncate_preserve_tail(test_output, MAX_TEST_OUTPUT_PROMPT)
+    if not parsed or not parsed.strip():
+        parsed = "Test output too large or unparseable. See .zen/test_output.txt"
+
+    # Extract filenames for context
+    filenames = extract_filenames(test_output)
+    files_context = "\n".join(f"- {f}" for f in filenames[:10]) if filenames else "See tracebacks above"
+
+    # Get plan for context
+    plan = read_file(PLAN_FILE) if PLAN_FILE.exists() else "[No plan file]"
+
+    # Build retry hint
+    retry_hint = ""
+    if attempt > 1:
+        retry_hint = f"\n\nThis is retry #{attempt} - try a DIFFERENT approach than before."
+
+    prompt = f"""<task>
+Fix the failing tests.{retry_hint}
+</task>
+
+<test_failures>
+{parsed}
+</test_failures>
+
+<files_to_check>
+{files_context}
+</files_to_check>
+
+<context>
+Plan that was executed:
+{plan[:2000]}
+</context>
+
+<rules>
+- Prefer modifying implementation code over test files
+- If you modify a test, explain why the original assertion was incorrect
+- Do NOT run tests - verification happens in a separate phase
+- Do NOT add features or refactor unrelated code
+</rules>
+
+<output>
+End with exactly one of:
+- FIXES_APPLIED (made changes to fix the failures)
+- FIXES_BLOCKED: <reason> (cannot fix, explain why)
+</output>"""
+
+    output = run_claude(prompt, model=MODEL_HANDS, phase="fix_tests", timeout=TIMEOUT_FIX)
+
+    if not output:
+        log("[FIX] No output from agent.")
+        return FixResult.BLOCKED
+
+    if "FIXES_BLOCKED" in output:
+        log("[FIX] Agent reports fixes blocked.")
+        return FixResult.BLOCKED
+
+    if "FIXES_APPLIED" in output:
+        log("[FIX] Fixes applied.")
+        return FixResult.APPLIED
+
+    # Assume applied if we got output without explicit block
+    log("[FIX] Assuming fixes applied (no explicit marker).")
+    return FixResult.APPLIED
+
+
+def verify_and_fix() -> bool:
+    """
+    Run verify/fix cycle. Returns True if tests pass or no tests exist.
+
+    Orchestrates:
+    1. phase_verify (haiku) - just run tests
+    2. phase_fix_tests (sonnet) - fix failures if any
+    3. Repeat up to MAX_FIX_ATTEMPTS times
+    """
+    for attempt in range(MAX_FIX_ATTEMPTS + 1):
+        state, output = phase_verify()
+
+        if state == TestState.PASS:
+            log("[VERIFY] Passed.")
             return True
 
-        # Check for failures
-        failure_count = extract_failure_count(test_output)
+        if state == TestState.NONE:
+            log("[VERIFY] No tests found, skipping verification.")
+            return True
 
-        if failure_count is None or failure_count == 0:
-            # Success or can't parse (trust TESTS_PASS marker)
-            if "TESTS_PASS" in output:
-                log("[VERIFY] Passed.")
-                break
+        if state == TestState.ERROR:
+            log("[VERIFY] Test runner error.")
+            return False
 
-        # We have failures - check for progress
-        failure_hash = hashlib.md5(test_output.encode()).hexdigest()
+        # state == FAIL
+        if attempt < MAX_FIX_ATTEMPTS:
+            log(f"[FIX] Attempt {attempt + 1}/{MAX_FIX_ATTEMPTS}")
+            result = phase_fix_tests(output, attempt + 1)
 
-        if failure_hash == last_failure_hash:
-            stuck_count += 1
-            if stuck_count >= 2:
-                log(f"[VERIFY] Agent stuck - same failures {stuck_count} times.")
-                print(test_output[:500])
+            if result == FixResult.BLOCKED:
+                log("[FIX] Blocked - cannot proceed.")
                 return False
-            prompt += "\n\nSame failures as before. Try a DIFFERENT approach."
+
+            log("[FIX] Fix applied, re-verifying...")
         else:
-            stuck_count = 0  # Reset - making progress
-            if last_failure_hash is not None:
-                log(f"[VERIFY] Progress: failures changed (attempt {attempt})")
+            # Last attempt failed, no more retries
+            break
 
-        last_failure_hash = failure_hash
-
-        # Use Haiku to parse verbose output before feeding to Sonnet
-        parsed_output = parse_test_output(test_output)
-
-        prompt = f"""Tests still failing. Fix them.
-
-Test output (from {TEST_OUTPUT_PATH}):
-{parsed_output}
-
-Write updated test output to: {TEST_OUTPUT_PATH}
-End with: TESTS_PASS or TESTS_FAIL"""
-
-    else:
-        log(f"[VERIFY] Failed after {MAX_RETRIES} attempts.")
-        return False
-
-    return True
+    log(f"[VERIFY] Failed after {MAX_FIX_ATTEMPTS} fix attempts.")
+    return False
 
 
 def phase_judge() -> None:
@@ -1284,10 +1561,14 @@ End with: FIXES_COMPLETE or FIXES_BLOCKED: <reason>
                 print(f"    {line}")
             sys.exit(1)
 
-        # Re-run verify (tests)
-        log("[JUDGE_FIX] Re-verifying tests...")
-        if not phase_verify():
+        # Re-run verify (tests) - just check, don't try to fix
+        log("[JUDGE_FIX] Checking tests...")
+        state, _ = phase_verify()
+        if state == TestState.FAIL:
             log("[JUDGE_FIX] Tests failed after fixes.")
+            sys.exit(1)
+        elif state == TestState.ERROR:
+            log("[JUDGE_FIX] Test runner error.")
             sys.exit(1)
 
         # Update changed files for next judge loop
@@ -1382,19 +1663,51 @@ def main():
             log(f"[SCOUT] Using provided context: {scout_context}")
         else:
             phase_scout(task_file)
-        phase_plan(task_file)
-        phase_implement()
-        if skip_verify:
-            log("[VERIFY] Skipped (--skip-verify flag)")
-        elif not phase_verify():
-            sys.exit(1)
 
-        if not skip_judge and not should_skip_judge():
-            phase_judge()
-        else:
-            if skip_judge:
-                log("[JUDGE] Skipped (--skip-judge flag)")
-            # else: should_skip_judge() already logged reason
+        # --- TRIAGE CHECK ---
+        scout_output = read_file(SCOUT_FILE)
+        triage = parse_triage(scout_output)
+        fast_track_succeeded = False
+
+        if should_fast_track(triage):
+            log(f"[TRIAGE] FAST_TRACK (confidence={triage.confidence:.2f})")
+
+            # Generate synthetic plan from micro-spec
+            write_file(PLAN_FILE, generate_synthetic_plan(triage))
+
+            phase_implement()
+
+            if skip_verify:
+                log("[VERIFY] Skipped (--skip-verify flag)")
+                fast_track_succeeded = True
+            elif not project_has_tests():
+                log("[VERIFY] Skipped (no test files in project)")
+                fast_track_succeeded = True
+            elif verify_and_fix():
+                log("[TRIAGE] Fast Track verified. Skipping Judge.")
+                fast_track_succeeded = True
+            else:
+                log("[TRIAGE] Fast Track failed verify. Escalating to Planner...")
+                # Fall through to standard path
+        # --- END TRIAGE ---
+
+        if not fast_track_succeeded:
+            # Standard path (fallback or default)
+            phase_plan(task_file)
+            phase_implement()
+            if skip_verify:
+                log("[VERIFY] Skipped (--skip-verify flag)")
+            elif not project_has_tests():
+                log("[VERIFY] Skipped (no test files in project)")
+            elif not verify_and_fix():
+                sys.exit(1)
+
+            if not skip_judge and not should_skip_judge():
+                phase_judge()
+            else:
+                if skip_judge:
+                    log("[JUDGE] Skipped (--skip-judge flag)")
+                # else: should_skip_judge() already logged reason
 
         # Generate summary (once, after all phases complete)
         plan = read_file(PLAN_FILE)

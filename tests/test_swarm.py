@@ -180,12 +180,16 @@ class TestWorkerExecution:
 
     def test_execute_worker_task_cost_extraction(self, tmp_path):
         """Test cost extraction from subprocess output."""
-        with patch("zen_mode.swarm.subprocess.run") as mock_run:
-            mock_run.return_value = Mock(
-                returncode=0,
-                stdout="Running task...\n[COST] Total: $0.0456\nTask complete",
-                stderr=""
-            )
+        log_content = "Running task...\n[COST] Total: $0.0456\nTask complete"
+
+        def write_to_log(cmd, **kwargs):
+            # Write to the log file that was passed as stdout
+            log_file = kwargs.get("stdout")
+            if log_file and hasattr(log_file, "write"):
+                log_file.write(log_content)
+            return Mock(returncode=0)
+
+        with patch("zen_mode.swarm.subprocess.run", side_effect=write_to_log):
             with patch("zen_mode.swarm._get_modified_files") as mock_files:
                 mock_files.return_value = []
 
