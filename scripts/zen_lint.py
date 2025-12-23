@@ -526,7 +526,11 @@ def check_file(path: str, min_severity: str = "LOW", config: Optional[Dict] = No
 
 
 def get_git_changes() -> List[str]:
-    """Get list of changed files from git (including staged)."""
+    """Get list of changed files from git (including staged).
+
+    Filters out files in ignored directories to prevent the "top-level loophole"
+    where git might return paths like node_modules/foo.js.
+    """
     files = set()
     try:
         # Check if HEAD exists (repo may have no commits yet)
@@ -569,7 +573,10 @@ def get_git_changes() -> List[str]:
             files.update(result.stdout.splitlines())
     except FileNotFoundError:
         pass
-    return [f for f in files if f]
+
+    # CRITICAL: Filter out ignored paths (node_modules, build, etc.)
+    # This prevents scanning build directories even if they're in git
+    return [f for f in files if f and not _should_ignore_path(f)]
 
 
 def load_config(config_path: Optional[str]) -> Optional[Dict]:
@@ -747,12 +754,6 @@ Config file (.lintrc.json):
     all_violations = []
 
     for root_arg in paths:
-        # CRITICAL: Filter out ignored paths before processing
-        # This prevents the "top-level loophole" where explicitly passed
-        # ignored directories (e.g., from git changes) would be scanned
-        if _should_ignore_path(root_arg):
-            continue
-
         path = Path(root_arg)
         if path.is_file():
             all_violations.extend(check_file(str(path), args.severity, config))
