@@ -55,7 +55,7 @@ class TestConstitutionInFixPrompt:
 
     @patch('zen_mode.core.phase_verify')
     @patch('zen_mode.core.run_linter')
-    @patch('zen_mode.core.get_changed_filenames')
+    @patch('zen_mode.utils.get_changed_filenames')
     @patch('zen_mode.core.run_claude')
     @patch('zen_mode.core.log')
     def test_constitution_included_when_claude_md_exists(
@@ -109,7 +109,7 @@ class TestConstitutionInFixPrompt:
 
     @patch('zen_mode.core.phase_verify')
     @patch('zen_mode.core.run_linter')
-    @patch('zen_mode.core.get_changed_filenames')
+    @patch('zen_mode.utils.get_changed_filenames')
     @patch('zen_mode.core.run_claude')
     @patch('zen_mode.core.log')
     def test_fallback_message_when_no_claude_md(
@@ -154,7 +154,7 @@ class TestConstitutionInFixPrompt:
 
     @patch('zen_mode.core.phase_verify')
     @patch('zen_mode.core.run_linter')
-    @patch('zen_mode.core.get_changed_filenames')
+    @patch('zen_mode.utils.get_changed_filenames')
     @patch('zen_mode.core.run_claude')
     @patch('zen_mode.core.log')
     def test_constitution_appears_before_changed_files(
@@ -205,7 +205,7 @@ class TestConstitutionInFixPrompt:
 
     @patch('zen_mode.core.phase_verify')
     @patch('zen_mode.core.run_linter')
-    @patch('zen_mode.core.get_changed_filenames')
+    @patch('zen_mode.utils.get_changed_filenames')
     @patch('zen_mode.core.run_claude')
     @patch('zen_mode.core.log')
     def test_constitution_appears_after_feedback(
@@ -257,7 +257,7 @@ class TestConstitutionInFixPrompt:
 
     @patch('zen_mode.core.phase_verify')
     @patch('zen_mode.core.run_linter')
-    @patch('zen_mode.core.get_changed_filenames')
+    @patch('zen_mode.utils.get_changed_filenames')
     @patch('zen_mode.core.run_claude')
     @patch('zen_mode.core.log')
     def test_constitution_content_preserved(
@@ -322,7 +322,7 @@ class TestConstitutionInFixPrompt:
 
     @patch('zen_mode.core.phase_verify')
     @patch('zen_mode.core.run_linter')
-    @patch('zen_mode.core.get_changed_filenames')
+    @patch('zen_mode.utils.get_changed_filenames')
     @patch('zen_mode.core.run_claude')
     @patch('zen_mode.core.log')
     def test_fix_prompt_structure(

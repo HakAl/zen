@@ -195,6 +195,16 @@ def generate_synthetic_plan(triage: TriageResult) -> str:
     description = _sanitize_header(triage.micro_spec)
     target = triage.target_file or "see instructions"
 
+    # Check if this is a verification-only task
+    is_verify = "OPERATION: VERIFY_COMPLETE" in (triage.micro_spec or "")
+
+    if is_verify:
+        return (
+            "# Fast Track Plan (Verification Only)\n\n"
+            f"## Step 1: Verify task is already complete\n\n"
+            f"**Verification:**\n{triage.micro_spec}"
+        )
+
     return (
         "# Fast Track Plan\n\n"
         f"## Step 1: {description}\n\n"

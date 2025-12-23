@@ -10,5 +10,10 @@ build/
 .env
 .claude
 .scrappy
-nul
 .pytest_*
+nul
+NUL
+con
+CON
+prn
+PRN

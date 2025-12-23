@@ -1,5 +1,7 @@
 # Multi-Language Test Support
 
+Currently tested and working: node + jest tests, python + pytest, java + gradle + junit, csharp dotnet + xunit
+
 ## Goal
 Create minimal test fixtures for all major languages to verify `phase_verify()` works across different build systems and test runners.
 
@@ -112,6 +114,37 @@ Each language gets:
 - `test_<lang>_passing()` - verify TESTS_PASS detected
 - `test_<lang>_failing()` - verify TESTS_FAIL detected (inject failure)
 - `test_<lang>_no_tests()` - verify TESTS_NONE detected (empty project)
+
+## Runtime Detection & UX Improvements
+
+### Current Implementation ✅
+- Gracefully skips verification when runtime not installed
+- Clear messaging: `[VERIFY] Runtime 'gradle' not installed, skipping tests.`
+- No hangs or timeouts waiting for non-existent runtimes
+- Fast Track can still complete successfully
+
+### Future Considerations
+
+**1. Installation Suggestions**
+- Should we add warnings/suggestions to install missing runtimes?
+- Example output:
+  ```
+  [VERIFY] Runtime 'gradle' not installed, skipping tests.
+  [HINT] Install gradle with: choco install gradle -y
+  ```
+- Benefits: Helps users quickly resolve missing dependencies
+- Considerations: Platform-specific (Windows/macOS/Linux install commands differ)
+
+**2. Runtime Availability Tracking**
+- Track which runtimes are checked but missing for better UX
+- Could maintain a session-level cache of runtime checks
+- Benefits:
+  - Avoid redundant runtime checks in same session
+  - Could provide summary at end: "Note: Skipped tests in 3 projects due to missing runtimes: gradle, cargo, go"
+  - Could suggest batch install command
+- Use cases:
+  - Multi-file changes across different language projects
+  - First-time setup experience
 
 ## Success Criteria
 

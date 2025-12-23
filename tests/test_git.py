@@ -57,8 +57,8 @@ class TestGetChangedFilenames:
         simulates a normal git repository with an existing HEAD commit.
         """
         def mock_run(cmd, **kwargs):
-            if "rev-parse" in cmd and "--git-dir" in cmd:
-                return Mock(returncode=0, stdout=".git")
+            if "rev-parse" in cmd and "--is-inside-work-tree" in cmd:
+                return Mock(returncode=0, stdout="true")
             if "rev-parse" in cmd and "HEAD" in cmd:
                 return Mock(returncode=0, stdout="abc123")
             if "diff" in cmd and "--name-only" in cmd:
@@ -68,66 +68,81 @@ class TestGetChangedFilenames:
             return Mock(returncode=1, stdout="")
         return mock_run
 
-    @patch('zen_mode.core.subprocess.run')
-    @patch('zen_mode.core.BACKUP_DIR')
-    def test_git_diff_success(self, mock_backup_dir, mock_run):
+    @patch('zen_mode.utils.subprocess.run')
+    def test_git_diff_success(self, mock_run):
         """When git diff succeeds, return file list."""
-        from zen_mode.core import get_changed_filenames
+        from zen_mode.utils import get_changed_filenames
+        from pathlib import Path
 
         mock_run.side_effect = self._mock_normal_repo(
             diff_output="src/file1.py\nsrc/file2.py\ntests/test_file.py\n"
         )
 
-        result = get_changed_filenames()
+        project_root = Path("/fake/project")
+        backup_dir = Path("/fake/backup")
+        result = get_changed_filenames(project_root, backup_dir)
 
         assert "src/file1.py" in result
         assert "src/file2.py" in result
         assert "tests/test_file.py" in result
 
-    @patch('zen_mode.core.subprocess.run')
-    @patch('zen_mode.core.BACKUP_DIR')
-    def test_git_diff_empty_output(self, mock_backup_dir, mock_run):
+    @patch('zen_mode.utils.subprocess.run')
+    def test_git_diff_empty_output(self, mock_run):
         """When git diff returns empty, fall back to backup."""
-        from zen_mode.core import get_changed_filenames
+        from zen_mode.utils import get_changed_filenames
+        from pathlib import Path
+        from unittest.mock import Mock
 
         mock_run.side_effect = self._mock_normal_repo(diff_output="", untracked_output="")
+
+        project_root = Path("/fake/project")
+        mock_backup_dir = Mock(spec=Path)
         mock_backup_dir.exists.return_value = True
         mock_backup_dir.rglob.return_value = []
 
-        result = get_changed_filenames()
+        result = get_changed_filenames(project_root, mock_backup_dir)
 
         assert result == "[No files detected]"
 
-    @patch('zen_mode.core.subprocess.run')
-    @patch('zen_mode.core.BACKUP_DIR')
-    def test_git_failure_uses_backup(self, mock_backup_dir, mock_run):
+    @patch('zen_mode.utils.subprocess.run')
+    def test_git_failure_uses_backup(self, mock_run):
         """When git fails, fall back to backup directory."""
-        from zen_mode.core import get_changed_filenames
+        from zen_mode.utils import get_changed_filenames
+        from pathlib import Path
+        from unittest.mock import Mock
 
         mock_run.side_effect = Exception("git not found")
 
+        project_root = Path("/fake/project")
+        mock_backup_dir = Mock(spec=Path)
         # Mock backup directory with files
         mock_backup_dir.exists.return_value = True
         mock_file1 = MagicMock()
         mock_file1.relative_to.return_value = Path("src/core.py")
+        mock_file1.is_file.return_value = True
         mock_file2 = MagicMock()
         mock_file2.relative_to.return_value = Path("tests/test_core.py")
+        mock_file2.is_file.return_value = True
         mock_backup_dir.rglob.return_value = [mock_file1, mock_file2]
 
-        result = get_changed_filenames()
+        result = get_changed_filenames(project_root, mock_backup_dir)
 
         assert "src/core.py" in result or "src\\core.py" in result
 
-    @patch('zen_mode.core.subprocess.run')
-    @patch('zen_mode.core.BACKUP_DIR')
-    def test_no_git_no_backup(self, mock_backup_dir, mock_run):
+    @patch('zen_mode.utils.subprocess.run')
+    def test_no_git_no_backup(self, mock_run):
         """When both git and backup fail, return placeholder."""
-        from zen_mode.core import get_changed_filenames
+        from zen_mode.utils import get_changed_filenames
+        from pathlib import Path
+        from unittest.mock import Mock
 
         mock_run.side_effect = Exception("git not found")
+
+        project_root = Path("/fake/project")
+        mock_backup_dir = Mock(spec=Path)
         mock_backup_dir.exists.return_value = False
 
-        result = get_changed_filenames()
+        result = get_changed_filenames(project_root, mock_backup_dir)
 
         assert result == "[No files detected]"
 
@@ -153,7 +168,7 @@ class TestShouldSkipJudgeGitOperations:
         WARNING: This returns a mock side_effect function, NOT real git calls.
         """
         def mock_run(cmd, **kwargs):
-            if "rev-parse" in cmd and "--git-dir" in cmd:
+            if "rev-parse" in cmd and ("--is-inside-work-tree" in cmd or "--git-dir" in cmd):
                 return Mock(returncode=0, stdout=".git")
             if "rev-parse" in cmd and "HEAD" in cmd:
                 return Mock(returncode=0, stdout="abc123")
@@ -177,7 +192,7 @@ class TestShouldSkipJudgeGitOperations:
         assert result is True
         mock_log.assert_called_with("[JUDGE] Skipping: No changes detected")
 
-    @patch('zen_mode.core.subprocess.run')
+    @patch('zen_mode.utils.subprocess.run')
     def test_git_failure_requires_judge(self, mock_run):
         """Git command failure should require judge (safe default)."""
         from zen_mode.core import should_skip_judge
@@ -188,7 +203,7 @@ class TestShouldSkipJudgeGitOperations:
 
         assert result is False
 
-    @patch('zen_mode.core.subprocess.run')
+    @patch('zen_mode.utils.subprocess.run')
     def test_git_exception_requires_judge(self, mock_run):
         """Git exception should require judge (safe default)."""
         from zen_mode.core import should_skip_judge
@@ -229,7 +244,7 @@ class TestGitEdgeCases:
         - git ls-files --others works (shows untracked files)
         """
         def mock_run(cmd, **kwargs):
-            if "rev-parse" in cmd and "--git-dir" in cmd:
+            if "rev-parse" in cmd and ("--is-inside-work-tree" in cmd or "--git-dir" in cmd):
                 return Mock(returncode=0, stdout=".git")
             if "rev-parse" in cmd and "HEAD" in cmd:
                 return Mock(returncode=128, stdout="", stderr="fatal: bad revision 'HEAD'")
@@ -244,23 +259,27 @@ class TestGitEdgeCases:
             return Mock(returncode=1, stdout="")
         return mock_run
 
-    @patch('zen_mode.core.subprocess.run')
-    @patch('zen_mode.core.BACKUP_DIR')
-    def test_get_changed_filenames_no_head_with_staged_files(self, mock_backup_dir, mock_run):
+    @patch('zen_mode.utils.subprocess.run')
+    def test_get_changed_filenames_no_head_with_staged_files(self, mock_run):
         """BUG: get_changed_filenames() returns nothing when HEAD doesn't exist.
 
         Scenario: Fresh repo, files are staged but no commits yet.
         Expected: Should return the staged files.
         Actual: Returns '[No files detected]' because git diff HEAD fails.
         """
-        from zen_mode.core import get_changed_filenames
+        from zen_mode.utils import get_changed_filenames
+        from pathlib import Path
+        from unittest.mock import Mock
 
         mock_run.side_effect = self._mock_no_head_repo(
             staged_files="src/main.py\nsrc/utils.py\n"
         )
+
+        project_root = Path("/fake/project")
+        mock_backup_dir = Mock(spec=Path)
         mock_backup_dir.exists.return_value = False
 
-        result = get_changed_filenames()
+        result = get_changed_filenames(project_root, mock_backup_dir)
 
         assert "src/main.py" in result, f"Expected staged files, got: {result}"
         assert "src/utils.py" in result
@@ -285,19 +304,23 @@ class TestGitEdgeCases:
 
         assert result is True, "Should skip judge when only test files are staged"
 
-    @patch('zen_mode.core.subprocess.run')
-    @patch('zen_mode.core.BACKUP_DIR')
-    def test_get_changed_filenames_includes_untracked_in_no_head_repo(self, mock_backup_dir, mock_run):
+    @patch('zen_mode.utils.subprocess.run')
+    def test_get_changed_filenames_includes_untracked_in_no_head_repo(self, mock_run):
         """BUG: Untracked files not detected when HEAD doesn't exist."""
-        from zen_mode.core import get_changed_filenames
+        from zen_mode.utils import get_changed_filenames
+        from pathlib import Path
+        from unittest.mock import Mock
 
         mock_run.side_effect = self._mock_no_head_repo(
             staged_files="",
             untracked_files="new_file.py\n"
         )
+
+        project_root = Path("/fake/project")
+        mock_backup_dir = Mock(spec=Path)
         mock_backup_dir.exists.return_value = False
 
-        result = get_changed_filenames()
+        result = get_changed_filenames(project_root, mock_backup_dir)
 
         assert "new_file.py" in result, f"Expected untracked files, got: {result}"
 
@@ -317,7 +340,7 @@ class TestDeletionTracking:
         WARNING: This returns a mock side_effect function, NOT real git calls.
         """
         def mock_run(cmd, **kwargs):
-            if "rev-parse" in cmd and "--git-dir" in cmd:
+            if "rev-parse" in cmd and ("--is-inside-work-tree" in cmd or "--git-dir" in cmd):
                 return Mock(returncode=0, stdout=".git")
             if "rev-parse" in cmd and "HEAD" in cmd:
                 return Mock(returncode=0, stdout="abc123")
@@ -330,19 +353,22 @@ class TestDeletionTracking:
             return Mock(returncode=0, stdout="")
         return mock_run
 
-    @patch('zen_mode.core.subprocess.run')
+    @patch('zen_mode.utils.subprocess.run')
     def test_get_changed_filenames_shows_deleted_files(self, mock_run):
         """Verify deleted files appear in changed files list."""
-        from zen_mode.core import get_changed_filenames
+        from zen_mode.utils import get_changed_filenames
+        from pathlib import Path
 
         mock_run.side_effect = self._mock_staged_deletions()
 
-        result = get_changed_filenames()
+        project_root = Path("/fake/project")
+        backup_dir = Path("/fake/backup")
+        result = get_changed_filenames(project_root, backup_dir)
 
         assert "deleted_file.py" in result, "Deleted files should appear in changed list"
         assert "modified_file.py" in result
 
-    @patch('zen_mode.core.subprocess.run')
+    @patch('zen_mode.utils.subprocess.run')
     @patch('zen_mode.core.log')
     @patch('zen_mode.core.read_file')
     @patch('zen_mode.core.parse_steps')
@@ -359,19 +385,23 @@ class TestDeletionTracking:
         # 50 deletes + 10 adds + 5 deletes = 65 lines total
         assert result is False, "65 lines of changes should require judge review"
 
-    @patch('zen_mode.core.subprocess.run')
-    @patch('zen_mode.core.BACKUP_DIR')
-    def test_deleted_file_not_in_backup_not_tracked(self, mock_backup_dir, mock_run):
+    @patch('zen_mode.utils.subprocess.run')
+    def test_deleted_file_not_in_backup_not_tracked(self, mock_run):
         """Files created and deleted in same session leave no trace.
 
         This is a limitation - we can't verify deletion of files
         that were never backed up or committed.
         """
-        from zen_mode.core import get_changed_filenames
+        from zen_mode.utils import get_changed_filenames
+        from pathlib import Path
+        from unittest.mock import Mock
 
         mock_run.return_value = Mock(returncode=0, stdout="")
+
+        project_root = Path("/fake/project")
+        mock_backup_dir = Mock(spec=Path)
         mock_backup_dir.exists.return_value = False
 
-        result = get_changed_filenames()
+        result = get_changed_filenames(project_root, mock_backup_dir)
 
         assert result == "[No files detected]"
