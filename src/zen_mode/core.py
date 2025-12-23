@@ -1057,6 +1057,8 @@ End with: FIXES_COMPLETE or FIXES_BLOCKED: <reason>
         elif state == TestState.ERROR:
             log("[JUDGE_FIX] Test runner error.")
             sys.exit(1)
+        elif state == TestState.RUNTIME_MISSING:
+            log("[JUDGE_FIX] Runtime not installed, skipping tests.")
 
         # Update changed files for next judge loop
         changed_files = get_changed_filenames()

@@ -1,0 +1,12 @@
+{
+  "name": "node_project",
+  "version": "1.0.0",
+  "description": "Minimal Node.js fixture for verify phase testing",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "jest"
+  },
+  "devDependencies": {
+    "jest": "^29.0.0"
+  }
+}
