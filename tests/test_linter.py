@@ -801,3 +801,105 @@ class TestBugLargeFilesNotSkipped:
         violations = check_file(str(f))
         rules = [v["rule"] for v in violations]
         assert "TODO" in rules, "Normal files should still be scanned"
+
+
+class TestLanguageSpecificRuleScoping:
+    """Test that rules only apply to relevant file extensions."""
+
+    def test_overly_generic_except_only_python(self, tmp_path):
+        """OVERLY_GENERIC_EXCEPT should only apply to Python files."""
+        # Python file - should be flagged
+        py_file = tmp_path / "code.py"
+        py_file.write_text('try:\n    foo()\nexcept:\n    pass\n')
+        py_violations = check_file(str(py_file))
+        py_rules = [v["rule"] for v in py_violations]
+        assert "OVERLY_GENERIC_EXCEPT" in py_rules
+
+        # JS file - should NOT be flagged (same pattern but wrong language)
+        js_file = tmp_path / "code.js"
+        js_file.write_text('try {\n    foo();\n} except: {\n    pass\n}\n')
+        js_violations = check_file(str(js_file))
+        js_rules = [v["rule"] for v in js_violations]
+        assert "OVERLY_GENERIC_EXCEPT" not in js_rules
+
+    def test_stub_impl_only_python(self, tmp_path):
+        """STUB_IMPL (pass/...) should only apply to Python files."""
+        # Python file - should be flagged
+        py_file = tmp_path / "code.py"
+        py_file.write_text('def foo():\n    pass\n')
+        py_violations = check_file(str(py_file))
+        py_rules = [v["rule"] for v in py_violations]
+        assert "STUB_IMPL" in py_rules
+
+        # JS file - should NOT be flagged
+        js_file = tmp_path / "code.js"
+        js_file.write_text('function foo() {\n    pass\n}\n')
+        js_violations = check_file(str(js_file))
+        js_rules = [v["rule"] for v in js_violations]
+        assert "STUB_IMPL" not in js_rules
+
+    def test_bare_return_in_catch_only_js(self, tmp_path):
+        """BARE_RETURN_IN_CATCH should only apply to JS/TS files."""
+        # JS file - should be flagged
+        js_file = tmp_path / "code.js"
+        js_file.write_text('try { foo(); } catch(e) { return; }\n')
+        js_violations = check_file(str(js_file))
+        js_rules = [v["rule"] for v in js_violations]
+        assert "BARE_RETURN_IN_CATCH" in js_rules
+
+        # Python file - should NOT be flagged (different language)
+        py_file = tmp_path / "code.py"
+        py_file.write_text('# catch(e) { return; } in a comment\n')
+        py_violations = check_file(str(py_file))
+        py_rules = [v["rule"] for v in py_violations]
+        assert "BARE_RETURN_IN_CATCH" not in py_rules
+
+    def test_inline_import_only_supported_languages(self, tmp_path):
+        """INLINE_IMPORT should only apply to languages with import statements."""
+        # Python file - should be flagged
+        py_file = tmp_path / "code.py"
+        py_file.write_text('def foo():\n    import os\n')
+        py_violations = check_file(str(py_file))
+        py_rules = [v["rule"] for v in py_violations]
+        assert "INLINE_IMPORT" in py_rules
+
+        # Markdown file - should NOT be flagged
+        md_file = tmp_path / "README.md"
+        md_file.write_text('   import os  # example code\n')
+        md_violations = check_file(str(md_file))
+        md_rules = [v["rule"] for v in md_violations]
+        assert "INLINE_IMPORT" not in md_rules
+
+    def test_empty_docstring_only_python(self, tmp_path):
+        """EMPTY_DOCSTRING should only apply to Python files."""
+        # Python file - should be flagged
+        py_file = tmp_path / "code.py"
+        py_file.write_text('def foo():\n    """"""\n    return 1\n')
+        py_violations = check_file(str(py_file))
+        py_rules = [v["rule"] for v in py_violations]
+        assert "EMPTY_DOCSTRING" in py_rules
+
+        # JS file - should NOT be flagged
+        js_file = tmp_path / "code.js"
+        js_file.write_text('const x = """""";\n')
+        js_violations = check_file(str(js_file))
+        js_rules = [v["rule"] for v in js_violations]
+        assert "EMPTY_DOCSTRING" not in js_rules
+
+    def test_universal_rules_apply_everywhere(self, tmp_path):
+        """Rules without extension restrictions should apply to all files."""
+        # TODO rule should apply to any language
+        py_file = tmp_path / "code.py"
+        py_file.write_text('# TODO: fix this\n')
+        py_violations = check_file(str(py_file))
+        assert "TODO" in [v["rule"] for v in py_violations]
+
+        js_file = tmp_path / "code.js"
+        js_file.write_text('// TODO: fix this\n')
+        js_violations = check_file(str(js_file))
+        assert "TODO" in [v["rule"] for v in js_violations]
+
+        rb_file = tmp_path / "code.rb"
+        rb_file.write_text('# TODO: fix this\n')
+        rb_violations = check_file(str(rb_file))
+        assert "TODO" in [v["rule"] for v in rb_violations]
