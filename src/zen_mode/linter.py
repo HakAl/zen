@@ -102,6 +102,20 @@ QUALITY_RULES = [
     Rule("EMPTY_DOCSTRING", r'("""|\'\'\')\s*\1', CODE, "LOW"),
 ]
 
+# Extension-specific rule scoping (None = all extensions)
+# Rules not listed here apply to all file types
+RULE_EXTENSIONS: Dict[str, Optional[Set[str]]] = {
+    # Python-specific patterns
+    "OVERLY_GENERIC_EXCEPT": {".py", ".pyi"},
+    "STUB_IMPL": {".py", ".pyi"},
+    "NOT_IMPLEMENTED": {".py", ".pyi"},
+    "EMPTY_DOCSTRING": {".py", ".pyi"},
+    # JS/TS-specific patterns
+    "BARE_RETURN_IN_CATCH": {".js", ".mjs", ".cjs", ".ts", ".jsx", ".tsx"},
+    # Import statement rules apply to languages with imports
+    "INLINE_IMPORT": {".py", ".pyi", ".js", ".mjs", ".cjs", ".ts", ".jsx", ".tsx", ".java", ".kt", ".scala", ".cs"},
+}
+
 # Language syntax definitions: (line_comment, block_start, block_end)
 LANG_SYNTAX = {
     '.py': ('#', '"""', '"""'),
@@ -327,6 +341,14 @@ def is_private_or_special_ip(ip_str: str) -> bool:
         return False
 
 
+def _rule_applies_to_ext(rule_name: str, ext: str) -> bool:
+    """Check if a rule applies to the given file extension."""
+    allowed = RULE_EXTENSIONS.get(rule_name)
+    if allowed is None:
+        return True  # No restriction, applies to all
+    return ext in allowed
+
+
 def check_file(path: str, min_severity: str = "LOW", config: Optional[Dict] = None) -> List[Dict]:
     """Scan a file for violations."""
     p = Path(path)
@@ -372,6 +394,9 @@ def check_file(path: str, min_severity: str = "LOW", config: Optional[Dict] = No
         lines = content.splitlines()
         ext = p.suffix.lower()
         syntax = LANG_SYNTAX.get(ext)
+
+        # Filter rules by extension scope
+        rules = [r for r in rules if _rule_applies_to_ext(r.name, ext)]
 
         # Multi-line comment tracking
         ml_state = MultilineState()
