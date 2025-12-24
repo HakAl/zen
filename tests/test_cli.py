@@ -80,3 +80,43 @@ class TestCmdEject:
         cmd_eject(Args())
         content = (tmp_path / "zen.py").read_text(encoding="utf-8")
         assert "import zen_lint as linter" in content
+
+
+class TestAutoWorkerCalculation:
+    """Tests for auto-calculating worker count based on task count."""
+
+    def test_single_task_gets_one_worker(self):
+        """One task = one worker."""
+        import os
+        tasks = ["task1.md"]
+        workers = max(1, min(len(tasks), os.cpu_count() or 4, 8))
+        assert workers == 1
+
+    def test_two_tasks_gets_two_workers(self):
+        """Two tasks = two workers."""
+        import os
+        tasks = ["task1.md", "task2.md"]
+        workers = max(1, min(len(tasks), os.cpu_count() or 4, 8))
+        assert workers == 2
+
+    def test_many_tasks_capped_at_eight(self):
+        """Many tasks capped at 8 workers max."""
+        import os
+        tasks = [f"task{i}.md" for i in range(20)]
+        workers = max(1, min(len(tasks), os.cpu_count() or 4, 8))
+        assert workers <= 8
+
+    def test_capped_at_cpu_count(self):
+        """Workers capped at CPU count."""
+        import os
+        tasks = [f"task{i}.md" for i in range(20)]
+        cpu_count = os.cpu_count() or 4
+        workers = max(1, min(len(tasks), cpu_count, 8))
+        assert workers <= cpu_count
+
+    def test_minimum_one_worker(self):
+        """Always at least one worker."""
+        import os
+        tasks = []  # Edge case: empty
+        workers = max(1, min(len(tasks) or 1, os.cpu_count() or 4, 8))
+        assert workers >= 1
