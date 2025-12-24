@@ -2,6 +2,7 @@
 Zen Mode CLI - argparse-based command line interface.
 """
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -244,10 +245,15 @@ def main():
             # zen swarm <task1.md> [task2.md ...] [--workers N] [--dry-run] [--verbose]
             parser = argparse.ArgumentParser(prog="zen swarm")
             parser.add_argument("tasks", nargs="+", help="Task files to execute in parallel")
-            parser.add_argument("--workers", type=int, default=2, help="Number of parallel workers (default: 2)")
+            parser.add_argument("--workers", type=int, default=None, help="Number of parallel workers (default: auto)")
             parser.add_argument("--dry-run", action="store_true", help="Show what would happen without executing")
             parser.add_argument("--verbose", "-v", action="store_true", help="Show full logs instead of status ticker")
             args = parser.parse_args(sys.argv[2:])
+
+            # Auto-calculate workers if not specified: min(tasks, cpu_count, 8)
+            if args.workers is None:
+                args.workers = max(1, min(len(args.tasks), os.cpu_count() or 4, 8))
+
             cmd_swarm(args)
             return
         elif cmd in ("--help", "-h"):
@@ -285,7 +291,7 @@ Options:
   --dry-run                   Show what would happen without executing
   --skip-judge                Skip Judge phase review (Opus architectural review)
   --skip-verify               Skip Verify phase (for infra-only tasks)
-  --workers N                 Number of parallel workers for swarm (default: 2)
+  --workers N                 Number of parallel workers for swarm (default: auto)
   --verbose, -v               Show full logs instead of status ticker (swarm)
 
 Examples:
