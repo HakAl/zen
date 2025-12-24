@@ -154,11 +154,12 @@ LINT_SKIP_EXTS: Set[str] = {
 }
 
 # Suppression patterns for different comment styles
+# Supports both "zenlint: ignore RULE" and legacy "lint:ignore RULE"
 SUPPRESS_PATTERNS = {
-    '#': re.compile(r"#\s*lint:(ignore|disable)(?:\s+([A-Z_]+))?\b", re.IGNORECASE),
-    '//': re.compile(r"//\s*lint:(ignore|disable)(?:\s+([A-Z_]+))?\b", re.IGNORECASE),
-    '--': re.compile(r"--\s*lint:(ignore|disable)(?:\s+([A-Z_]+))?\b", re.IGNORECASE),
-    ';': re.compile(r";\s*lint:(ignore|disable)(?:\s+([A-Z_]+))?\b", re.IGNORECASE),
+    '#': re.compile(r"#\s*(?:zen)?lint:\s*(ignore|disable)(?:\s+([A-Z_]+))?\b", re.IGNORECASE),
+    '//': re.compile(r"//\s*(?:zen)?lint:\s*(ignore|disable)(?:\s+([A-Z_]+))?\b", re.IGNORECASE),
+    '--': re.compile(r"--\s*(?:zen)?lint:\s*(ignore|disable)(?:\s+([A-Z_]+))?\b", re.IGNORECASE),
+    ';': re.compile(r";\s*(?:zen)?lint:\s*(ignore|disable)(?:\s+([A-Z_]+))?\b", re.IGNORECASE),
 }
 
 def get_suppression_match(line: str, ext: str):
