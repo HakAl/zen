@@ -1205,6 +1205,17 @@ Full plan:
 {plan}
 </context>
 
+<preflight>
+Before making any changes, verify:
+1. Can you read the source files you need to edit? (FILES)
+2. Is the task clearly defined with enough detail to implement? (TASK)
+
+Output: PREFLIGHT: FILES=YES/NO, TASK=YES/NO
+
+If either is NO, output STEP_BLOCKED: <reason> and stop immediately.
+Do not attempt to implement with missing files or unclear requirements.
+</preflight>
+
 <rules>
 - DELETE old code, no shims
 - UPDATE callers immediately
