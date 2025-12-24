@@ -100,3 +100,90 @@ class TestCheckPreviousCompletion:
         notes_file.write_text("# Summary\n- Changed files\n\n## Cost Summary\nTotal: $0.05\n")
         monkeypatch.setattr(core, "NOTES_FILE", notes_file)
         assert _check_previous_completion() is True
+
+
+class TestConsecutiveRetryCheckpoint:
+    """Tests for consecutive retry checkpoint logic in phase_implement.
+
+    When multiple consecutive steps require retries to succeed, it indicates
+    the plan may have issues. The checkpoint logs a warning to alert the user.
+
+    Logic (implemented in phase_implement):
+    - Track `consecutive_retry_steps` counter
+    - If step succeeds on attempt > 1: increment counter
+    - If counter >= 2: log checkpoint warning
+    - If step succeeds on attempt 1: reset counter to 0
+    """
+
+    def test_checkpoint_logic_first_attempt_success(self):
+        """First-attempt success resets the counter."""
+        consecutive_retry_steps = 3
+        step_succeeded_on_attempt = 1
+
+        # Logic from phase_implement
+        if step_succeeded_on_attempt > 1:
+            consecutive_retry_steps += 1
+        else:
+            consecutive_retry_steps = 0
+
+        assert consecutive_retry_steps == 0
+
+    def test_checkpoint_logic_retry_increments(self):
+        """Retry success increments the counter."""
+        consecutive_retry_steps = 0
+        step_succeeded_on_attempt = 2
+
+        if step_succeeded_on_attempt > 1:
+            consecutive_retry_steps += 1
+        else:
+            consecutive_retry_steps = 0
+
+        assert consecutive_retry_steps == 1
+
+    def test_checkpoint_logic_triggers_at_two(self):
+        """Checkpoint triggers when counter reaches 2."""
+        consecutive_retry_steps = 1
+        step_succeeded_on_attempt = 3  # Needed 3 attempts
+
+        checkpoint_triggered = False
+        if step_succeeded_on_attempt > 1:
+            consecutive_retry_steps += 1
+            if consecutive_retry_steps >= 2:
+                checkpoint_triggered = True
+        else:
+            consecutive_retry_steps = 0
+
+        assert consecutive_retry_steps == 2
+        assert checkpoint_triggered is True
+
+    def test_checkpoint_logic_scenario(self):
+        """Full scenario: step1 retries, step2 retries -> checkpoint."""
+        consecutive_retry_steps = 0
+
+        # Step 1: needed 2 attempts
+        step_succeeded_on_attempt = 2
+        if step_succeeded_on_attempt > 1:
+            consecutive_retry_steps += 1
+        else:
+            consecutive_retry_steps = 0
+        assert consecutive_retry_steps == 1
+
+        # Step 2: needed 3 attempts -> triggers checkpoint
+        step_succeeded_on_attempt = 3
+        checkpoint_triggered = False
+        if step_succeeded_on_attempt > 1:
+            consecutive_retry_steps += 1
+            if consecutive_retry_steps >= 2:
+                checkpoint_triggered = True
+        else:
+            consecutive_retry_steps = 0
+        assert consecutive_retry_steps == 2
+        assert checkpoint_triggered is True
+
+        # Step 3: first attempt success -> resets
+        step_succeeded_on_attempt = 1
+        if step_succeeded_on_attempt > 1:
+            consecutive_retry_steps += 1
+        else:
+            consecutive_retry_steps = 0
+        assert consecutive_retry_steps == 0

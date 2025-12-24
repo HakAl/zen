@@ -741,6 +741,7 @@ def phase_implement() -> None:
     log(f"\n[IMPLEMENT] {len(steps)} steps to execute.")
     completed = get_completed_steps()
     seen_lint_hashes: set[str] = set()
+    consecutive_retry_steps = 0  # Track steps that needed retries
 
     for step_num, step_desc in steps:
         if step_num in completed:
@@ -875,12 +876,24 @@ You are the senior specialist. Analyze the problem fresh and fix it definitively
 
                 log(f"[COMPLETE] Step {step_num}")
                 seen_lint_hashes.clear()  # Reset on success
+                step_succeeded_on_attempt = attempt
                 break
         else:
             log(f"[FAILED] Step {step_num} after {MAX_RETRIES} attempts")
             if BACKUP_DIR.exists():
                 log(f"[RECOVERY] Backups available in: {BACKUP_DIR}")
             sys.exit(1)
+
+        # Track consecutive steps that needed retries
+        if step_succeeded_on_attempt > 1:
+            consecutive_retry_steps += 1
+            if consecutive_retry_steps >= 2:
+                log("[CHECKPOINT] Multiple consecutive steps needed retries.")
+                log("  → Something may be wrong with the plan.")
+                log("  → Review .zen/log.md and consider --reset if plan needs rework.")
+                # Continue but warn - user can Ctrl+C if needed
+        else:
+            consecutive_retry_steps = 0  # Reset on first-attempt success
 
 
 def phase_judge() -> None:
