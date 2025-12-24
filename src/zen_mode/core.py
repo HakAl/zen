@@ -286,6 +286,21 @@ def _write_cost_summary() -> None:
         f.write(f"Breakdown: {breakdown}\n")
 
 
+def _check_previous_completion() -> bool:
+    """Check if previous run completed successfully.
+
+    Detects completion by presence of Cost Summary in final_notes.md,
+    which is only written at the very end of a successful run.
+    """
+    if not NOTES_FILE.exists():
+        return False
+    try:
+        content = read_file(NOTES_FILE)
+        return "## Cost Summary" in content
+    except Exception:
+        return False
+
+
 def _git_has_head() -> bool:
     """Check if git repo has at least one commit (HEAD exists)."""
     try:
@@ -1089,6 +1104,13 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
             shutil.rmtree(WORK_DIR)
         print("Reset complete.")
         WORK_DIR.mkdir(exist_ok=True)
+
+    # Check for previous completion (skip if --reset just cleared it)
+    if "--reset" not in flags and _check_previous_completion():
+        print("[COMPLETE] Previous run finished successfully.")
+        print(f"  → See {NOTES_FILE.relative_to(PROJECT_ROOT)} for summary")
+        print("  → Use --reset to start fresh")
+        return
 
     if "--retry" in flags and LOG_FILE.exists():
         lines = read_file(LOG_FILE).splitlines()

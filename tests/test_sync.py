@@ -43,6 +43,7 @@ SYNCED_FUNCTIONS = [
     "_parse_json_response",
     "_record_cost",
     "_write_cost_summary",
+    "_check_previous_completion",
     # Phases (core workflow)
     "phase_scout",
     "phase_plan",
