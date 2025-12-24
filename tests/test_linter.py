@@ -272,7 +272,7 @@ class TestCheckFileTestExemption:
 
 
 class TestInlineSuppression:
-    """Test inline suppression with # lint:ignore."""
+    """Test inline suppression with # lint:ignore and # zenlint: ignore."""
 
     def test_suppress_all_rules(self, tmp_path):
         f = tmp_path / "code.py"
@@ -291,6 +291,43 @@ class TestInlineSuppression:
     def test_suppress_disable_syntax(self, tmp_path):
         f = tmp_path / "code.py"
         f.write_text('print("debug")  # lint:disable\n')
+        violations = check_file(str(f))
+        assert len(violations) == 0
+
+    def test_zenlint_suppress_all_rules(self, tmp_path):
+        """zenlint: ignore should suppress all rules on the line."""
+        f = tmp_path / "code.py"
+        f.write_text('print("debug")  # zenlint: ignore\n')
+        violations = check_file(str(f))
+        assert len(violations) == 0
+
+    def test_zenlint_suppress_specific_rule(self, tmp_path):
+        """zenlint: ignore RULE should suppress only that rule."""
+        f = tmp_path / "code.py"
+        f.write_text('secret = "abc123"  # zenlint: ignore POSSIBLE_SECRET\nprint("test")\n')
+        violations = check_file(str(f))
+        rules = [v["rule"] for v in violations]
+        assert "POSSIBLE_SECRET" not in rules
+        assert "DEBUG_PRINT" in rules
+
+    def test_zenlint_disable_syntax(self, tmp_path):
+        """zenlint: disable should also work."""
+        f = tmp_path / "code.py"
+        f.write_text('print("debug")  # zenlint: disable\n')
+        violations = check_file(str(f))
+        assert len(violations) == 0
+
+    def test_zenlint_case_insensitive(self, tmp_path):
+        """Suppression should be case-insensitive."""
+        f = tmp_path / "code.py"
+        f.write_text('print("debug")  # ZENLINT: IGNORE\n')
+        violations = check_file(str(f))
+        assert len(violations) == 0
+
+    def test_zenlint_with_extra_spaces(self, tmp_path):
+        """Suppression should handle variable spacing."""
+        f = tmp_path / "code.py"
+        f.write_text('print("debug")  #  zenlint:  ignore\n')
         violations = check_file(str(f))
         assert len(violations) == 0
 
