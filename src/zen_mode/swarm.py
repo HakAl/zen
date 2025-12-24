@@ -633,9 +633,11 @@ class SwarmDispatcher:
         completed_tasks: Dict[str, bool] = {}  # work_dir -> completed (shared state)
         completed_lock = threading.Lock()
         total_tasks = len(self.config.tasks)
+        max_completed_seen = 0  # Track high-water mark to prevent backwards display
 
         def status_monitor():
             """Background thread that polls worker logs and updates status."""
+            nonlocal max_completed_seen
             while not stop_monitoring.wait(STATUS_UPDATE_INTERVAL):
                 # Collect status from all workers
                 worker_statuses = []
@@ -644,6 +646,10 @@ class SwarmDispatcher:
                 with completed_lock:
                     completed_count = len(completed_tasks)
                     completed_set = set(completed_tasks.keys())
+
+                # Never show backwards progress (defensive fix for edge cases)
+                max_completed_seen = max(max_completed_seen, completed_count)
+                completed_count = max_completed_seen
 
                 for work_dir, (task_path, task_num) in work_dir_map.items():
                     # Skip tasks that main thread marked as completed
