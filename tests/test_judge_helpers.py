@@ -11,7 +11,7 @@ import pytest
 
 # Import from package
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-from zen_mode.core import _is_test_or_doc
+from zen_mode.core import _is_test_or_doc, _check_previous_completion, NOTES_FILE
 
 
 class TestIsTestOrDoc:
@@ -74,3 +74,29 @@ class TestIsTestOrDoc:
 
     def test_empty_string(self):
         assert _is_test_or_doc("") is False
+
+
+class TestCheckPreviousCompletion:
+    """Tests for _check_previous_completion() helper function."""
+
+    def test_no_notes_file(self, tmp_path, monkeypatch):
+        """Returns False when final_notes.md doesn't exist."""
+        import zen_mode.core as core
+        monkeypatch.setattr(core, "NOTES_FILE", tmp_path / "final_notes.md")
+        assert _check_previous_completion() is False
+
+    def test_notes_without_cost_summary(self, tmp_path, monkeypatch):
+        """Returns False when final_notes.md exists but has no cost summary."""
+        import zen_mode.core as core
+        notes_file = tmp_path / "final_notes.md"
+        notes_file.write_text("# Summary\n- Changed some files\n")
+        monkeypatch.setattr(core, "NOTES_FILE", notes_file)
+        assert _check_previous_completion() is False
+
+    def test_notes_with_cost_summary(self, tmp_path, monkeypatch):
+        """Returns True when final_notes.md has cost summary (completed run)."""
+        import zen_mode.core as core
+        notes_file = tmp_path / "final_notes.md"
+        notes_file.write_text("# Summary\n- Changed files\n\n## Cost Summary\nTotal: $0.05\n")
+        monkeypatch.setattr(core, "NOTES_FILE", notes_file)
+        assert _check_previous_completion() is True
