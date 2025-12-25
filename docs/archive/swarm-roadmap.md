@@ -566,7 +566,7 @@ Tests created in `test_swarm_completion.py` (all pass):
 4. Detect "same error 3x" → stop retrying, report stuck
 5. Add `--skip-verify` flag for infra-only tasks
 
-**Target files:** `src/zen_mode/core.py`, `scripts/zen.py`
+**Target files:** `src/zen_mode/core.py``
 
 **Estimated cost:** ~$1.50
 

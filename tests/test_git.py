@@ -148,22 +148,22 @@ class TestGetChangedFilenames:
 
 
 # =============================================================================
-# Tests for should_skip_judge() in zen_mode.core
+# Tests for should_skip_judge_ctx() in zen_mode.judge
 # =============================================================================
 
 class TestShouldSkipJudgeGitOperations:
-    """Tests for git operations in should_skip_judge().
+    """Tests for git operations in should_skip_judge_ctx().
 
     WARNING: All tests must mock subprocess.run. Never make real git calls.
 
-    These tests focus on how should_skip_judge() handles various git states:
+    These tests focus on how should_skip_judge_ctx() handles various git states:
     - Normal repos with commits
     - Fresh repos without HEAD
     - Git command failures
     """
 
     def _mock_git_numstat(self, numstat_output, untracked_output=""):
-        """Mock git subprocess calls for should_skip_judge().
+        """Mock git subprocess calls for should_skip_judge_ctx().
 
         WARNING: This returns a mock side_effect function, NOT real git calls.
         """
@@ -179,38 +179,54 @@ class TestShouldSkipJudgeGitOperations:
             return Mock(returncode=1, stdout="")
         return mock_run
 
-    @patch('zen_mode.core.subprocess.run')
-    @patch('zen_mode.core.log')
-    def test_no_changes_skips_judge(self, mock_log, mock_run):
+    def _make_mock_ctx(self, tmp_path):
+        """Create a mock Context for testing."""
+        from zen_mode.utils import Context
+        work_dir = tmp_path / ".zen"
+        work_dir.mkdir(exist_ok=True)
+        plan_file = work_dir / "plan.md"
+        plan_file.write_text("## Step 1: Test step\n")
+        return Context(
+            work_dir=work_dir,
+            task_file="task.md",
+            project_root=tmp_path,
+        )
+
+    @patch('zen_mode.judge.subprocess.run')
+    def test_no_changes_skips_judge(self, mock_run, tmp_path):
         """No changes detected should skip judge."""
-        from zen_mode.core import should_skip_judge
+        from zen_mode.judge import should_skip_judge_ctx
 
         mock_run.side_effect = self._mock_git_numstat("", "")
+        ctx = self._make_mock_ctx(tmp_path)
+        log_messages = []
 
-        result = should_skip_judge()
+        result = should_skip_judge_ctx(ctx, log_fn=log_messages.append)
 
         assert result is True
-        mock_log.assert_called_with("[JUDGE] Skipping: No changes detected")
+        assert any("[JUDGE] Skipping: No changes detected" in msg for msg in log_messages)
 
-    @patch('zen_mode.utils.subprocess.run')
-    def test_git_failure_requires_judge(self, mock_run):
+    @patch('zen_mode.judge.subprocess.run')
+    def test_git_failure_requires_judge(self, mock_run, tmp_path):
         """Git command failure should require judge (safe default)."""
-        from zen_mode.core import should_skip_judge
+        from zen_mode.judge import should_skip_judge_ctx
 
         mock_run.return_value = Mock(returncode=1, stdout="")
+        ctx = self._make_mock_ctx(tmp_path)
 
-        result = should_skip_judge()
+        result = should_skip_judge_ctx(ctx)
 
         assert result is False
 
-    @patch('zen_mode.utils.subprocess.run')
-    def test_git_exception_requires_judge(self, mock_run):
+    @patch('zen_mode.judge.subprocess.run')
+    def test_git_exception_requires_judge(self, mock_run, tmp_path):
         """Git exception should require judge (safe default)."""
-        from zen_mode.core import should_skip_judge
+        from zen_mode.judge import should_skip_judge_ctx
 
         mock_run.side_effect = Exception("git not found")
+        ctx = self._make_mock_ctx(tmp_path)
 
-        result = should_skip_judge()
+        result = should_skip_judge_ctx(ctx)
 
         assert result is False
 
@@ -284,23 +300,29 @@ class TestGitEdgeCases:
         assert "src/main.py" in result, f"Expected staged files, got: {result}"
         assert "src/utils.py" in result
 
-    @patch('zen_mode.core.subprocess.run')
-    @patch('zen_mode.core.log')
-    def test_should_skip_judge_no_head_with_staged_files(self, mock_log, mock_run):
+    @patch('zen_mode.judge.subprocess.run')
+    def test_should_skip_judge_no_head_with_staged_files(self, mock_run, tmp_path):
         """BUG: should_skip_judge() incorrectly requires judge when HEAD doesn't exist.
 
         Scenario: Fresh repo with only test files staged.
         Expected: Should skip judge (only test files).
         Actual: Returns False because git diff --numstat HEAD fails.
         """
-        from zen_mode.core import should_skip_judge
+        from zen_mode.judge import should_skip_judge_ctx
+        from zen_mode.utils import Context
 
         mock_run.side_effect = self._mock_no_head_repo(
             staged_files="tests/test_main.py\n",
             staged_numstat="50\t0\ttests/test_main.py\n"
         )
 
-        result = should_skip_judge()
+        work_dir = tmp_path / ".zen"
+        work_dir.mkdir(exist_ok=True)
+        plan_file = work_dir / "plan.md"
+        plan_file.write_text("## Step 1: Test step\n")
+        ctx = Context(work_dir=work_dir, task_file="task.md", project_root=tmp_path)
+
+        result = should_skip_judge_ctx(ctx)
 
         assert result is True, "Should skip judge when only test files are staged"
 
@@ -368,19 +390,21 @@ class TestDeletionTracking:
         assert "deleted_file.py" in result, "Deleted files should appear in changed list"
         assert "modified_file.py" in result
 
-    @patch('zen_mode.utils.subprocess.run')
-    @patch('zen_mode.core.log')
-    @patch('zen_mode.core.read_file')
-    @patch('zen_mode.core.parse_steps')
-    def test_should_skip_judge_counts_deletions(self, mock_parse, mock_read, mock_log, mock_run):
+    @patch('zen_mode.judge.subprocess.run')
+    def test_should_skip_judge_counts_deletions(self, mock_run, tmp_path):
         """Verify deletion line counts are included in total."""
-        from zen_mode.core import should_skip_judge
+        from zen_mode.judge import should_skip_judge_ctx
+        from zen_mode.utils import Context
 
         mock_run.side_effect = self._mock_staged_deletions()
-        mock_read.return_value = "## Step 1: Delete file\n## Step 2: Modify other"
-        mock_parse.return_value = [(1, "Delete file"), (2, "Modify other")]
 
-        result = should_skip_judge()
+        work_dir = tmp_path / ".zen"
+        work_dir.mkdir(exist_ok=True)
+        plan_file = work_dir / "plan.md"
+        plan_file.write_text("## Step 1: Delete file\n## Step 2: Modify other\n")
+        ctx = Context(work_dir=work_dir, task_file="task.md", project_root=tmp_path)
+
+        result = should_skip_judge_ctx(ctx)
 
         # 50 deletes + 10 adds + 5 deletes = 65 lines total
         assert result is False, "65 lines of changes should require judge review"

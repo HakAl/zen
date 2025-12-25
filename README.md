@@ -24,7 +24,6 @@ claude login
 **2. Install Zen**
 ```bash
 pip install zen-mode
-# OR copy 'scripts/zen.py' and 'scripts/zen_lint.py' to your project root.
 ```
 
 **3. Run a Task**
@@ -231,13 +230,6 @@ The Judge phase (Opus architectural review) is automatically skipped to save cos
 
 Override thresholds with: `ZEN_JUDGE_TRIVIAL`, `ZEN_JUDGE_SMALL`, `ZEN_JUDGE_SIMPLE_LINES`, `ZEN_JUDGE_SIMPLE_STEPS`
 
-### The Eject Button
-If you installed via pip but want to hack the source code:
-```bash
-zen eject
-```
-This copies `zen.py` and `zen_lint.py` to your project root for local modifications. The `zen` command will automatically use your local versions.
-
 ---
 
 ## CLI Reference
@@ -250,7 +242,6 @@ This copies `zen.py` and `zen_lint.py` to your project root for local modificati
 | `zen <task.md> --retry` | Clear completion markers to retry failed steps |
 | `zen <task.md> --skip-judge` | Skip architectural review (saves ~$0.25) |
 | `zen <task.md> --dry-run` | Preview without executing |
-| `zen eject` | Copy scripts to project root for customization |
 
 ---
 

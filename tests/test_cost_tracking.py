@@ -6,15 +6,9 @@ from pathlib import Path
 
 import pytest
 
-# Import from package
+# Import from package - cost tracking functions moved to utils
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-from zen_mode.core import (
-    _extract_cost,
-    _parse_json_response,
-    _record_cost,
-    _phase_costs,
-    _phase_tokens,
-)
+from zen_mode.utils import _extract_cost, _parse_json_response
 
 
 class TestExtractCost:
@@ -118,50 +112,8 @@ class TestParseJsonResponse:
         assert data["cost"] == 0.01
 
 
-class TestRecordCost:
-    """Tests for _record_cost() function."""
-
-    def setup_method(self):
-        """Clear cost tracking state before each test."""
-        _phase_costs.clear()
-        _phase_tokens.clear()
-
-    def test_single_record(self):
-        """Record single cost entry."""
-        _record_cost("scout", 0.001, {"in": 100, "out": 50, "cache_read": 0})
-        assert _phase_costs["scout"] == 0.001
-        assert _phase_tokens["scout"] == {"in": 100, "out": 50, "cache_read": 0}
-
-    def test_accumulation_same_phase(self):
-        """Multiple records for same phase accumulate."""
-        _record_cost("implement", 0.001, {"in": 100, "out": 50, "cache_read": 0})
-        _record_cost("implement", 0.002, {"in": 200, "out": 100, "cache_read": 50})
-        assert _phase_costs["implement"] == 0.003
-        assert _phase_tokens["implement"] == {"in": 300, "out": 150, "cache_read": 50}
-
-    def test_multiple_phases(self):
-        """Different phases tracked separately."""
-        _record_cost("scout", 0.001, {"in": 100, "out": 50, "cache_read": 0})
-        _record_cost("plan", 0.005, {"in": 500, "out": 200, "cache_read": 100})
-        assert _phase_costs["scout"] == 0.001
-        assert _phase_costs["plan"] == 0.005
-        assert _phase_tokens["scout"]["in"] == 100
-        assert _phase_tokens["plan"]["in"] == 500
-
-    def test_zero_values(self):
-        """Zero values handled correctly."""
-        _record_cost("test", 0, {"in": 0, "out": 0, "cache_read": 0})
-        assert _phase_costs["test"] == 0
-        assert _phase_tokens["test"] == {"in": 0, "out": 0, "cache_read": 0}
-
-
 class TestCostTrackingIntegration:
     """Integration tests for cost tracking flow."""
-
-    def setup_method(self):
-        """Clear cost tracking state before each test."""
-        _phase_costs.clear()
-        _phase_tokens.clear()
 
     def test_full_flow_valid_response(self):
         """Simulate full flow with valid Claude response."""
@@ -172,12 +124,11 @@ class TestCostTrackingIntegration:
         assert isinstance(data, dict)
 
         cost, tokens = _extract_cost(data)
-        _record_cost("implement", cost, tokens)
 
-        assert _phase_costs["implement"] == 0.0234
-        assert _phase_tokens["implement"]["in"] == 1500
-        assert _phase_tokens["implement"]["out"] == 800
-        assert _phase_tokens["implement"]["cache_read"] == 5000
+        assert cost == 0.0234
+        assert tokens["in"] == 1500
+        assert tokens["out"] == 800
+        assert tokens["cache_read"] == 5000
         assert data.get("result") == "Code written successfully"
 
     def test_full_flow_with_prefix(self):

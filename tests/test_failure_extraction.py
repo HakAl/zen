@@ -6,7 +6,7 @@ from pathlib import Path
 
 # Import from package
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-from zen_mode.core import extract_failure_count
+from zen_mode.verify import extract_failure_count
 
 
 class TestPythonPytest:

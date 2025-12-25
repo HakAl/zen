@@ -1,26 +1,26 @@
 ## GOLDEN RULES
-- **Delete, don't deprecate.** Remove obsolete code immediately.
-- **Complete, don't stub.** No placeholder implementations or "todo" skeletons.
-- **Update callers atomically.** Definition changes and caller updates in one pass.
+- **Verify, then Delete.** Confirm zero references before removing code.
+- **Complete, not Stubbed.** No `pass`, `TODO`, or placeholders. Break down if complex.
+- **Grep Before Change.** Changing a signature? grep -r "name" first. Update definition + all found callers in one pass.
 
-## ARCHITECTURE  
-- **Inject, don't instantiate.** Pass dependencies explicitly; no hardcoded constructors.
-- **Contract first.** Define interfaces before implementations.
-- **Pure constructors.** No I/O, network, or DB calls during initialization.
+## ARCHITECTURE
+- **Inject Dependencies.** Pass config/db/clients explicitly. No `new Service()` inside logic.
+- **Interface First.** Define types/shapes before implementation.
+- **Pure Constructors.** I/O only in `run()`, `execute()`, `fetch()` methods.
 
-## CODE STYLE
-- **Flat, not nested.** Max 2 directory levels. Refactor before adding depth.
-- **Specific, not general.** Catch explicit exceptions; no catch-all handlers.
-- **Top-level imports.** No imports inside functions or methods.
-- **Short names.** `process.js` not `dataProcessingHandlerManager.js`.
+## CODE STYLE (LLM-Friendly)
+- **Flat Structure.** Max 2 directory levels. Reduces path hallucinations.
+- **Fail Fast.** Specific exceptions (`UserNotFoundError`), not catch-all.
+- **Top-Level Imports.** No hidden deps inside functions.
+- **Semantic + Short.** `auth_flow.py` > `flow.py` > `auth_flow_handler.py`
 
 ## TESTING
-- **Mock boundaries, not internals.** Fake I/O and network; real logic.
-- **Test behavior, not implementation.** Assert outcomes, not method calls.
-- **Offline tests.** No real external dependencies.
+- **Mock Externals.** Network/DB mocked. Tests run offline.
+- **Assert Behavior.** Test outputs/state, not method calls.
+- **Self-Contained.** Tests own their fixtures. No shared global state.
 
 ## PROCESS
-1. Implement the change.
-2. Update all callers.
-3. Delete old code.
-4. Run tests.
+1. **Plan**: Read files → **Grep for impact** → Define Interface → Plan Logic
+2. **Implement:** Code + Tests together
+3. **Verify:** Run tests
+4. **Cleanup:** Delete unused (after green)

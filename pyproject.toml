@@ -43,7 +43,6 @@ packages = ["src/zen_mode"]
 [tool.hatch.build.targets.sdist]
 include = [
     "/src",
-    "/scripts",
     "/tests",
     "/README.md",
 ]

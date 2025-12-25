@@ -17,7 +17,7 @@ from zen_mode.core import run
 class TestBugPathTraversalVulnerability:
     """BUG: Task file paths are not sanitized, allowing path traversal."""
 
-    @patch('zen_mode.core.run_claude')  # Mock to prevent actual execution
+    @patch('zen_mode.utils.run_claude')  # Mock to prevent actual execution
     @patch('zen_mode.core.shutil.which', return_value='/usr/bin/claude')  # Mock claude binary
     def test_currently_allows_path_outside_project(self, mock_which, mock_claude, tmp_path, monkeypatch, capsys):
         """BUG: Currently allows accessing files outside project root."""
@@ -53,7 +53,7 @@ class TestBugPathTraversalVulnerability:
                 # Different error, re-raise
                 raise
 
-    @patch('zen_mode.core.run_claude')
+    @patch('zen_mode.utils.run_claude')
     @patch('zen_mode.core.shutil.which', return_value='/usr/bin/claude')
     def test_currently_allows_parent_directory_traversal(self, mock_which, mock_claude, tmp_path, monkeypatch, capsys):
         """BUG: Currently allows ../ traversal to escape project."""
@@ -86,7 +86,7 @@ class TestBugPathTraversalVulnerability:
             else:
                 raise
 
-    @patch('zen_mode.core.run_claude')
+    @patch('zen_mode.utils.run_claude')
     @patch('zen_mode.core.shutil.which', return_value='/usr/bin/claude')
     def test_should_accept_task_file_in_project(self, mock_which, mock_claude, tmp_path, monkeypatch, capsys):
         """After fix: Task files within project should still work."""
@@ -115,7 +115,7 @@ class TestBugPathTraversalVulnerability:
             assert "must be within project" not in captured.out
             # It might fail for other reasons (e.g., missing dependencies), that's ok
 
-    @patch('zen_mode.core.run_claude')
+    @patch('zen_mode.utils.run_claude')
     @patch('zen_mode.core.shutil.which', return_value='/usr/bin/claude')
     def test_should_accept_task_in_subdirectory(self, mock_which, mock_claude, tmp_path, monkeypatch, capsys):
         """After fix: Task files in subdirectories should work."""
