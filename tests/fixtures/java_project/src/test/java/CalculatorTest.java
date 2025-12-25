@@ -16,4 +16,19 @@ class CalculatorTest {
     void testAddZero() {
         assertEquals(0, Calculator.add(0, 0));
     }
+
+    @Test
+    void testAddThreeParameters() {
+        assertEquals(6, Calculator.add(1, 2, 3));
+    }
+
+    @Test
+    void testAddThreeParametersNegative() {
+        assertEquals(0, Calculator.add(-3, 1, 2));
+    }
+
+    @Test
+    void testAddThreeParametersZero() {
+        assertEquals(0, Calculator.add(0, 0, 0));
+    }
 }

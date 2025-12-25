@@ -28,6 +28,7 @@ from zen_mode.config import (
 
 # Import from linter for test file detection
 from zen_mode import linter
+from zen_mode.utils import log as utils_log, read_file, run_claude as utils_run_claude
 
 # -----------------------------------------------------------------------------
 # Regex constants (copied from core for independence)
@@ -36,6 +37,14 @@ _FAIL_STEM = re.compile(r"\bfail", re.IGNORECASE)
 _CLAUSE_SPLIT = re.compile(r"[,;|()\[\]{}\n]")
 _DIGIT = re.compile(r"\d+")
 _FILE_LINE_PATTERN = re.compile(r'File "([^"]+)", line (\d+)')
+
+
+# -----------------------------------------------------------------------------
+# Exceptions
+# -----------------------------------------------------------------------------
+class VerifyTimeout(Exception):
+    """Raised when Claude times out during verification."""
+    pass
 
 
 # -----------------------------------------------------------------------------
@@ -61,6 +70,28 @@ class FixResult(Enum):
 # -----------------------------------------------------------------------------
 TEST_OUTPUT_FILE = WORK_DIR / "test_output.txt"
 PLAN_FILE = WORK_DIR / "plan.md"
+LOG_FILE = WORK_DIR / "log.md"
+
+
+# -----------------------------------------------------------------------------
+# Wrappers for utils.py functions (use config globals)
+# -----------------------------------------------------------------------------
+def _log(msg: str) -> None:
+    """Log message using config globals."""
+    utils_log(msg, LOG_FILE, WORK_DIR)
+
+
+def _run_claude(prompt: str, model: str, *, phase: str = "unknown", timeout: Optional[int] = None) -> Optional[str]:
+    """Run Claude using config globals."""
+    return utils_run_claude(
+        prompt,
+        model=model,
+        phase=phase,
+        timeout=timeout,
+        project_root=PROJECT_ROOT,
+        dry_run=False,
+        log_fn=_log,
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -247,9 +278,6 @@ def parse_test_output(raw_output: str) -> str:
     Use Haiku to extract actionable failure info from verbose test output.
     Reduces token count for Sonnet fix prompts.
     """
-    # Import here to avoid circular dependency
-    from zen_mode.core import run_claude, log
-
     if len(raw_output) < PARSE_TEST_THRESHOLD:
         return raw_output
 
@@ -266,12 +294,12 @@ Keep under 400 words. Preserve exact error messages.
 """ + raw_output[:4000] + """
 </test_output>"""
 
-    parsed = run_claude(prompt, model=MODEL_EYES, phase="parse_tests", timeout=45)
+    parsed = _run_claude(prompt, model=MODEL_EYES, phase="parse_tests", timeout=45)
 
     if not parsed or len(parsed) > len(raw_output):
         return truncate_preserve_tail(raw_output, MAX_TEST_OUTPUT_PROMPT)
 
-    log(f"[PARSE] Reduced test output: {len(raw_output)} -> {len(parsed)} chars")
+    _log(f"[PARSE] Reduced test output: {len(raw_output)} -> {len(parsed)} chars")
     return parsed
 
 
@@ -282,12 +310,9 @@ def phase_verify() -> Tuple[TestState, str]:
     """
     Run tests once, no fixing. Returns (state, raw_output).
 
-    Uses MODEL_HANDS (sonnet).
+    Uses MODEL_EYES (haiku) - only runs tests, doesn't fix.
     """
-    # Import here to avoid circular dependency
-    from zen_mode.core import run_claude, log, read_file
-
-    log("\n[VERIFY] Running tests...")
+    _log("\n[VERIFY] Running tests...")
 
     # Ensure work dir exists
     WORK_DIR.mkdir(parents=True, exist_ok=True)
@@ -295,7 +320,7 @@ def phase_verify() -> Tuple[TestState, str]:
     # Pre-check: detect project runtime and verify it's installed
     runtime, available = detect_project_runtime()
     if not available:
-        log(f"[VERIFY] Runtime '{runtime}' not installed, skipping tests.")
+        _log(f"[VERIFY] Runtime '{runtime}' not installed, skipping tests.")
         return TestState.RUNTIME_MISSING, f"Runtime '{runtime}' not found"
 
     # Get plan context for intelligent test selection
@@ -334,15 +359,15 @@ End with exactly one of:
 - TESTS_ERROR (could not run tests)
 </output>"""
 
-    output = run_claude(prompt, model=MODEL_HANDS, phase="verify", timeout=TIMEOUT_VERIFY)
+    output = _run_claude(prompt, model=MODEL_EYES, phase="verify", timeout=TIMEOUT_VERIFY)
 
     if not output:
-        log("[VERIFY] No output from agent.")
-        return TestState.ERROR, ""
+        _log("[VERIFY] No output from agent (timeout or error).")
+        raise VerifyTimeout("Claude did not respond during verification. Please retry.")
 
     # Check for test output file
     if not TEST_OUTPUT_FILE.exists():
-        log("[VERIFY] Agent did not write test output file.")
+        _log("[VERIFY] Agent did not write test output file.")
         return TestState.ERROR, ""
 
     test_output = read_file(TEST_OUTPUT_FILE)
@@ -380,10 +405,7 @@ def phase_fix_tests(test_output: str, attempt: int) -> FixResult:
 
     Uses MODEL_HANDS (sonnet) for code changes.
     """
-    # Import here to avoid circular dependency
-    from zen_mode.core import run_claude, log, read_file
-
-    log(f"[FIX] Analyzing failures (attempt {attempt})...")
+    _log(f"[FIX] Analyzing failures (attempt {attempt})...")
 
     # Parse test output for concise summary
     parsed = parse_test_output(test_output)
@@ -436,22 +458,22 @@ End with exactly one of:
 - FIXES_BLOCKED: <reason> (cannot fix, explain why)
 </output>"""
 
-    output = run_claude(prompt, model=MODEL_HANDS, phase="fix_tests", timeout=TIMEOUT_FIX)
+    output = _run_claude(prompt, model=MODEL_HANDS, phase="fix_tests", timeout=TIMEOUT_FIX)
 
     if not output:
-        log("[FIX] No output from agent.")
+        _log("[FIX] No output from agent.")
         return FixResult.BLOCKED
 
     if "FIXES_BLOCKED" in output:
-        log("[FIX] Agent reports fixes blocked.")
+        _log("[FIX] Agent reports fixes blocked.")
         return FixResult.BLOCKED
 
     if "FIXES_APPLIED" in output:
-        log("[FIX] Fixes applied.")
+        _log("[FIX] Fixes applied.")
         return FixResult.APPLIED
 
     # Assume applied if we got output without explicit block
-    log("[FIX] Assuming fixes applied (no explicit marker).")
+    _log("[FIX] Assuming fixes applied (no explicit marker).")
     return FixResult.APPLIED
 
 
@@ -464,41 +486,38 @@ def verify_and_fix() -> bool:
     2. phase_fix_tests (sonnet) - fix failures if any
     3. Repeat up to MAX_FIX_ATTEMPTS times
     """
-    # Import here to avoid circular dependency
-    from zen_mode.core import log
-
     for attempt in range(MAX_FIX_ATTEMPTS + 1):
         state, output = phase_verify()
 
         if state == TestState.PASS:
-            log("[VERIFY] Passed.")
+            _log("[VERIFY] Passed.")
             return True
 
         if state == TestState.NONE:
-            log("[VERIFY] No tests found, skipping verification.")
+            _log("[VERIFY] No tests found, skipping verification.")
             return True
 
         if state == TestState.RUNTIME_MISSING:
-            log("[VERIFY] Runtime not installed, skipping verification.")
+            _log("[VERIFY] Runtime not installed, skipping verification.")
             return True
 
         if state == TestState.ERROR:
-            log("[VERIFY] Test runner error.")
+            _log("[VERIFY] Test runner error.")
             return False
 
         # state == FAIL
         if attempt < MAX_FIX_ATTEMPTS:
-            log(f"[FIX] Attempt {attempt + 1}/{MAX_FIX_ATTEMPTS}")
+            _log(f"[FIX] Attempt {attempt + 1}/{MAX_FIX_ATTEMPTS}")
             result = phase_fix_tests(output, attempt + 1)
 
             if result == FixResult.BLOCKED:
-                log("[FIX] Blocked - cannot proceed.")
+                _log("[FIX] Blocked - cannot proceed.")
                 return False
 
-            log("[FIX] Fix applied, re-verifying...")
+            _log("[FIX] Fix applied, re-verifying...")
         else:
             # Last attempt failed, no more retries
             break
 
-    log(f"[VERIFY] Failed after {MAX_FIX_ATTEMPTS} fix attempts.")
+    _log(f"[VERIFY] Failed after {MAX_FIX_ATTEMPTS} fix attempts.")
     return False

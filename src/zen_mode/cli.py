@@ -126,107 +126,6 @@ def cmd_swarm(args):
     sys.exit(0 if summary.failed == 0 else 1)
 
 
-def cmd_eject(args):
-    """Copy core.py and linter.py to local directory as standalone scripts."""
-    try:
-        import importlib.resources as resources
-
-        # Read source files from package
-        if hasattr(resources, 'files'):
-            # Python 3.9+
-            pkg = resources.files('zen_mode')
-            core_src = pkg.joinpath('core.py').read_text()
-            linter_src = pkg.joinpath('linter.py').read_text()
-        else:
-            # Python 3.7-3.8 fallback
-            with resources.open_text('zen_mode', 'core.py') as f:
-                core_src = f.read()
-            with resources.open_text('zen_mode', 'linter.py') as f:
-                linter_src = f.read()
-
-        # Add shebang and main block to core.py -> zen.py
-        zen_header = '''#!/usr/bin/env python3
-# Standalone version - ejected from zen-mode package
-# Modify as needed for your project
-'''
-        zen_main = '''
-
-# -----------------------------------------------------------------------------
-# Main
-# -----------------------------------------------------------------------------
-def main():
-    import argparse
-    parser = argparse.ArgumentParser(description="Zen Mode - Autonomous Agent Runner")
-    parser.add_argument("task_file", help="Path to task markdown file")
-    parser.add_argument("--reset", action="store_true", help="Reset work directory")
-    parser.add_argument("--retry", action="store_true", help="Clear completion markers")
-    parser.add_argument("--dry-run", action="store_true", help="Show what would happen")
-    args = parser.parse_args()
-
-    flags = set()
-    if args.reset:
-        flags.add("--reset")
-    if args.retry:
-        flags.add("--retry")
-    if args.dry_run:
-        flags.add("--dry-run")
-
-    run(args.task_file, flags)
-
-
-if __name__ == "__main__":
-    main()
-'''
-
-        # Fix the linter import for standalone mode
-        core_standalone = core_src.replace(
-            'from . import linter',
-            'import zen_lint as linter'
-        )
-
-        zen_py = Path.cwd() / "zen.py"
-        zen_py.write_text(zen_header + core_standalone + zen_main, encoding='utf-8')
-        print(f"Created {zen_py}")
-
-        # Add shebang to linter.py -> zen_lint.py
-        lint_header = '''#!/usr/bin/env python3
-# Standalone version - ejected from zen-mode package
-# Modify as needed for your project
-'''
-        lint_main = '''
-
-# -----------------------------------------------------------------------------
-# Main
-# -----------------------------------------------------------------------------
-def main():
-    import argparse
-    parser = argparse.ArgumentParser(description="Zen Lint - Code Quality Linter")
-    parser.add_argument("paths", nargs="*", help="Files or directories to scan")
-    parser.add_argument("-s", "--severity", choices=["HIGH", "MEDIUM", "LOW"], default="LOW",
-                        help="Minimum severity level")
-    args = parser.parse_args()
-
-    passed, output = run_lint(args.paths if args.paths else None, args.severity)
-    print(output)
-    sys.exit(0 if passed else 1)
-
-
-if __name__ == "__main__":
-    main()
-'''
-
-        zen_lint_py = Path.cwd() / "zen_lint.py"
-        zen_lint_py.write_text(lint_header + linter_src + lint_main, encoding='utf-8')
-        print(f"Created {zen_lint_py}")
-
-        print("\nEjected. Run 'python zen.py <task.md>' directly.")
-        print("The 'zen' command will now use your local versions.")
-
-    except Exception as e:
-        print(f"Error ejecting: {e}")
-        sys.exit(1)
-
-
 def main():
     # Check for subcommands first, before argparse sees the args
     if len(sys.argv) >= 2:
@@ -283,7 +182,6 @@ Usage:
   zen init                    Initialize .zen/ directory
   zen <task.md>               Run the 4-phase workflow
   zen swarm <task1.md> ...    Execute multiple tasks in parallel
-  zen eject                   Copy scripts to local directory
 
 Options:
   --reset                     Reset work directory and start fresh
@@ -301,7 +199,6 @@ Examples:
   zen task.md --skip-judge
   zen swarm task1.md task2.md --workers 4
   zen swarm task1.md task2.md --verbose
-  zen eject
 """)
 
 

@@ -11,7 +11,8 @@ import pytest
 
 # Import from package
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-from zen_mode.core import _is_test_or_doc, _check_previous_completion, NOTES_FILE
+from zen_mode.judge import _is_test_or_doc
+from zen_mode.core import _check_previous_completion, NOTES_FILE
 
 
 class TestIsTestOrDoc:

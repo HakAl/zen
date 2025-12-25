@@ -210,8 +210,8 @@ class TestExtractFailureCount:
 class TestPhaseVerifyMocked:
     """Test phase_verify with mocked Claude calls."""
 
-    @patch('zen_mode.core.run_claude')
-    @patch('zen_mode.core.read_file')
+    @patch('zen_mode.verify.utils_run_claude')
+    @patch('zen_mode.utils.read_file')
     def test_returns_pass_state(self, mock_read_file, mock_run_claude):
         from zen_mode.verify import phase_verify, TEST_OUTPUT_FILE
         import tempfile
@@ -235,8 +235,8 @@ class TestPhaseVerifyMocked:
 class TestPhaseFixTestsMocked:
     """Test phase_fix_tests with mocked Claude calls."""
 
-    @patch('zen_mode.core.run_claude')
-    @patch('zen_mode.core.read_file')
+    @patch('zen_mode.verify.utils_run_claude')
+    @patch('zen_mode.utils.read_file')
     def test_returns_applied_on_success(self, mock_read_file, mock_run_claude):
         from zen_mode.verify import phase_fix_tests
 
@@ -246,8 +246,8 @@ class TestPhaseFixTestsMocked:
         result = phase_fix_tests("test failure output", attempt=1)
         assert result == FixResult.APPLIED
 
-    @patch('zen_mode.core.run_claude')
-    @patch('zen_mode.core.read_file')
+    @patch('zen_mode.verify.utils_run_claude')
+    @patch('zen_mode.utils.read_file')
     def test_returns_blocked_on_failure(self, mock_read_file, mock_run_claude):
         from zen_mode.verify import phase_fix_tests
 
@@ -257,8 +257,8 @@ class TestPhaseFixTestsMocked:
         result = phase_fix_tests("test failure output", attempt=1)
         assert result == FixResult.BLOCKED
 
-    @patch('zen_mode.core.run_claude')
-    @patch('zen_mode.core.read_file')
+    @patch('zen_mode.verify.utils_run_claude')
+    @patch('zen_mode.utils.read_file')
     def test_returns_blocked_on_no_output(self, mock_read_file, mock_run_claude):
         from zen_mode.verify import phase_fix_tests
 
