@@ -241,7 +241,6 @@ Override thresholds with: `ZEN_JUDGE_TRIVIAL`, `ZEN_JUDGE_SMALL`, `ZEN_JUDGE_SIM
 | `zen <task.md> --reset` | Wipe state and start fresh |
 | `zen <task.md> --retry` | Clear completion markers to retry failed steps |
 | `zen <task.md> --skip-judge` | Skip architectural review (saves ~$0.25) |
-| `zen <task.md> --dry-run` | Preview without executing |
 
 ---
 

@@ -269,7 +269,6 @@ class SwarmConfig:
     """Configuration for swarm execution."""
     tasks: List[str]  # List of task file paths
     workers: int = 1  # Number of parallel workers
-    dry_run: bool = False  # Show what would run without executing
     project_root: Optional[Path] = None  # Project root directory
     work_dir_base: str = ".zen"  # Base directory for work folders
     verbose: bool = False  # Show full streaming logs instead of ticker
@@ -302,7 +301,7 @@ class WorkerResult:
 
 
 def execute_worker_task(task_path: str, work_dir: str, project_root: Path,
-                        dry_run: bool = False, scout_context: Optional[str] = None) -> WorkerResult:
+                        scout_context: Optional[str] = None) -> WorkerResult:
     """
     Execute a single task in isolation.
 
@@ -310,7 +309,6 @@ def execute_worker_task(task_path: str, work_dir: str, project_root: Path,
         task_path: Path to task markdown file
         work_dir: Working directory for this task (.zen_<uuid>)
         project_root: Root directory for the project
-        dry_run: If True, simulate without running
         scout_context: Optional path to shared scout context file
 
     Returns:
@@ -322,10 +320,6 @@ def execute_worker_task(task_path: str, work_dir: str, project_root: Path,
         returncode=0,
         modified_files=[]
     )
-
-    if dry_run:
-        result.stdout = f"[DRY-RUN] Would execute: {task_path}"
-        return result
 
     # Build zen command - use 'zen' CLI directly
     cmd = [
@@ -570,7 +564,6 @@ class SwarmDispatcher:
             model=MODEL_EYES,
             phase="swarm_scout",
             project_root=self.config.project_root,
-            dry_run=self.config.dry_run,
         )
         if not output:
             return None
@@ -615,22 +608,21 @@ class SwarmDispatcher:
         swarm_scout_dir = base_dir / f"swarm_{swarm_id}"
         scout_file = swarm_scout_dir / "scout.md"
 
-        if not self.config.dry_run:
-            print("[SWARM] Running shared scout...")
-            first_task = self.config.tasks[0]
-            scout_context = self._run_shared_scout(first_task, swarm_scout_dir, scout_file)
+        print("[SWARM] Running shared scout...")
+        first_task = self.config.tasks[0]
+        scout_context = self._run_shared_scout(first_task, swarm_scout_dir, scout_file)
 
         # Generate unique work directories for each task (inside .zen/)
         task_configs = [
             (task, f"{self.config.work_dir_base}/worker_{uuid4().hex[:8]}", self.config.project_root,
-             self.config.dry_run, scout_context)
+             scout_context)
             for task in self.config.tasks
         ]
 
         # Track work directories for status monitoring
         # Map: work_dir -> (task_path, task_num)
         work_dir_map: Dict[str, Tuple[str, int]] = {}
-        for idx, (task, work_dir, _, _, _) in enumerate(task_configs):
+        for idx, (task, work_dir, _, _) in enumerate(task_configs):
             work_dir_map[work_dir] = (task, idx + 1)  # 1-indexed task numbers
 
         # Status monitoring state - shared between main thread and monitor
@@ -676,9 +668,9 @@ class SwarmDispatcher:
                 )
                 print_status_block(lines, is_tty)
 
-        # Start monitoring thread (unless verbose mode or dry run)
+        # Start monitoring thread (unless verbose mode)
         monitor_thread = None
-        if not self.config.verbose and not self.config.dry_run:
+        if not self.config.verbose:
             monitor_thread = threading.Thread(target=status_monitor, daemon=True)
             monitor_thread.start()
 
@@ -689,8 +681,8 @@ class SwarmDispatcher:
             # Submit all tasks
             futures = {
                 executor.submit(execute_worker_task, task, work_dir, project_root,
-                                dry_run, scout_context): (task, work_dir)
-                for task, work_dir, project_root, dry_run, scout_context in task_configs
+                                scout_context): (task, work_dir)
+                for task, work_dir, project_root, scout_context in task_configs
             }
 
             # Collect results as they complete (with timeout to prevent infinite hang)

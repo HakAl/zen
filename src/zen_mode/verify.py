@@ -89,7 +89,6 @@ def _run_claude(prompt: str, model: str, *, phase: str = "unknown", timeout: Opt
         phase=phase,
         timeout=timeout,
         project_root=PROJECT_ROOT,
-        dry_run=False,
         log_fn=_log,
     )
 

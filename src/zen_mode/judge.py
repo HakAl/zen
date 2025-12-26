@@ -288,7 +288,6 @@ def phase_judge_ctx(ctx: Context) -> None:
             phase="judge",
             timeout=TIMEOUT_EXEC,
             project_root=ctx.project_root,
-            dry_run=ctx.dry_run,
             log_fn=lambda msg: _log_ctx(ctx, msg),
             cost_callback=ctx.record_cost,
         )
@@ -345,7 +344,6 @@ def phase_judge_ctx(ctx: Context) -> None:
             phase="judge_fix",
             timeout=TIMEOUT_EXEC,
             project_root=ctx.project_root,
-            dry_run=ctx.dry_run,
             log_fn=lambda msg: _log_ctx(ctx, msg),
             cost_callback=ctx.record_cost,
         )

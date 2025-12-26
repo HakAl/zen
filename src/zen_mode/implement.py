@@ -252,7 +252,6 @@ def phase_implement_ctx(ctx: Context, allowed_files: Optional[str] = None) -> No
                 phase="implement",
                 timeout=TIMEOUT_EXEC,
                 project_root=ctx.project_root,
-                dry_run=ctx.dry_run,
                 log_fn=lambda msg: _log_ctx(ctx, msg),
                 cost_callback=ctx.record_cost,
             ) or ""

@@ -229,21 +229,6 @@ class TestProcessPoolCompletion:
 class TestExecuteWorkerTaskCompletion:
     """Test execute_worker_task returns in various scenarios."""
 
-    def test_dry_run_returns_immediately(self, tmp_path):
-        """Dry run should return without blocking."""
-        start = time.time()
-        result = execute_worker_task(
-            task_path="task.md",
-            work_dir=".zen_test",
-            project_root=tmp_path,
-            dry_run=True,
-        )
-        elapsed = time.time() - start
-
-        assert elapsed < 1.0
-        assert result.returncode == 0
-        assert "[DRY-RUN]" in result.stdout
-
     def test_missing_zen_cli_returns_error(self, tmp_path):
         """Missing zen CLI should fail fast, not hang."""
         # Clear PATH so zen can't be found
@@ -253,7 +238,6 @@ class TestExecuteWorkerTaskCompletion:
                 task_path="task.md",
                 work_dir=".zen_test",
                 project_root=tmp_path,
-                dry_run=False,
             )
             elapsed = time.time() - start
 
@@ -272,7 +256,6 @@ class TestExecuteWorkerTaskCompletion:
                 task_path="task.md",
                 work_dir=".zen_test",
                 project_root=tmp_path,
-                dry_run=False,
             )
 
         assert result.returncode == 124  # Timeout exit code
@@ -311,7 +294,6 @@ TESTS_PASS
                     task_path="task.md",
                     work_dir=".zen_test",
                     project_root=tmp_path,
-                    dry_run=False,
                 )
 
         assert result.returncode == 0
@@ -342,7 +324,6 @@ TESTS_FAIL: 3 failures
                     task_path="task.md",
                     work_dir=".zen_test",
                     project_root=tmp_path,
-                    dry_run=False,
                 )
 
         assert result.returncode == 1
@@ -369,15 +350,33 @@ class TestSwarmDispatcherCompletion:
             tasks=[str(task1), str(task2)],
             workers=2,
             project_root=tmp_path,
-            dry_run=True,  # Use dry run to avoid real execution
         )
         dispatcher = SwarmDispatcher(config)
 
-        start = time.time()
-        summary = dispatcher.execute()
-        elapsed = time.time() - start
+        with patch("zen_mode.utils.run_claude") as mock_run_claude:
+            mock_run_claude.return_value = "## Targeted Files\n- `src/file.py`: test"
+            with patch("zen_mode.swarm.ProcessPoolExecutor") as mock_executor_class:
+                mock_executor = Mock()
+                mock_executor_class.return_value = mock_executor
 
-        assert elapsed < 5.0  # Should complete quickly in dry run
+                # Create mock futures that return successful WorkerResults
+                mock_futures = [Mock(), Mock()]
+                mock_executor.submit.side_effect = mock_futures
+                mock_futures[0].result.return_value = WorkerResult(
+                    task_path=str(task1), work_dir=".zen_1", returncode=0
+                )
+                mock_futures[1].result.return_value = WorkerResult(
+                    task_path=str(task2), work_dir=".zen_2", returncode=0
+                )
+
+                with patch("zen_mode.swarm.as_completed") as mock_as_completed:
+                    mock_as_completed.return_value = mock_futures
+
+                    start = time.time()
+                    summary = dispatcher.execute()
+                    elapsed = time.time() - start
+
+        assert elapsed < 5.0  # Should complete quickly with mocked execution
         assert summary.total_tasks == 2
         assert summary.succeeded == 2
         assert summary.failed == 0
@@ -393,25 +392,26 @@ class TestSwarmDispatcherCompletion:
             tasks=[str(task1)],
             workers=1,
             project_root=tmp_path,
-            dry_run=True,
         )
         dispatcher = SwarmDispatcher(config)
 
-        # Mock ProcessPoolExecutor to raise exception
-        with patch("zen_mode.swarm.ProcessPoolExecutor") as mock_executor_class:
-            mock_executor = Mock()
-            mock_executor_class.return_value = mock_executor
+        # Mock run_claude for shared scout and ProcessPoolExecutor to raise exception
+        with patch("zen_mode.utils.run_claude") as mock_run_claude:
+            mock_run_claude.return_value = "## Targeted Files\n- `src/file.py`: test"
+            with patch("zen_mode.swarm.ProcessPoolExecutor") as mock_executor_class:
+                mock_executor = Mock()
+                mock_executor_class.return_value = mock_executor
 
-            mock_future = Mock()
-            mock_future.result.side_effect = RuntimeError("Worker crashed")
-            mock_executor.submit.return_value = mock_future
+                mock_future = Mock()
+                mock_future.result.side_effect = RuntimeError("Worker crashed")
+                mock_executor.submit.return_value = mock_future
 
-            with patch("zen_mode.swarm.as_completed") as mock_as_completed:
-                mock_as_completed.return_value = [mock_future]
+                with patch("zen_mode.swarm.as_completed") as mock_as_completed:
+                    mock_as_completed.return_value = [mock_future]
 
-                start = time.time()
-                summary = dispatcher.execute()
-                elapsed = time.time() - start
+                    start = time.time()
+                    summary = dispatcher.execute()
+                    elapsed = time.time() - start
 
         assert elapsed < 5.0
         assert summary.failed == 1

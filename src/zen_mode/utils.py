@@ -242,7 +242,6 @@ class Context:
     flags: Set[str] = field(default_factory=set)
     costs: List[Dict[str, Any]] = field(default_factory=list)
     tokens: int = 0
-    dry_run: bool = False
 
     # Derived paths (computed on first access)
     _scout_file: Optional[Path] = field(default=None, repr=False)
@@ -443,7 +442,6 @@ def run_claude(
     phase: str = "unknown",
     timeout: Optional[int] = None,
     project_root: Path,
-    dry_run: bool = False,
     log_fn: Optional[callable] = None,
     cost_callback: Optional[callable] = None,
     show_costs: bool = True,
@@ -456,7 +454,6 @@ def run_claude(
         phase: Phase name for cost tracking
         timeout: Timeout in seconds (default from config)
         project_root: Project root directory for CWD
-        dry_run: If True, skip actual call
         log_fn: Optional logging function
         cost_callback: Optional callback(phase, cost, tokens) for cost tracking
         show_costs: Whether to log cost info
@@ -473,10 +470,6 @@ def run_claude(
             log_fn(msg)
         else:
             print(f"  {msg}")
-
-    if dry_run:
-        _log(f"[DRY-RUN] Would call {model}")
-        return "DRY_RUN_OUTPUT"
 
     claude_exe = _init_claude()
     cmd = [claude_exe, "-p", "--dangerously-skip-permissions", "--model", model,

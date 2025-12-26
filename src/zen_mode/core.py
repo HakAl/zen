@@ -36,7 +36,6 @@ JUDGE_FEEDBACK_FILE = WORK_DIR / "judge_feedback.md"
 # -----------------------------------------------------------------------------
 # Runtime state
 # -----------------------------------------------------------------------------
-DRY_RUN = False
 ALLOWED_FILES: Optional[str] = None
 
 
@@ -98,11 +97,11 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
 
     Args:
         task_file: Path to task markdown file
-        flags: Set of flags (--reset, --retry, --dry-run)
+        flags: Set of flags (--reset, --retry)
         scout_context: Optional path to pre-computed scout context file
         allowed_files: Optional glob pattern for allowed files to modify
     """
-    global DRY_RUN, WORK_DIR, SCOUT_FILE, PLAN_FILE, LOG_FILE, NOTES_FILE, BACKUP_DIR, TEST_OUTPUT_FILE, JUDGE_FEEDBACK_FILE, ALLOWED_FILES
+    global WORK_DIR, SCOUT_FILE, PLAN_FILE, LOG_FILE, NOTES_FILE, BACKUP_DIR, TEST_OUTPUT_FILE, JUDGE_FEEDBACK_FILE, ALLOWED_FILES
 
     ALLOWED_FILES = allowed_files
     flags = flags or set()
@@ -144,11 +143,6 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
         utils.write_file(LOG_FILE, cleaned, WORK_DIR)
         print("Cleared completion markers.")
 
-    dry_run = "--dry-run" in flags
-    if dry_run:
-        DRY_RUN = True
-        print("Dry-run mode enabled.")
-
     skip_judge = "--skip-judge" in flags
     skip_verify = "--skip-verify" in flags
 
@@ -158,7 +152,6 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
         task_file=task_file,
         project_root=PROJECT_ROOT,
         flags=flags,
-        dry_run=dry_run,
     )
 
     def _log(msg: str) -> None:
@@ -234,7 +227,6 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
             phase="summary",
             timeout=60,
             project_root=ctx.project_root,
-            dry_run=ctx.dry_run,
             log_fn=_log,
             cost_callback=ctx.record_cost,
         )
