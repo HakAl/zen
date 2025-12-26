@@ -16,7 +16,7 @@ from zen_mode.linter import (
     TEST_FILE_PATTERNS,
     QUALITY_RULES,
 )
-from zen_mode.utils import IGNORE_DIRS, IGNORE_FILES, BINARY_EXTS
+from zen_mode.files import IGNORE_DIRS, IGNORE_FILES, BINARY_EXTS
 
 
 class TestIgnoreDirs:

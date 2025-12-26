@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-from zen_mode.utils import load_constitution, get_full_constitution
+from zen_mode.files import load_constitution, get_full_constitution
 
 
 class TestLoadConstitution:

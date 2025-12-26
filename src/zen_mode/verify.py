@@ -13,6 +13,8 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Optional, Tuple
 
+from zen_mode import linter
+from zen_mode.claude import run_claude
 from zen_mode.config import (
     MODEL_EYES,
     MODEL_HANDS,
@@ -25,10 +27,8 @@ from zen_mode.config import (
     WORK_DIR,
     TEST_OUTPUT_PATH_STR,
 )
-
-# Import from linter for test file detection
-from zen_mode import linter
-from zen_mode.utils import log as utils_log, read_file, run_claude as utils_run_claude
+from zen_mode.files import read_file
+from zen_mode.utils import log
 
 # -----------------------------------------------------------------------------
 # Regex constants (copied from core for independence)
@@ -74,16 +74,16 @@ LOG_FILE = WORK_DIR / "log.md"
 
 
 # -----------------------------------------------------------------------------
-# Wrappers for utils.py functions (use config globals)
+# Wrappers (use config globals)
 # -----------------------------------------------------------------------------
 def _log(msg: str) -> None:
     """Log message using config globals."""
-    utils_log(msg, LOG_FILE, WORK_DIR)
+    log(msg, LOG_FILE, WORK_DIR)
 
 
 def _run_claude(prompt: str, model: str, *, phase: str = "unknown", timeout: Optional[int] = None) -> Optional[str]:
     """Run Claude using config globals."""
-    return utils_run_claude(
+    return run_claude(
         prompt,
         model=model,
         phase=phase,

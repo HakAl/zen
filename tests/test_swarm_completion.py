@@ -353,7 +353,7 @@ class TestSwarmDispatcherCompletion:
         )
         dispatcher = SwarmDispatcher(config)
 
-        with patch("zen_mode.utils.run_claude") as mock_run_claude:
+        with patch("zen_mode.swarm.run_claude") as mock_run_claude:
             mock_run_claude.return_value = "## Targeted Files\n- `src/file.py`: test"
             with patch("zen_mode.swarm.ProcessPoolExecutor") as mock_executor_class:
                 mock_executor = Mock()
@@ -396,7 +396,7 @@ class TestSwarmDispatcherCompletion:
         dispatcher = SwarmDispatcher(config)
 
         # Mock run_claude for shared scout and ProcessPoolExecutor to raise exception
-        with patch("zen_mode.utils.run_claude") as mock_run_claude:
+        with patch("zen_mode.swarm.run_claude") as mock_run_claude:
             mock_run_claude.return_value = "## Targeted Files\n- `src/file.py`: test"
             with patch("zen_mode.swarm.ProcessPoolExecutor") as mock_executor_class:
                 mock_executor = Mock()

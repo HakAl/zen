@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Set
 
-from zen_mode.utils import should_ignore_path
+from zen_mode.files import should_ignore_path
 
 
 # -----------------------------------------------------------------------------

@@ -5,7 +5,8 @@ import sys
 from pathlib import Path
 from typing import Optional, List
 
-from zen_mode import git, utils
+from zen_mode import git
+from zen_mode.claude import run_claude
 from zen_mode.config import (
     MODEL_BRAIN,
     MODEL_HANDS,
@@ -15,11 +16,11 @@ from zen_mode.config import (
     JUDGE_SMALL_REFACTOR_LINES,
     JUDGE_SIMPLE_PLAN_LINES,
     JUDGE_SIMPLE_PLAN_STEPS,
-    PROJECT_ROOT,
-    WORK_DIR,
 )
+from zen_mode.context import Context
+from zen_mode.files import read_file, write_file, get_full_constitution
 from zen_mode.plan import parse_steps
-from zen_mode.utils import Context, read_file, write_file, run_claude, get_full_constitution
+from zen_mode.utils import log
 from zen_mode.verify import VerifyState, phase_verify
 
 
@@ -314,5 +315,4 @@ def phase_judge_ctx(ctx: Context) -> None:
 
 def _log_ctx(ctx: Context, msg: str) -> None:
     """Log using context's log file."""
-    from zen_mode.utils import log
     log(msg, ctx.log_file, ctx.work_dir)

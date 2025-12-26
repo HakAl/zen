@@ -12,14 +12,16 @@ import sys
 from pathlib import Path
 from typing import Dict, Optional
 
-from zen_mode.scout import phase_scout_ctx
-from zen_mode.plan import phase_plan_ctx
+from zen_mode.claude import run_claude
+from zen_mode.config import MODEL_EYES, WORK_DIR_NAME, PROJECT_ROOT, WORK_DIR
+from zen_mode.context import Context
+from zen_mode.files import read_file, write_file
 from zen_mode.implement import phase_implement_ctx
 from zen_mode.judge import phase_judge_ctx, should_skip_judge_ctx
+from zen_mode.plan import phase_plan_ctx
+from zen_mode.scout import phase_scout_ctx
 from zen_mode.triage import parse_triage, should_fast_track, generate_synthetic_plan
-from zen_mode import utils
-from zen_mode.utils import Context, read_file
-from zen_mode.config import MODEL_EYES, WORK_DIR_NAME, PROJECT_ROOT, WORK_DIR
+from zen_mode.utils import log
 from zen_mode.verify import verify_and_fix, project_has_tests, VerifyTimeout
 
 # -----------------------------------------------------------------------------
@@ -67,7 +69,7 @@ def _write_cost_summary(ctx: Context) -> None:
     summary = f"[COST] Total: ${total:.3f} ({breakdown})"
 
     # Log to file and console
-    utils.log(summary, ctx.log_file, ctx.work_dir)
+    log(summary, ctx.log_file, ctx.work_dir)
 
     # Append to final_notes.md
     with ctx.notes_file.open("a", encoding="utf-8") as f:
@@ -140,7 +142,7 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
     if "--retry" in flags and LOG_FILE.exists():
         lines = read_file(LOG_FILE).splitlines()
         cleaned = "\n".join(line for line in lines if "[COMPLETE] Step" not in line)
-        utils.write_file(LOG_FILE, cleaned, WORK_DIR)
+        write_file(LOG_FILE, cleaned, WORK_DIR)
         print("Cleared completion markers.")
 
     skip_judge = "--skip-judge" in flags
@@ -155,7 +157,7 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
     )
 
     def _log(msg: str) -> None:
-        utils.log(msg, ctx.log_file, ctx.work_dir)
+        log(msg, ctx.log_file, ctx.work_dir)
 
     try:
         # Scout phase
@@ -179,7 +181,7 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
             _log(f"[TRIAGE] FAST_TRACK (confidence={triage.confidence:.2f})")
 
             # Generate synthetic plan from micro-spec
-            utils.write_file(ctx.plan_file, generate_synthetic_plan(triage), ctx.work_dir)
+            write_file(ctx.plan_file, generate_synthetic_plan(triage), ctx.work_dir)
 
             phase_implement_ctx(ctx, allowed_files=allowed_files)
 
@@ -200,7 +202,7 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
                 if ctx.log_file.exists():
                     lines = read_file(ctx.log_file).splitlines()
                     cleaned = "\n".join(line for line in lines if "[COMPLETE] Step" not in line)
-                    utils.write_file(ctx.log_file, cleaned, ctx.work_dir)
+                    write_file(ctx.log_file, cleaned, ctx.work_dir)
 
         if not fast_track_succeeded:
             # Standard path
@@ -221,7 +223,7 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
 
         # Generate summary
         plan = read_file(ctx.plan_file)
-        summary = utils.run_claude(
+        summary = run_claude(
             f"Summarize the completed changes in 3-5 bullets.\n\nPlan:\n{plan}",
             model=MODEL_EYES,
             phase="summary",
@@ -231,7 +233,7 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
             cost_callback=ctx.record_cost,
         )
         if summary:
-            utils.write_file(ctx.notes_file, summary, ctx.work_dir)
+            write_file(ctx.notes_file, summary, ctx.work_dir)
         else:
             _log("[SUMMARY] Skipped (timeout)")
 

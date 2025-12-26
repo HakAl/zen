@@ -159,7 +159,7 @@ class TestShouldSkipJudgeGitOperations:
 
     def _make_mock_ctx(self, tmp_path):
         """Create a mock Context for testing."""
-        from zen_mode.utils import Context
+        from zen_mode.context import Context
         work_dir = tmp_path / ".zen"
         work_dir.mkdir(exist_ok=True)
         plan_file = work_dir / "plan.md"
@@ -297,7 +297,7 @@ class TestGitEdgeCases:
         Expected: Should skip judge (only test files).
         """
         from zen_mode.judge import should_skip_judge_ctx
-        from zen_mode.utils import Context
+        from zen_mode.context import Context
         from zen_mode.git import DiffStats
 
         mock_is_repo.return_value = True
@@ -384,7 +384,7 @@ class TestDeletionTracking:
     def test_should_skip_judge_counts_deletions(self, mock_is_repo, mock_get_diff_stats, mock_get_untracked, tmp_path):
         """Verify deletion line counts are included in total."""
         from zen_mode.judge import should_skip_judge_ctx
-        from zen_mode.utils import Context
+        from zen_mode.context import Context
         from zen_mode.git import DiffStats
 
         mock_is_repo.return_value = True

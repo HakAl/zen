@@ -16,9 +16,10 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 from uuid import uuid4
 
+from zen_mode.claude import run_claude
 from zen_mode.config import TIMEOUT_EXEC, MODEL_EYES
+from zen_mode.files import write_file
 from zen_mode.scout import build_scout_prompt
-from zen_mode import utils
 
 # Configuration
 TIMEOUT_WORKER = TIMEOUT_EXEC  # Use same timeout as core
@@ -559,7 +560,7 @@ class SwarmDispatcher:
 
         # Build and run scout prompt
         prompt = build_scout_prompt(task_path, str(scout_file))
-        output = utils.run_claude(
+        output = run_claude(
             prompt,
             model=MODEL_EYES,
             phase="swarm_scout",
@@ -570,7 +571,7 @@ class SwarmDispatcher:
 
         # Write output to scout file if Claude didn't
         if not scout_file.exists():
-            utils.write_file(scout_file, output, scout_dir)
+            write_file(scout_file, output, scout_dir)
 
         # Return absolute path to scout file
         return str(scout_file.resolve())
