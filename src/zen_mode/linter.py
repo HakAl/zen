@@ -7,7 +7,6 @@ import sys
 import re
 import json
 import fnmatch
-import subprocess
 import ipaddress
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -15,7 +14,7 @@ from typing import List, Tuple, Dict, Optional, Set
 from io import StringIO
 
 # Import shared utilities
-from zen_mode import utils
+from zen_mode import git, utils
 from zen_mode.utils import IGNORE_DIRS, IGNORE_FILES, BINARY_EXTS
 
 # -----------------------------------------------------------------------------
@@ -498,53 +497,12 @@ def check_file(path: str, min_severity: str = "LOW", config: Optional[Dict] = No
 
 
 def get_git_changes() -> List[str]:
-    """Get list of changed files from git (including staged).
+    """Get list of changed files from git (staged, unstaged, untracked).
 
     Filters out files in ignored directories to prevent the "top-level loophole"
     where git might return paths like node_modules/foo.js.
     """
-    files = set()
-    try:
-        # Check if HEAD exists (repo may have no commits yet)
-        head_exists = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True, text=True, check=False
-        ).returncode == 0
-
-        if head_exists:
-            # Get unstaged changes
-            result = subprocess.run(
-                ["git", "diff", "--name-only", "HEAD"],
-                capture_output=True, text=True, check=False
-            )
-            if result.returncode == 0:
-                files.update(result.stdout.splitlines())
-
-            # Get staged changes
-            result = subprocess.run(
-                ["git", "diff", "--name-only", "--cached", "HEAD"],
-                capture_output=True, text=True, check=False
-            )
-            if result.returncode == 0:
-                files.update(result.stdout.splitlines())
-        else:
-            # No commits yet - get all staged files
-            result = subprocess.run(
-                ["git", "diff", "--name-only", "--cached"],
-                capture_output=True, text=True, check=False
-            )
-            if result.returncode == 0:
-                files.update(result.stdout.splitlines())
-
-        # Get untracked files
-        result = subprocess.run(
-            ["git", "ls-files", "--others", "--exclude-standard"],
-            capture_output=True, text=True, check=False
-        )
-        if result.returncode == 0:
-            files.update(result.stdout.splitlines())
-    except FileNotFoundError:
-        pass
+    files = git.get_changed_files(Path.cwd())
 
     # CRITICAL: Filter out ignored paths (node_modules, build, etc.)
     # This prevents scanning build directories even if they're in git

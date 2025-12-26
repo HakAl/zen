@@ -54,7 +54,7 @@ class TestConstitutionInFixPrompt:
 
     @patch('zen_mode.judge.phase_verify')
     @patch('zen_mode.implement.run_linter_with_timeout')
-    @patch('zen_mode.judge.utils.get_changed_filenames')
+    @patch('zen_mode.judge.git.get_changed_filenames')
     @patch('zen_mode.judge.run_claude')
     def test_constitution_included_when_claude_md_exists(
         self, mock_claude, mock_changed_files, mock_linter, mock_verify, mock_ctx
@@ -100,7 +100,7 @@ class TestConstitutionInFixPrompt:
 
     @patch('zen_mode.judge.phase_verify')
     @patch('zen_mode.implement.run_linter_with_timeout')
-    @patch('zen_mode.judge.utils.get_changed_filenames')
+    @patch('zen_mode.judge.git.get_changed_filenames')
     @patch('zen_mode.judge.run_claude')
     def test_fallback_message_when_no_claude_md(
         self, mock_claude, mock_changed_files, mock_linter, mock_verify, mock_ctx
@@ -137,7 +137,7 @@ class TestConstitutionInFixPrompt:
 
     @patch('zen_mode.judge.phase_verify')
     @patch('zen_mode.implement.run_linter_with_timeout')
-    @patch('zen_mode.judge.utils.get_changed_filenames')
+    @patch('zen_mode.judge.git.get_changed_filenames')
     @patch('zen_mode.judge.run_claude')
     def test_constitution_appears_before_changed_files(
         self, mock_claude, mock_changed_files, mock_linter, mock_verify, mock_ctx
@@ -180,7 +180,7 @@ class TestConstitutionInFixPrompt:
 
     @patch('zen_mode.judge.phase_verify')
     @patch('zen_mode.implement.run_linter_with_timeout')
-    @patch('zen_mode.judge.utils.get_changed_filenames')
+    @patch('zen_mode.judge.git.get_changed_filenames')
     @patch('zen_mode.judge.run_claude')
     def test_constitution_appears_after_feedback(
         self, mock_claude, mock_changed_files, mock_linter, mock_verify, mock_ctx
@@ -224,7 +224,7 @@ class TestConstitutionInFixPrompt:
 
     @patch('zen_mode.judge.phase_verify')
     @patch('zen_mode.implement.run_linter_with_timeout')
-    @patch('zen_mode.judge.utils.get_changed_filenames')
+    @patch('zen_mode.judge.git.get_changed_filenames')
     @patch('zen_mode.judge.run_claude')
     def test_constitution_content_preserved(
         self, mock_claude, mock_changed_files, mock_linter, mock_verify, mock_ctx
@@ -281,7 +281,7 @@ class TestConstitutionInFixPrompt:
 
     @patch('zen_mode.judge.phase_verify')
     @patch('zen_mode.implement.run_linter_with_timeout')
-    @patch('zen_mode.judge.utils.get_changed_filenames')
+    @patch('zen_mode.judge.git.get_changed_filenames')
     @patch('zen_mode.judge.run_claude')
     def test_fix_prompt_structure(
         self, mock_claude, mock_changed_files, mock_linter, mock_verify, mock_ctx

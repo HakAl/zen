@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
+from zen_mode import git
 from zen_mode.config import MODEL_EYES, PROJECT_ROOT, WORK_DIR
 from zen_mode.utils import Context, read_file, write_file, run_claude
 
