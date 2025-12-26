@@ -21,7 +21,7 @@ from zen_mode.config import (
 )
 from zen_mode.plan import parse_steps
 from zen_mode.utils import Context, read_file, write_file, run_claude
-from zen_mode.verify import TestState, phase_verify
+from zen_mode.verify import VerifyState, phase_verify
 
 
 # -----------------------------------------------------------------------------
@@ -370,13 +370,13 @@ def phase_judge_ctx(ctx: Context) -> None:
         # Re-run verify
         _log_ctx(ctx, "[JUDGE_FIX] Checking tests...")
         state, _ = phase_verify()
-        if state == TestState.FAIL:
+        if state == VerifyState.FAIL:
             _log_ctx(ctx, "[JUDGE_FIX] Tests failed after fixes.")
             sys.exit(1)
-        elif state == TestState.ERROR:
+        elif state == VerifyState.ERROR:
             _log_ctx(ctx, "[JUDGE_FIX] Test runner error.")
             sys.exit(1)
-        elif state == TestState.RUNTIME_MISSING:
+        elif state == VerifyState.RUNTIME_MISSING:
             _log_ctx(ctx, "[JUDGE_FIX] Runtime not installed, skipping tests.")
 
         changed_files = utils.get_changed_filenames(ctx.project_root, ctx.backup_dir)

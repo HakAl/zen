@@ -8,7 +8,7 @@
 - **Interface First.** Define types/shapes before implementation.
 - **Pure Constructors.** I/O only in `run()`, `execute()`, `fetch()` methods.
 
-## CODE STYLE (LLM-Friendly)
+## CODE STYLE
 - **Flat Structure.** Max 2 directory levels. Reduces path hallucinations.
 - **Fail Fast.** Specific exceptions (`UserNotFoundError`), not catch-all.
 - **Top-Level Imports.** No hidden deps inside functions.

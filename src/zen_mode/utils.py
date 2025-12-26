@@ -4,6 +4,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -339,6 +340,40 @@ def write_file(path: Path, content: str, work_dir: Optional[Path] = None) -> Non
         except OSError as e:
             Path(tmp).unlink(missing_ok=True)
             raise OSError(f"Failed to write {path}: {e}")
+
+
+def load_constitution(*sections: str) -> str:
+    """Load specified sections from defaults/CLAUDE.md constitution.
+
+    Extracts sections by header name (e.g., "GOLDEN RULES", "ARCHITECTURE").
+    Returns formatted markdown with requested sections joined by newlines.
+
+    Args:
+        *sections: Section names to extract (case-insensitive header match)
+
+    Returns:
+        Formatted string with requested sections, empty string if none found.
+
+    Example:
+        >>> load_constitution("GOLDEN RULES", "ARCHITECTURE")
+        '## GOLDEN RULES\\n- Verify, then Delete...\\n\\n## ARCHITECTURE\\n...'
+    """
+    constitution_path = Path(__file__).parent / "defaults" / "CLAUDE.md"
+    if not constitution_path.exists():
+        return ""
+
+    content = constitution_path.read_text(encoding="utf-8")
+    result = []
+
+    for section in sections:
+        # Match ## SECTION_NAME through next ## or EOF (case-insensitive)
+        # Section name must be followed by: end-of-line, or space+paren (for subtitles)
+        pattern = rf"^## {re.escape(section)}(?:\s*$|\s+\().*?(?=^## |\Z)"
+        match = re.search(pattern, content, re.MULTILINE | re.DOTALL | re.IGNORECASE)
+        if match:
+            result.append(match.group().strip())
+
+    return "\n\n".join(result)
 
 
 def backup_file(path: Path, backup_dir: Path, project_root: Path, log_fn: Optional[callable] = None) -> None:

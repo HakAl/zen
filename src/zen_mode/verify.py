@@ -50,7 +50,7 @@ class VerifyTimeout(Exception):
 # -----------------------------------------------------------------------------
 # Enums
 # -----------------------------------------------------------------------------
-class TestState(Enum):
+class VerifyState(Enum):
     """Result of running tests."""
     PASS = auto()           # All tests passed
     FAIL = auto()           # Tests ran, some failed
@@ -306,7 +306,7 @@ Keep under 400 words. Preserve exact error messages.
 # -----------------------------------------------------------------------------
 # Phase Functions
 # -----------------------------------------------------------------------------
-def phase_verify() -> Tuple[TestState, str]:
+def phase_verify() -> Tuple[VerifyState, str]:
     """
     Run tests once, no fixing. Returns (state, raw_output).
 
@@ -321,7 +321,7 @@ def phase_verify() -> Tuple[TestState, str]:
     runtime, available = detect_project_runtime()
     if not available:
         _log(f"[VERIFY] Runtime '{runtime}' not installed, skipping tests.")
-        return TestState.RUNTIME_MISSING, f"Runtime '{runtime}' not found"
+        return VerifyState.RUNTIME_MISSING, f"Runtime '{runtime}' not found"
 
     # Get plan context for intelligent test selection
     plan = read_file(PLAN_FILE) if PLAN_FILE.exists() else "[No plan available]"
@@ -368,35 +368,35 @@ End with exactly one of:
     # Check for test output file
     if not TEST_OUTPUT_FILE.exists():
         _log("[VERIFY] Agent did not write test output file.")
-        return TestState.ERROR, ""
+        return VerifyState.ERROR, ""
 
     test_output = read_file(TEST_OUTPUT_FILE)
 
     # Determine state from output markers and test results
     if "TESTS_NONE" in output or detect_no_tests(test_output):
-        return TestState.NONE, test_output
+        return VerifyState.NONE, test_output
 
     if "TESTS_ERROR" in output:
-        return TestState.ERROR, test_output
+        return VerifyState.ERROR, test_output
 
     if "TESTS_PASS" in output:
         # Verify it looks like real test output
         if verify_test_output(test_output) or not test_output.strip():
-            return TestState.PASS, test_output
+            return VerifyState.PASS, test_output
 
     if "TESTS_FAIL" in output:
-        return TestState.FAIL, test_output
+        return VerifyState.FAIL, test_output
 
     # Fallback: check test output directly
     failure_count = extract_failure_count(test_output)
     if failure_count is not None and failure_count > 0:
-        return TestState.FAIL, test_output
+        return VerifyState.FAIL, test_output
 
     if verify_test_output(test_output):
-        return TestState.PASS, test_output
+        return VerifyState.PASS, test_output
 
     # Can't determine state
-    return TestState.ERROR, test_output
+    return VerifyState.ERROR, test_output
 
 
 def phase_fix_tests(test_output: str, attempt: int) -> FixResult:
@@ -489,19 +489,19 @@ def verify_and_fix() -> bool:
     for attempt in range(MAX_FIX_ATTEMPTS + 1):
         state, output = phase_verify()
 
-        if state == TestState.PASS:
+        if state == VerifyState.PASS:
             _log("[VERIFY] Passed.")
             return True
 
-        if state == TestState.NONE:
+        if state == VerifyState.NONE:
             _log("[VERIFY] No tests found, skipping verification.")
             return True
 
-        if state == TestState.RUNTIME_MISSING:
+        if state == VerifyState.RUNTIME_MISSING:
             _log("[VERIFY] Runtime not installed, skipping verification.")
             return True
 
-        if state == TestState.ERROR:
+        if state == VerifyState.ERROR:
             _log("[VERIFY] Test runner error.")
             return False
 

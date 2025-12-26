@@ -15,7 +15,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from zen_mode.utils import Context
-from zen_mode.verify import TestState
+from zen_mode.verify import VerifyState
 
 
 class TestConstitutionInFixPrompt:
@@ -84,7 +84,7 @@ class TestConstitutionInFixPrompt:
 
         mock_claude.side_effect = capture_prompts
         mock_linter.return_value = (True, "")
-        mock_verify.return_value = (TestState.PASS, "")
+        mock_verify.return_value = (VerifyState.PASS, "")
 
         phase_judge_ctx(mock_ctx)
 
@@ -125,7 +125,7 @@ class TestConstitutionInFixPrompt:
 
         mock_claude.side_effect = capture_prompts
         mock_linter.return_value = (True, "")
-        mock_verify.return_value = (TestState.PASS, "")
+        mock_verify.return_value = (VerifyState.PASS, "")
 
         phase_judge_ctx(mock_ctx)
 
@@ -164,7 +164,7 @@ class TestConstitutionInFixPrompt:
 
         mock_claude.side_effect = capture_prompts
         mock_linter.return_value = (True, "")
-        mock_verify.return_value = (TestState.PASS, "")
+        mock_verify.return_value = (VerifyState.PASS, "")
 
         phase_judge_ctx(mock_ctx)
 
@@ -208,7 +208,7 @@ class TestConstitutionInFixPrompt:
 
         mock_claude.side_effect = capture_prompts
         mock_linter.return_value = (True, "")
-        mock_verify.return_value = (TestState.PASS, "")
+        mock_verify.return_value = (VerifyState.PASS, "")
 
         phase_judge_ctx(mock_ctx)
 
@@ -264,7 +264,7 @@ class TestConstitutionInFixPrompt:
 
         mock_claude.side_effect = capture_prompts
         mock_linter.return_value = (True, "")
-        mock_verify.return_value = (TestState.PASS, "")
+        mock_verify.return_value = (VerifyState.PASS, "")
 
         phase_judge_ctx(mock_ctx)
 
@@ -308,7 +308,7 @@ class TestConstitutionInFixPrompt:
 
         mock_claude.side_effect = capture_prompts
         mock_linter.return_value = (True, "")
-        mock_verify.return_value = (TestState.PASS, "")
+        mock_verify.return_value = (VerifyState.PASS, "")
 
         phase_judge_ctx(mock_ctx)
 
