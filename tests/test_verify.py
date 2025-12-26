@@ -2,7 +2,8 @@
 import pytest
 from unittest.mock import patch, MagicMock
 from zen_mode.verify import (
-    TestState,
+    VerifyState,
+    VerifyTimeout,
     FixResult,
     truncate_preserve_tail,
     extract_filenames,
@@ -12,23 +13,23 @@ from zen_mode.verify import (
 )
 
 
-class TestTestStateEnum:
-    """Test TestState enum values."""
+class TestVerifyStateEnumValues:
+    """Test VerifyState enum values."""
 
     def test_pass_state_exists(self):
-        assert TestState.PASS is not None
+        assert VerifyState.PASS is not None
 
     def test_fail_state_exists(self):
-        assert TestState.FAIL is not None
+        assert VerifyState.FAIL is not None
 
     def test_none_state_exists(self):
-        assert TestState.NONE is not None
+        assert VerifyState.NONE is not None
 
     def test_error_state_exists(self):
-        assert TestState.ERROR is not None
+        assert VerifyState.ERROR is not None
 
     def test_states_are_distinct(self):
-        states = [TestState.PASS, TestState.FAIL, TestState.NONE, TestState.ERROR]
+        states = [VerifyState.PASS, VerifyState.FAIL, VerifyState.NONE, VerifyState.ERROR]
         assert len(set(states)) == 4
 
 
@@ -43,6 +44,34 @@ class TestFixResultEnum:
 
     def test_results_are_distinct(self):
         assert FixResult.APPLIED != FixResult.BLOCKED
+
+
+class TestVerifyTimeoutException:
+    """Test VerifyTimeout exception."""
+
+    def test_verify_timeout_is_exception(self):
+        assert issubclass(VerifyTimeout, Exception)
+
+    def test_verify_timeout_can_be_raised(self):
+        with pytest.raises(VerifyTimeout):
+            raise VerifyTimeout("Claude timed out")
+
+    def test_verify_timeout_message(self):
+        exc = VerifyTimeout("test message")
+        assert str(exc) == "test message"
+
+    @patch('zen_mode.verify.utils_run_claude')
+    @patch('zen_mode.verify.WORK_DIR')
+    def test_phase_verify_raises_on_no_output(self, mock_work_dir, mock_run_claude, tmp_path):
+        """phase_verify raises VerifyTimeout when Claude returns no output."""
+        from zen_mode.verify import phase_verify
+
+        mock_work_dir.__truediv__ = lambda self, x: tmp_path / x
+        mock_work_dir.mkdir = MagicMock()
+        mock_run_claude.return_value = None  # Claude returns nothing
+
+        with pytest.raises(VerifyTimeout, match="Claude did not respond"):
+            phase_verify()
 
 
 class TestTruncatePreserveTail:
@@ -229,7 +258,7 @@ class TestPhaseVerifyMocked:
                 with patch('zen_mode.verify.WORK_DIR', Path(tmpdir)):
                     state, output = phase_verify()
 
-            assert state == TestState.PASS
+            assert state == VerifyState.PASS
 
 
 class TestPhaseFixTestsMocked:
@@ -277,7 +306,7 @@ class TestVerifyAndFixMocked:
     def test_returns_true_on_pass(self, mock_verify, mock_fix):
         from zen_mode.verify import verify_and_fix
 
-        mock_verify.return_value = (TestState.PASS, "test output")
+        mock_verify.return_value = (VerifyState.PASS, "test output")
 
         result = verify_and_fix()
         assert result is True
@@ -288,7 +317,7 @@ class TestVerifyAndFixMocked:
     def test_returns_true_on_no_tests(self, mock_verify, mock_fix):
         from zen_mode.verify import verify_and_fix
 
-        mock_verify.return_value = (TestState.NONE, "")
+        mock_verify.return_value = (VerifyState.NONE, "")
 
         result = verify_and_fix()
         assert result is True
@@ -299,7 +328,7 @@ class TestVerifyAndFixMocked:
     def test_returns_false_on_error(self, mock_verify, mock_fix):
         from zen_mode.verify import verify_and_fix
 
-        mock_verify.return_value = (TestState.ERROR, "")
+        mock_verify.return_value = (VerifyState.ERROR, "")
 
         result = verify_and_fix()
         assert result is False
@@ -312,8 +341,8 @@ class TestVerifyAndFixMocked:
 
         # First call fails, second call passes
         mock_verify.side_effect = [
-            (TestState.FAIL, "failure output"),
-            (TestState.PASS, "pass output"),
+            (VerifyState.FAIL, "failure output"),
+            (VerifyState.PASS, "pass output"),
         ]
         mock_fix.return_value = FixResult.APPLIED
 
@@ -326,7 +355,7 @@ class TestVerifyAndFixMocked:
     def test_stops_on_fix_blocked(self, mock_verify, mock_fix):
         from zen_mode.verify import verify_and_fix
 
-        mock_verify.return_value = (TestState.FAIL, "failure output")
+        mock_verify.return_value = (VerifyState.FAIL, "failure output")
         mock_fix.return_value = FixResult.BLOCKED
 
         result = verify_and_fix()
@@ -339,7 +368,7 @@ class TestVerifyAndFixMocked:
         from zen_mode.verify import verify_and_fix
 
         # Always fail
-        mock_verify.return_value = (TestState.FAIL, "failure output")
+        mock_verify.return_value = (VerifyState.FAIL, "failure output")
         mock_fix.return_value = FixResult.APPLIED
 
         result = verify_and_fix()

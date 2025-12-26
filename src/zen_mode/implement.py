@@ -19,7 +19,7 @@ from zen_mode.config import (
     WORK_DIR,
 )
 from zen_mode.plan import parse_steps, get_completed_steps
-from zen_mode.utils import Context, read_file, write_file, run_claude, backup_file
+from zen_mode.utils import Context, read_file, write_file, run_claude, backup_file, load_constitution
 
 
 # -----------------------------------------------------------------------------
@@ -109,6 +109,7 @@ End with: STEP_COMPLETE (if verified) or STEP_BLOCKED: <reason> (if not complete
 def build_implement_prompt(step_num: int, step_desc: str, plan: str,
                            allowed_files: Optional[str] = None) -> str:
     """Build prompt for implementation step."""
+    constitution = load_constitution("GOLDEN RULES", "CODE STYLE", "TESTING")
     base = f"""<task>
 Execute Step {step_num}: {step_desc}
 </task>
@@ -121,6 +122,10 @@ Full plan:
 {plan}
 </context>
 
+<constitution>
+{constitution}
+</constitution>
+
 <preflight>
 Before making any changes, verify:
 1. Can you read the source files you need to edit? (FILES)
@@ -132,17 +137,19 @@ If either is NO, output STEP_BLOCKED: <reason> and stop immediately.
 Do not attempt to implement with missing files or unclear requirements.
 </preflight>
 
-<rules>
-- DELETE old code, no shims
-- UPDATE callers immediately
-- No broken imports
-</rules>
+<EXAMPLES>
+BAD (scope creep - task was "add retry logic"):
+- Added retry logic
+- Also added logging framework
+- Also refactored error handling
+- Also added config file support
+- Created 5 new helper functions
 
-<RESTRICTIONS>
-1. TESTS: If writing tests, maximum 3 functions. Cover: happy path, one error, one edge. Use temp directories for file I/O.
-2. SCOPE: Do not implement "future proofing" or extra helper functions.
-3. CONCISENESS: If a standard library function exists, use it. Do not reinvent utils.
-</RESTRICTIONS>
+GOOD (minimal complete - same task):
+- Added retry logic with 3 attempts
+- Used existing logger
+- Done
+</EXAMPLES>
 
 <output>
 End with: STEP_COMPLETE or STEP_BLOCKED: <reason>
@@ -167,7 +174,17 @@ def build_escalation_suffix(attempt: int, last_error: str) -> str:
 
 ESCALATION: Previous {attempt - 1} attempts by a junior model failed.
 Last error: {last_error}
-You are the senior specialist. Analyze the problem fresh and fix it definitively."""
+You are the senior specialist. Analyze the problem fresh and fix it definitively.
+
+<ESCALATION_EXAMPLES>
+BAD (over-engineering):
+Error: missing type hint on `process_data`
+Response: Refactored entire module, added type hints to all functions, created TypedDict classes, added runtime validation
+
+GOOD (targeted fix):
+Error: missing type hint on `process_data`
+Response: Added `-> dict` return type to `process_data`, done
+</ESCALATION_EXAMPLES>"""
 
 
 # -----------------------------------------------------------------------------

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
 from zen_mode.config import MODEL_BRAIN, PROJECT_ROOT, WORK_DIR
-from zen_mode.utils import Context, read_file, write_file, run_claude
+from zen_mode.utils import Context, read_file, write_file, run_claude, load_constitution, log
 
 
 # -----------------------------------------------------------------------------
@@ -15,24 +15,25 @@ from zen_mode.utils import Context, read_file, write_file, run_claude
 # -----------------------------------------------------------------------------
 def build_plan_prompt(task_file: str, plan_file: Path, scout_content: str) -> str:
     """Build plan prompt for creating execution plan."""
+    constitution = load_constitution("GOLDEN RULES", "ARCHITECTURE", "PROCESS")
     return f"""<role>
-You are a senior software architect creating an execution plan.
-Your plans are precise, atomic, and efficient.
+You are a senior software architect creating an execution plan. Each step will be executed in isolation with only the plan as context. Your plans are precise, atomic, and efficient.
 </role>
 
+<constitution>
+{constitution}
+</constitution>
+
 <rules>
-- Clean Code over Backward Compatibility
-- DELETE old code, no shims
-- UPDATE callers directly
+- Every plan MUST start with this header:
+# [Feature Name] Implementation Plan
+
+**Goal:** [One sentence that describes the feature]
+**Architecture:** [A sentence or two about approach]
+**Dependencies:** [what this feature touches]
+
 - Final step MUST be verification (test/verify/validate)
 </rules>
-
-<consolidation>
-- Combine related test categories into 1-2 test steps maximum
-- Do NOT create separate steps for: retry tests, validation tests, edge case tests
-- Group: "Create all unit tests for [component]" not "Create tests for X, then Y, then Z"
-- Use "targeted tests covering key behavior" not "comprehensive tests covering X, Y, Z"
-</consolidation>
 
 <EXAMPLES>
 BAD PLAN (missing interfaces, vague steps):
@@ -42,6 +43,11 @@ BAD PLAN (missing interfaces, vague steps):
 ## Step 4: Update callers
 
 GOOD PLAN (interfaces first, symbol references):
+# Email Validation Implementation Plan
+
+**Goal:** Add email validation to User model before save
+**Architecture:** Single validation method on User, raises custom exception, caller handles
+**Dependencies:** User model, registration endpoint, InvalidEmailError exception
 
 ## Interfaces
 - `User.validate_email() -> None`: Raises `InvalidEmailError` if invalid
@@ -68,7 +74,12 @@ Action: Run `pytest tests/test_user.py -v`
 </EXAMPLES>
 
 <output_format>
-Format (strict markdown, no preamble):
+Format (strict markdown):
+# [Feature Name] Implementation Plan
+
+**Goal:** [One sentence that describes the feature]
+**Architecture:** [A sentence or two about approach]
+**Dependencies:** [what this feature touches]
 
 ## Interfaces (REQUIRED)
 Define signatures that will change:
@@ -277,7 +288,6 @@ def phase_plan_ctx(ctx: Context) -> None:
 
 def _log_ctx(ctx: Context, msg: str) -> None:
     """Log using context's log file."""
-    from zen_mode.utils import log
     log(msg, ctx.log_file, ctx.work_dir)
 
 

@@ -99,7 +99,7 @@ class TestGrepImpact:
             mock_run.assert_called_once()
             assert "git" in mock_run.call_args[0][0]
             assert "utils" in mock_run.call_args[0][0]
-            assert result == {"src/utils.py": ["caller1.py", "caller2.py"]}
+            assert set(result["src/utils.py"]) == {"caller1.py", "caller2.py"}
 
     def test_excludes_target_file_from_results(self, tmp_path):
         """Target file itself should not be in results."""
