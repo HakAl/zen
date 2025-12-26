@@ -158,7 +158,7 @@ INSTRUCTION: Add a comment at line 10
                 log_content_when_implement_called.append("")
 
             # Simulate completing a step
-            from zen_mode.utils import log
+            from zen_mode.files import log
             log("[COMPLETE] Step 1", log_file, ctx.work_dir)
 
         mock_implement.side_effect = implement_side_effect

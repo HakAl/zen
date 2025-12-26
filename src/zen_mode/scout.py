@@ -10,8 +10,7 @@ from typing import Dict, List, Optional, Set
 from zen_mode.claude import run_claude
 from zen_mode.config import MODEL_EYES
 from zen_mode.context import Context
-from zen_mode.files import read_file, write_file
-from zen_mode.utils import log
+from zen_mode.files import read_file, write_file, log
 
 
 # -----------------------------------------------------------------------------

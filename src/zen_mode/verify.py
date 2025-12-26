@@ -27,8 +27,7 @@ from zen_mode.config import (
     WORK_DIR,
     TEST_OUTPUT_PATH_STR,
 )
-from zen_mode.files import read_file
-from zen_mode.utils import log
+from zen_mode.files import read_file, log
 
 # -----------------------------------------------------------------------------
 # Regex constants (copied from core for independence)

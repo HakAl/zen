@@ -9,8 +9,7 @@ from typing import List, Optional, Set, Tuple
 from zen_mode.claude import run_claude
 from zen_mode.config import MODEL_BRAIN
 from zen_mode.context import Context
-from zen_mode.files import read_file, write_file, get_full_constitution
-from zen_mode.utils import log
+from zen_mode.files import read_file, write_file, get_full_constitution, log
 
 
 # -----------------------------------------------------------------------------
