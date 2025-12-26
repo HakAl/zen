@@ -258,7 +258,6 @@ def phase_plan_ctx(ctx: Context) -> None:
         model=MODEL_BRAIN,
         phase="plan",
         project_root=ctx.project_root,
-        dry_run=ctx.dry_run,
         log_fn=lambda msg: _log_ctx(ctx, msg),
         cost_callback=ctx.record_cost,
     )

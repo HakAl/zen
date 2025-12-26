@@ -149,20 +149,6 @@ class TestSwarmDispatcher:
 class TestWorkerExecution:
     """Tests for worker execution function."""
 
-    def test_execute_worker_task_dry_run(self, tmp_path):
-        """Test dry-run mode does not execute actual subprocess."""
-        result = execute_worker_task(
-            task_path="task.md",
-            work_dir=".zen_test",
-            project_root=tmp_path,
-            dry_run=True
-        )
-
-        assert result.returncode == 0
-        assert "[DRY-RUN]" in result.stdout
-        assert result.task_path == "task.md"
-        assert result.work_dir == ".zen_test"
-
     def test_execute_worker_task_timeout_error(self, tmp_path):
         """Test timeout handling for long-running tasks."""
         with patch("zen_mode.swarm.subprocess.run") as mock_run:
@@ -172,7 +158,6 @@ class TestWorkerExecution:
                 task_path="task.md",
                 work_dir=".zen_test",
                 project_root=tmp_path,
-                dry_run=False
             )
 
             assert result.returncode == 124
@@ -197,7 +182,6 @@ class TestWorkerExecution:
                     task_path="task.md",
                     work_dir=".zen_test",
                     project_root=tmp_path,
-                    dry_run=False
                 )
 
                 assert result.cost == 0.0456
@@ -457,32 +441,33 @@ class TestSwarmDispatcherPreflight:
             tasks=[str(task1), str(task2)],
             workers=2,
             project_root=tmp_path,
-            dry_run=True,  # Skip _run_shared_scout to avoid real API call
         )
         dispatcher = SwarmDispatcher(config)
 
-        with patch("zen_mode.swarm.ProcessPoolExecutor") as mock_executor_class:
-            mock_executor = Mock()
-            mock_executor_class.return_value = mock_executor
+        with patch("zen_mode.utils.run_claude") as mock_run_claude:
+            mock_run_claude.return_value = "## Targeted Files\n- `src/file.py`: test"
+            with patch("zen_mode.swarm.ProcessPoolExecutor") as mock_executor_class:
+                mock_executor = Mock()
+                mock_executor_class.return_value = mock_executor
 
-            # Create mock futures
-            mock_futures = [Mock(), Mock()]
-            mock_executor.submit.side_effect = mock_futures
+                # Create mock futures
+                mock_futures = [Mock(), Mock()]
+                mock_executor.submit.side_effect = mock_futures
 
-            with patch("zen_mode.swarm.as_completed") as mock_as_completed:
-                mock_as_completed.return_value = mock_futures
+                with patch("zen_mode.swarm.as_completed") as mock_as_completed:
+                    mock_as_completed.return_value = mock_futures
 
-                # Mock future.result() to return WorkerResults
-                mock_futures[0].result.return_value = WorkerResult(
-                    task_path=str(task1), work_dir=".zen_1", returncode=0
-                )
-                mock_futures[1].result.return_value = WorkerResult(
-                    task_path=str(task2), work_dir=".zen_2", returncode=0
-                )
+                    # Mock future.result() to return WorkerResults
+                    mock_futures[0].result.return_value = WorkerResult(
+                        task_path=str(task1), work_dir=".zen_1", returncode=0
+                    )
+                    mock_futures[1].result.return_value = WorkerResult(
+                        task_path=str(task2), work_dir=".zen_2", returncode=0
+                    )
 
-                # Should not raise - preflight check passes
-                summary = dispatcher.execute()
-                assert summary.total_tasks == 2
+                    # Should not raise - preflight check passes
+                    summary = dispatcher.execute()
+                    assert summary.total_tasks == 2
 
 
 class TestScoutContext:
@@ -510,7 +495,6 @@ class TestScoutContext:
                     task_path,
                     work_dir,
                     tmp_path,
-                    dry_run=False,
                     scout_context=scout_context
                 )
 
@@ -539,7 +523,6 @@ class TestScoutContext:
                     task_path,
                     work_dir,
                     tmp_path,
-                    dry_run=False,
                     scout_context=None
                 )
 
@@ -598,8 +581,8 @@ class TestScoutContext:
                     # Verify scout context was passed to both workers
                     for call in mock_executor.submit.call_args_list:
                         args = call[0]
-                        # args[5] is scout_context parameter
-                        assert args[5] == mock_scout.return_value
+                        # args[4] is scout_context parameter (task, work_dir, project_root, scout_context)
+                        assert args[4] == mock_scout.return_value
 
                     # Verify summary
                     assert summary.total_tasks == 2
@@ -638,27 +621,28 @@ class TestKnownIssues:
         config = SwarmConfig(
             tasks=["task.md"],
             workers=1,
-            dry_run=True,  # Skip scout
         )
         dispatcher = SwarmDispatcher(config)
 
-        with patch("zen_mode.swarm.ProcessPoolExecutor") as mock_executor_class:
-            mock_executor = Mock()
-            mock_executor_class.return_value = mock_executor
+        with patch("zen_mode.utils.run_claude") as mock_run_claude:
+            mock_run_claude.return_value = "## Targeted Files\n- `src/file.py`: test"
+            with patch("zen_mode.swarm.ProcessPoolExecutor") as mock_executor_class:
+                mock_executor = Mock()
+                mock_executor_class.return_value = mock_executor
 
-            # Simulate worker raising exception
-            mock_future = Mock()
-            mock_future.result.side_effect = RuntimeError("Worker exploded")
-            mock_executor.submit.return_value = mock_future
+                # Simulate worker raising exception
+                mock_future = Mock()
+                mock_future.result.side_effect = RuntimeError("Worker exploded")
+                mock_executor.submit.return_value = mock_future
 
-            with patch("zen_mode.swarm.as_completed") as mock_as_completed:
-                mock_as_completed.return_value = [mock_future]
+                with patch("zen_mode.swarm.as_completed") as mock_as_completed:
+                    mock_as_completed.return_value = [mock_future]
 
-                # Should return a summary with failed task, not crash
-                summary = dispatcher.execute()
-                assert summary.failed == 1, "Should handle worker exception gracefully"
-                assert summary.succeeded == 0
-                assert "Worker exploded" in summary.task_results[0].stderr
+                    # Should return a summary with failed task, not crash
+                    summary = dispatcher.execute()
+                    assert summary.failed == 1, "Should handle worker exception gracefully"
+                    assert summary.succeeded == 0
+                    assert "Worker exploded" in summary.task_results[0].stderr
 
 
 class TestStatusMonitorSync:
