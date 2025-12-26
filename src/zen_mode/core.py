@@ -15,13 +15,12 @@ from typing import Dict, Optional
 from zen_mode.claude import run_claude
 from zen_mode.config import MODEL_EYES, WORK_DIR_NAME, PROJECT_ROOT, WORK_DIR
 from zen_mode.context import Context
-from zen_mode.files import read_file, write_file
+from zen_mode.files import read_file, write_file, log
 from zen_mode.implement import phase_implement_ctx
 from zen_mode.judge import phase_judge_ctx, should_skip_judge_ctx
 from zen_mode.plan import phase_plan_ctx
 from zen_mode.scout import phase_scout_ctx
 from zen_mode.triage import parse_triage, should_fast_track, generate_synthetic_plan
-from zen_mode.utils import log
 from zen_mode.verify import verify_and_fix, project_has_tests, VerifyTimeout
 
 # -----------------------------------------------------------------------------

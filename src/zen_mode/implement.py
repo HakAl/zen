@@ -18,9 +18,8 @@ from zen_mode.config import (
     MAX_RETRIES,
 )
 from zen_mode.context import Context
-from zen_mode.files import read_file, backup_file, get_full_constitution
+from zen_mode.files import read_file, backup_file, get_full_constitution, log
 from zen_mode.plan import parse_steps, get_completed_steps
-from zen_mode.utils import log
 
 
 # -----------------------------------------------------------------------------

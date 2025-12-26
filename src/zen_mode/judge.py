@@ -18,9 +18,8 @@ from zen_mode.config import (
     JUDGE_SIMPLE_PLAN_STEPS,
 )
 from zen_mode.context import Context
-from zen_mode.files import read_file, write_file, get_full_constitution
+from zen_mode.files import read_file, write_file, get_full_constitution, log
 from zen_mode.plan import parse_steps
-from zen_mode.utils import log
 from zen_mode.verify import VerifyState, phase_verify
 
 
