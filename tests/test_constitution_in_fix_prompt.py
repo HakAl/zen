@@ -102,10 +102,10 @@ class TestConstitutionInFixPrompt:
     @patch('zen_mode.implement.run_linter_with_timeout')
     @patch('zen_mode.judge.git.get_changed_filenames')
     @patch('zen_mode.judge.run_claude')
-    def test_fallback_message_when_no_claude_md(
+    def test_zen_defaults_when_no_project_claude_md(
         self, mock_claude, mock_changed_files, mock_linter, mock_verify, mock_ctx
     ):
-        """When CLAUDE.md doesn't exist, should show fallback message."""
+        """When CLAUDE.md doesn't exist, should still include zen defaults."""
         from zen_mode.judge import phase_judge_ctx
 
         # DO NOT create CLAUDE.md - it should not exist
@@ -129,11 +129,14 @@ class TestConstitutionInFixPrompt:
 
         phase_judge_ctx(mock_ctx)
 
-        # The fix prompt should have fallback message
+        # The fix prompt should have zen defaults (even without project CLAUDE.md)
         fix_prompt = captured_prompts[1]
 
         assert "## Constitution (CLAUDE.md)" in fix_prompt
-        assert "[No CLAUDE.md found]" in fix_prompt
+        # Zen defaults should be present
+        assert "GOLDEN RULES" in fix_prompt
+        # No project rules section since no project CLAUDE.md exists
+        assert "## Project Rules" not in fix_prompt
 
     @patch('zen_mode.judge.phase_verify')
     @patch('zen_mode.implement.run_linter_with_timeout')

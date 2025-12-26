@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
-from zen_mode import linter
+from zen_mode import git, linter
 from zen_mode.config import (
     MODEL_BRAIN,
     MODEL_HANDS,
@@ -19,17 +19,18 @@ from zen_mode.config import (
     WORK_DIR,
 )
 from zen_mode.plan import parse_steps, get_completed_steps
-from zen_mode.utils import Context, read_file, write_file, run_claude, backup_file, load_constitution
+from zen_mode.utils import Context, read_file, write_file, run_claude, backup_file, get_full_constitution
 
 
 # -----------------------------------------------------------------------------
 # Linter Integration
 # -----------------------------------------------------------------------------
-def run_linter_with_timeout(timeout: Optional[int] = None) -> Tuple[bool, str]:
+def run_linter_with_timeout(timeout: Optional[int] = None, paths: Optional[List[str]] = None) -> Tuple[bool, str]:
     """Run the linter with timeout.
 
     Args:
         timeout: Timeout in seconds (default from config)
+        paths: Files to lint (default: git changed files)
 
     Returns:
         Tuple of (passed, output)
@@ -37,8 +38,12 @@ def run_linter_with_timeout(timeout: Optional[int] = None) -> Tuple[bool, str]:
     timeout = timeout or TIMEOUT_LINTER
     result: List = [False, f"Linter timed out after {timeout}s"]
 
+    # Get changed files from git if no paths provided
+    if paths is None:
+        paths = git.get_changed_files(Path.cwd())
+
     def target():
-        result[0], result[1] = linter.run_lint()
+        result[0], result[1] = linter.run_lint(paths=paths)
 
     thread = threading.Thread(target=target)
     thread.start()
@@ -107,9 +112,9 @@ End with: STEP_COMPLETE (if verified) or STEP_BLOCKED: <reason> (if not complete
 
 
 def build_implement_prompt(step_num: int, step_desc: str, plan: str,
-                           allowed_files: Optional[str] = None) -> str:
+                           project_root: Path, allowed_files: Optional[str] = None) -> str:
     """Build prompt for implementation step."""
-    constitution = load_constitution("GOLDEN RULES", "CODE STYLE", "TESTING")
+    constitution = get_full_constitution(project_root, "GOLDEN RULES", "CODE STYLE", "TESTING")
     base = f"""<task>
 Execute Step {step_num}: {step_desc}
 </task>
@@ -229,7 +234,7 @@ def phase_implement_ctx(ctx: Context, allowed_files: Optional[str] = None) -> No
         if is_verify_only:
             base_prompt = build_verify_prompt(step_desc, plan)
         else:
-            base_prompt = build_implement_prompt(step_num, step_desc, plan, allowed_files)
+            base_prompt = build_implement_prompt(step_num, step_desc, plan, ctx.project_root, allowed_files)
 
         prompt = base_prompt
         last_error_summary = ""

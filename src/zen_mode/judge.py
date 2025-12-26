@@ -19,7 +19,7 @@ from zen_mode.config import (
     WORK_DIR,
 )
 from zen_mode.plan import parse_steps
-from zen_mode.utils import Context, read_file, write_file, run_claude
+from zen_mode.utils import Context, read_file, write_file, run_claude, get_full_constitution
 from zen_mode.verify import VerifyState, phase_verify
 
 
@@ -193,8 +193,8 @@ def phase_judge_ctx(ctx: Context) -> None:
     scout = read_file(ctx.scout_file)
     test_output = read_file(ctx.test_output_file)
 
-    constitution_path = ctx.project_root / "CLAUDE.md"
-    constitution = read_file(constitution_path) if constitution_path.exists() else "[No CLAUDE.md found]"
+    # Get full constitution: zen defaults + project CLAUDE.md (or AGENTS.md)
+    constitution = get_full_constitution(ctx.project_root, "GOLDEN RULES", "ARCHITECTURE", "CODE STYLE", "TESTING")
 
     changed_files = git.get_changed_filenames(ctx.project_root, ctx.backup_dir)
     if changed_files == "[No files detected]":

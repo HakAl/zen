@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-from zen_mode.utils import load_constitution
+from zen_mode.utils import load_constitution, get_full_constitution
 
 
 class TestLoadConstitution:
@@ -69,3 +69,54 @@ class TestLoadConstitution:
         for section in sections:
             result = load_constitution(section)
             assert f"## {section}" in result, f"Failed to load {section}"
+
+
+class TestGetFullConstitution:
+    """Tests for get_full_constitution() - merges zen defaults + project rules."""
+
+    def test_returns_zen_defaults_when_no_project_file(self, tmp_path):
+        """Without CLAUDE.md or AGENTS.md, returns zen defaults only."""
+        result = get_full_constitution(tmp_path, "GOLDEN RULES")
+        assert "## GOLDEN RULES" in result
+        assert "## Project Rules" not in result
+
+    def test_includes_project_claude_md(self, tmp_path):
+        """Project CLAUDE.md is appended under '## Project Rules'."""
+        claude_md = tmp_path / "CLAUDE.md"
+        claude_md.write_text("# My Project Rules\n- Always test")
+
+        result = get_full_constitution(tmp_path, "GOLDEN RULES")
+        assert "## GOLDEN RULES" in result
+        assert "## Project Rules" in result
+        assert "Always test" in result
+
+    def test_prefers_claude_md_over_agents_md(self, tmp_path):
+        """CLAUDE.md takes precedence over AGENTS.md."""
+        claude_md = tmp_path / "CLAUDE.md"
+        claude_md.write_text("From CLAUDE.md")
+        agents_md = tmp_path / "AGENTS.md"
+        agents_md.write_text("From AGENTS.md")
+
+        result = get_full_constitution(tmp_path, "GOLDEN RULES")
+        assert "From CLAUDE.md" in result
+        assert "From AGENTS.md" not in result
+
+    def test_falls_back_to_agents_md(self, tmp_path):
+        """Uses AGENTS.md when CLAUDE.md doesn't exist."""
+        agents_md = tmp_path / "AGENTS.md"
+        agents_md.write_text("From AGENTS.md")
+
+        result = get_full_constitution(tmp_path, "GOLDEN RULES")
+        assert "## Project Rules" in result
+        assert "From AGENTS.md" in result
+
+    def test_multiple_sections_with_project_rules(self, tmp_path):
+        """Multiple zen sections + project rules all present."""
+        claude_md = tmp_path / "CLAUDE.md"
+        claude_md.write_text("Project specific rule")
+
+        result = get_full_constitution(tmp_path, "GOLDEN RULES", "ARCHITECTURE")
+        assert "## GOLDEN RULES" in result
+        assert "## ARCHITECTURE" in result
+        assert "## Project Rules" in result
+        assert "Project specific rule" in result
