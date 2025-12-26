@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-# Import from package - cost tracking functions moved to utils
+# Import from package - cost tracking functions are in claude module
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-from zen_mode.utils import _extract_cost, _parse_json_response
+from zen_mode.claude import _extract_cost, _parse_json_response
 
 
 class TestExtractCost:

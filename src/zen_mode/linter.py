@@ -14,8 +14,7 @@ from typing import List, Tuple, Dict, Optional, Set
 from io import StringIO
 
 # Import shared utilities
-from zen_mode import utils
-from zen_mode.utils import IGNORE_DIRS, IGNORE_FILES, BINARY_EXTS
+from zen_mode.files import IGNORE_DIRS, IGNORE_FILES, BINARY_EXTS
 
 # -----------------------------------------------------------------------------
 # Configuration

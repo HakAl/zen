@@ -7,9 +7,11 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
-from zen_mode import git
-from zen_mode.config import MODEL_EYES, PROJECT_ROOT, WORK_DIR
-from zen_mode.utils import Context, read_file, write_file, run_claude
+from zen_mode.claude import run_claude
+from zen_mode.config import MODEL_EYES
+from zen_mode.context import Context
+from zen_mode.files import read_file, write_file
+from zen_mode.utils import log
 
 
 # -----------------------------------------------------------------------------
@@ -372,7 +374,6 @@ def phase_scout_ctx(ctx: Context) -> None:
 
 def _log_ctx(ctx: Context, msg: str) -> None:
     """Log using context's log file."""
-    from zen_mode.utils import log
     log(msg, ctx.log_file, ctx.work_dir)
 
 

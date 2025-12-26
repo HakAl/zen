@@ -15,7 +15,7 @@ def _blocked_run_claude(*args, **kwargs):
     """Replacement for run_claude that fails fast instead of hanging."""
     raise AccidentalAPICallError(
         "Test tried to call run_claude() without mocking! "
-        "Add @patch('zen_mode.utils.run_claude') or use dry_run=True"
+        "Add @patch('zen_mode.claude.run_claude') or use dry_run=True"
     )
 
 
@@ -25,7 +25,7 @@ def block_real_api_calls():
     Auto-applied fixture that blocks real Claude API calls.
     Tests that need real calls must explicitly disable this.
     """
-    with patch("zen_mode.utils.run_claude", side_effect=_blocked_run_claude):
+    with patch("zen_mode.claude.run_claude", side_effect=_blocked_run_claude):
         yield
 
 

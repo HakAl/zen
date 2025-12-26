@@ -16,7 +16,7 @@ import pytest
 # Import from package
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from zen_mode.utils import Context
+from zen_mode.context import Context
 from zen_mode.config import MAX_RETRIES, MODEL_BRAIN, MODEL_HANDS
 
 
