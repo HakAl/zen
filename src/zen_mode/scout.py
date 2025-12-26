@@ -12,6 +12,112 @@ from zen_mode.utils import Context, read_file, write_file, run_claude
 
 
 # -----------------------------------------------------------------------------
+# File Size Annotation
+# -----------------------------------------------------------------------------
+FILE_SIZE_LARGE = 500    # lines
+FILE_SIZE_MASSIVE = 2000  # lines
+MAX_BYTES_TO_READ = 5_000_000  # 5MB cap
+
+
+def count_lines_safe(path: Path, max_bytes: int = MAX_BYTES_TO_READ) -> Optional[int]:
+    """Safely count lines in a file.
+
+    Args:
+        path: Path to file
+        max_bytes: Skip reading files larger than this (assume massive)
+
+    Returns:
+        Line count, or None if file can't be read
+    """
+    try:
+        if not path.exists() or not path.is_file():
+            return None
+        if path.stat().st_size > max_bytes:
+            return 9999  # Assume massive
+        return len(path.read_text(errors='ignore').splitlines())
+    except (OSError, PermissionError):
+        return None
+
+
+def file_size_tag(line_count: Optional[int]) -> str:
+    """Return size tag based on line count.
+
+    Args:
+        line_count: Number of lines, or None
+
+    Returns:
+        " [MASSIVE]", " [LARGE]", or ""
+    """
+    if line_count is None:
+        return ""
+    if line_count >= FILE_SIZE_MASSIVE:
+        return " [MASSIVE]"
+    if line_count >= FILE_SIZE_LARGE:
+        return " [LARGE]"
+    return ""
+
+
+def annotate_file_sizes(scout_file: Path, project_root: Path,
+                        log_fn: Optional[callable] = None) -> None:
+    """Post-process scout.md to add file size annotations.
+
+    Adds [LARGE] or [MASSIVE] tags to file entries in Targeted Files and
+    Context Files sections only. Skips Deletion Candidates and Grep Impact.
+
+    Args:
+        scout_file: Path to scout.md
+        project_root: Project root directory
+        log_fn: Optional logging function
+    """
+    if not scout_file.exists():
+        return
+
+    content = scout_file.read_text(encoding='utf-8')
+    lines = content.splitlines()
+    modified = False
+    annotated_count = 0
+
+    # Only annotate in these sections
+    annotate_sections = {'## Targeted Files', '## Context Files'}
+    skip_sections = {'## Deletion Candidates', '## Grep Impact', '## Open Questions', '## Triage'}
+
+    # Pattern: - `path/to/file.py`: description
+    file_pattern = re.compile(r'^(\s*- `)([^`]+)(`:.*)')
+
+    in_annotate_section = False
+    new_lines = []
+
+    for line in lines:
+        # Track which section we're in
+        if line.startswith('## '):
+            section_header = line.split('(')[0].strip()  # Handle "## Targeted Files (Must Change)"
+            in_annotate_section = any(line.startswith(s) for s in annotate_sections)
+
+        # Only process file lines in annotate sections
+        if in_annotate_section:
+            match = file_pattern.match(line)
+            if match:
+                prefix, filepath, suffix = match.groups()
+                # Skip if already annotated
+                if '[LARGE]' not in suffix and '[MASSIVE]' not in suffix:
+                    full_path = project_root / filepath
+                    line_count = count_lines_safe(full_path)
+                    tag = file_size_tag(line_count)
+                    if tag:
+                        # Insert tag before the colon
+                        new_lines.append(f"{prefix}{filepath}`{tag}{suffix[1:]}")
+                        modified = True
+                        annotated_count += 1
+                        continue
+        new_lines.append(line)
+
+    if modified:
+        scout_file.write_text('\n'.join(new_lines), encoding='utf-8')
+        if log_fn:
+            log_fn(f"[SCOUT] Annotated {annotated_count} large files")
+
+
+# -----------------------------------------------------------------------------
 # Targeted Files Parser
 # -----------------------------------------------------------------------------
 def parse_targeted_files(scout_content: str) -> List[str]:
@@ -253,6 +359,13 @@ def phase_scout_ctx(ctx: Context) -> None:
             ctx.project_root,
             log_fn=lambda msg: _log_ctx(ctx, msg)
         )
+
+    # Annotate large files to prevent token waste
+    annotate_file_sizes(
+        ctx.scout_file,
+        ctx.project_root,
+        log_fn=lambda msg: _log_ctx(ctx, msg)
+    )
 
     _log_ctx(ctx, "[SCOUT] Done.")
 
