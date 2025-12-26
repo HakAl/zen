@@ -14,7 +14,7 @@ from typing import List, Tuple, Dict, Optional, Set
 from io import StringIO
 
 # Import shared utilities
-from zen_mode import git, utils
+from zen_mode import utils
 from zen_mode.utils import IGNORE_DIRS, IGNORE_FILES, BINARY_EXTS
 
 # -----------------------------------------------------------------------------
@@ -496,19 +496,6 @@ def check_file(path: str, min_severity: str = "LOW", config: Optional[Dict] = No
     return violations
 
 
-def get_git_changes() -> List[str]:
-    """Get list of changed files from git (staged, unstaged, untracked).
-
-    Filters out files in ignored directories to prevent the "top-level loophole"
-    where git might return paths like node_modules/foo.js.
-    """
-    files = git.get_changed_files(Path.cwd())
-
-    # CRITICAL: Filter out ignored paths (node_modules, build, etc.)
-    # This prevents scanning build directories even if they're in git
-    return [f for f in files if f and not utils.should_ignore_path(f)]
-
-
 def load_config(config_path: Optional[str]) -> Optional[Dict]:
     """Load configuration from JSON file."""
     if not config_path:
@@ -636,11 +623,9 @@ def run_lint(paths: Optional[List[str]] = None, min_severity: str = "LOW",
     """
     config = load_config(config_path)
 
-    # Determine paths to scan
+    # Determine paths to scan (caller provides paths, defaults to cwd)
     if not paths:
-        paths = get_git_changes()
-        if not paths:
-            paths = ["."]
+        paths = ["."]
 
     all_violations = []
 

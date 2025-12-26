@@ -272,6 +272,33 @@ def load_constitution(*sections: str) -> str:
     return "\n\n".join(result)
 
 
+def get_full_constitution(project_root: Path, *sections: str) -> str:
+    """Merge zen defaults + project rules (CLAUDE.md or AGENTS.md).
+
+    Loads specified sections from zen's internal constitution, then appends
+    project-specific rules from CLAUDE.md (preferred) or AGENTS.md (fallback).
+
+    Args:
+        project_root: Path to project root directory
+        *sections: Section names to extract from zen defaults
+
+    Returns:
+        Combined constitution string with zen defaults and project rules.
+    """
+    zen_rules = load_constitution(*sections)
+
+    # Prefer CLAUDE.md, fall back to AGENTS.md
+    project_path = project_root / "CLAUDE.md"
+    if not project_path.exists():
+        project_path = project_root / "AGENTS.md"
+
+    project_rules = read_file(project_path) if project_path.exists() else ""
+
+    if project_rules:
+        return f"{zen_rules}\n\n## Project Rules\n{project_rules}"
+    return zen_rules
+
+
 def backup_file(path: Path, backup_dir: Path, project_root: Path, log_fn: Optional[callable] = None) -> None:
     """Create a backup of a file before modification."""
     if not path.exists():

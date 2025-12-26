@@ -8,9 +8,13 @@ from zen_mode.linter import (
     split_code_comment,
     find_string_ranges,
     is_binary,
+    load_config,
+    format_report,
+    print_rules,
     LINT_SKIP_EXTS,
     TEST_EXEMPT_RULES,
     TEST_FILE_PATTERNS,
+    QUALITY_RULES,
 )
 from zen_mode.utils import IGNORE_DIRS, IGNORE_FILES, BINARY_EXTS
 
@@ -903,3 +907,208 @@ class TestLanguageSpecificRuleScoping:
         rb_file.write_text('# TODO: fix this\n')
         rb_violations = check_file(str(rb_file))
         assert "TODO" in [v["rule"] for v in rb_violations]
+
+
+class TestLoadConfig:
+    """Tests for load_config() function."""
+
+    def test_load_valid_json_config(self, tmp_path, monkeypatch):
+        """Load a valid JSON config file."""
+        monkeypatch.chdir(tmp_path)
+        config_file = tmp_path / ".lintrc.json"
+        config_file.write_text('{"ignore_rules": ["TODO"], "min_severity": "MEDIUM"}')
+
+        config = load_config(str(config_file))
+
+        assert config is not None
+        assert config["ignore_rules"] == ["TODO"]
+        assert config["min_severity"] == "MEDIUM"
+
+    def test_load_default_config_file(self, tmp_path, monkeypatch):
+        """Auto-discover default config file names."""
+        monkeypatch.chdir(tmp_path)
+        config_file = tmp_path / ".lintrc.json"
+        config_file.write_text('{"custom": true}')
+
+        # Pass None to trigger auto-discovery
+        config = load_config(None)
+
+        assert config is not None
+        assert config["custom"] is True
+
+    def test_load_lintrc_without_extension(self, tmp_path, monkeypatch):
+        """Auto-discover .lintrc file."""
+        monkeypatch.chdir(tmp_path)
+        config_file = tmp_path / ".lintrc"
+        config_file.write_text('{"from_lintrc": true}')
+
+        config = load_config(None)
+
+        assert config is not None
+        assert config["from_lintrc"] is True
+
+    def test_nonexistent_config_returns_none(self, tmp_path, monkeypatch):
+        """Non-existent config file returns None."""
+        monkeypatch.chdir(tmp_path)
+
+        config = load_config("nonexistent.json")
+
+        assert config is None
+
+    def test_invalid_json_returns_none(self, tmp_path, monkeypatch, capsys):
+        """Invalid JSON returns None and prints warning."""
+        monkeypatch.chdir(tmp_path)
+        config_file = tmp_path / "bad.json"
+        config_file.write_text('{"invalid json')
+
+        config = load_config(str(config_file))
+
+        assert config is None
+        captured = capsys.readouterr()
+        assert "Warning" in captured.err
+
+    def test_no_config_returns_none(self, tmp_path, monkeypatch):
+        """No config file in directory returns None."""
+        monkeypatch.chdir(tmp_path)
+
+        config = load_config(None)
+
+        assert config is None
+
+
+class TestFormatReport:
+    """Tests for format_report() function."""
+
+    def test_text_format_no_violations(self):
+        """Text format with no violations shows PASS."""
+        output, exit_code = format_report([], "text")
+
+        assert "[PASS]" in output
+        assert exit_code == 0
+
+    def test_text_format_with_violations(self):
+        """Text format lists violations and shows summary."""
+        violations = [
+            {"file": "test.py", "line": 10, "rule": "TODO", "severity": "MEDIUM", "content": "TODO: fix"},
+            {"file": "test.py", "line": 20, "rule": "PLACEHOLDER", "severity": "HIGH", "content": "XXX"},
+        ]
+
+        output, exit_code = format_report(violations, "text")
+
+        assert "Found 2 issue(s)" in output
+        assert "[HIGH] test.py:20" in output
+        assert "[MEDIUM] test.py:10" in output
+        assert "Summary:" in output
+        assert "[FAIL]" in output
+        assert exit_code == 1
+
+    def test_text_format_medium_only_passes(self):
+        """Text format with only MEDIUM violations passes."""
+        violations = [
+            {"file": "test.py", "line": 10, "rule": "TODO", "severity": "MEDIUM", "content": "TODO: fix"},
+        ]
+
+        output, exit_code = format_report(violations, "text")
+
+        assert "[FAIL]" not in output
+        assert exit_code == 0
+
+    def test_json_format_structure(self):
+        """JSON format has correct structure."""
+        import json
+        violations = [
+            {"file": "test.py", "line": 10, "rule": "TODO", "severity": "MEDIUM", "content": "TODO: fix"},
+        ]
+
+        output, exit_code = format_report(violations, "json")
+        data = json.loads(output)
+
+        assert "violations" in data
+        assert "count" in data
+        assert data["count"] == 1
+        assert len(data["violations"]) == 1
+        assert exit_code == 0
+
+    def test_json_format_exit_code_on_high(self):
+        """JSON format returns exit code 1 on HIGH severity."""
+        violations = [
+            {"file": "test.py", "line": 10, "rule": "PLACEHOLDER", "severity": "HIGH", "content": "XXX"},
+        ]
+
+        output, exit_code = format_report(violations, "json")
+
+        assert exit_code == 1
+
+    def test_sarif_format_structure(self):
+        """SARIF format has correct schema structure."""
+        import json
+        violations = [
+            {"file": "test.py", "line": 10, "rule": "TODO", "severity": "MEDIUM", "content": "TODO: fix"},
+        ]
+
+        output, exit_code = format_report(violations, "sarif")
+        data = json.loads(output)
+
+        assert data["$schema"] == "https://json.schemastore.org/sarif-2.1.0.json"
+        assert data["version"] == "2.1.0"
+        assert "runs" in data
+        assert len(data["runs"]) == 1
+        assert "tool" in data["runs"][0]
+        assert "results" in data["runs"][0]
+
+    def test_sarif_format_severity_mapping(self):
+        """SARIF maps severity to correct level."""
+        import json
+        violations = [
+            {"file": "a.py", "line": 1, "rule": "R1", "severity": "HIGH", "content": "x"},
+            {"file": "b.py", "line": 2, "rule": "R2", "severity": "MEDIUM", "content": "y"},
+            {"file": "c.py", "line": 3, "rule": "R3", "severity": "LOW", "content": "z"},
+        ]
+
+        output, _ = format_report(violations, "sarif")
+        data = json.loads(output)
+        results = data["runs"][0]["results"]
+
+        levels = [r["level"] for r in results]
+        assert "error" in levels      # HIGH
+        assert "warning" in levels    # MEDIUM
+        assert "note" in levels       # LOW
+
+    def test_sarif_format_exit_code_on_high(self):
+        """SARIF format returns exit code 1 on HIGH severity."""
+        violations = [
+            {"file": "test.py", "line": 10, "rule": "PLACEHOLDER", "severity": "HIGH", "content": "XXX"},
+        ]
+
+        output, exit_code = format_report(violations, "sarif")
+
+        assert exit_code == 1
+
+
+class TestPrintRules:
+    """Tests for print_rules() function."""
+
+    def test_print_rules_shows_all_severities(self, capsys):
+        """print_rules() shows rules grouped by severity."""
+        print_rules()
+        output = capsys.readouterr().out
+
+        assert "[HIGH]" in output
+        assert "[MEDIUM]" in output
+        assert "[LOW]" in output
+
+    def test_print_rules_shows_rule_names(self, capsys):
+        """print_rules() shows rule names."""
+        print_rules()
+        output = capsys.readouterr().out
+
+        # Check some known rules exist
+        assert "TODO" in output or "PLACEHOLDER" in output
+
+    def test_print_rules_shows_patterns(self, capsys):
+        """print_rules() shows rule patterns (truncated)."""
+        print_rules()
+        output = capsys.readouterr().out
+
+        # Should have rule: pattern format
+        assert ":" in output

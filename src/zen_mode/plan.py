@@ -7,15 +7,15 @@ from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
 from zen_mode.config import MODEL_BRAIN, PROJECT_ROOT, WORK_DIR
-from zen_mode.utils import Context, read_file, write_file, run_claude, load_constitution, log
+from zen_mode.utils import Context, read_file, write_file, run_claude, get_full_constitution, log
 
 
 # -----------------------------------------------------------------------------
 # Plan Prompt Builder
 # -----------------------------------------------------------------------------
-def build_plan_prompt(task_file: str, plan_file: Path, scout_content: str) -> str:
+def build_plan_prompt(task_file: str, plan_file: Path, scout_content: str, project_root: Path) -> str:
     """Build plan prompt for creating execution plan."""
-    constitution = load_constitution("GOLDEN RULES", "ARCHITECTURE", "PROCESS")
+    constitution = get_full_constitution(project_root, "GOLDEN RULES", "ARCHITECTURE", "PROCESS")
     return f"""<role>
 You are a senior software architect creating an execution plan. Each step will be executed in isolation with only the plan as context. Your plans are precise, atomic, and efficient.
 </role>
@@ -251,7 +251,7 @@ def phase_plan_ctx(ctx: Context) -> None:
 
     _log_ctx(ctx, "\n[PLAN] Creating execution plan...")
     scout_content = read_file(ctx.scout_file)
-    prompt = build_plan_prompt(ctx.task_file, ctx.plan_file, scout_content)
+    prompt = build_plan_prompt(ctx.task_file, ctx.plan_file, scout_content, ctx.project_root)
 
     output = run_claude(
         prompt,
