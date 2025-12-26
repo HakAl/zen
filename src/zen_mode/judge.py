@@ -1,12 +1,11 @@
 """Judge phase: Architectural review of implementation."""
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
-from typing import Optional, Tuple, List
+from typing import Optional, List
 
-from zen_mode import utils
+from zen_mode import git, utils
 from zen_mode.config import (
     MODEL_BRAIN,
     MODEL_HANDS,
@@ -22,33 +21,6 @@ from zen_mode.config import (
 from zen_mode.plan import parse_steps
 from zen_mode.utils import Context, read_file, write_file, run_claude
 from zen_mode.verify import VerifyState, phase_verify
-
-
-# -----------------------------------------------------------------------------
-# Git Helpers
-# -----------------------------------------------------------------------------
-def _git_has_head(project_root: Path) -> bool:
-    """Check if git repo has at least one commit (HEAD exists)."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True, text=True, cwd=project_root
-        )
-        return result.returncode == 0
-    except Exception:
-        return False
-
-
-def _git_is_repo(project_root: Path) -> bool:
-    """Check if we're in a git repository."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--git-dir"],
-            capture_output=True, text=True, cwd=project_root
-        )
-        return result.returncode == 0
-    except Exception:
-        return False
 
 
 def _is_test_or_doc(path: str) -> bool:
@@ -152,74 +124,28 @@ def should_skip_judge_ctx(ctx: Context, log_fn: Optional[callable] = None) -> bo
         if log_fn:
             log_fn(msg)
 
-    if not _git_is_repo(ctx.project_root):
+    if not git.is_repo(ctx.project_root):
         return False  # Fail-safe: require judge if not a git repo
 
-    # Get modified files (tracked)
-    numstat = ""
-    if _git_has_head(ctx.project_root):
-        try:
-            result = subprocess.run(
-                ["git", "diff", "--numstat", "HEAD"],
-                capture_output=True, text=True, cwd=ctx.project_root
-            )
-            if result.returncode == 0:
-                numstat = result.stdout.strip()
-        except Exception:
-            pass
-    else:
-        try:
-            result = subprocess.run(
-                ["git", "diff", "--cached", "--numstat"],
-                capture_output=True, text=True, cwd=ctx.project_root
-            )
-            if result.returncode == 0:
-                numstat = result.stdout.strip()
-        except Exception:
-            pass
+    # Get diff stats and untracked files
+    stats = git.get_diff_stats(ctx.project_root)
+    untracked_files = git.get_untracked_files(ctx.project_root)
 
-    # Get untracked files
-    untracked = ""
-    try:
-        untracked_result = subprocess.run(
-            ["git", "ls-files", "--others", "--exclude-standard"],
-            capture_output=True, text=True, cwd=ctx.project_root
-        )
-        if untracked_result.returncode == 0:
-            untracked = untracked_result.stdout.strip()
-    except Exception:
-        pass
-
-    if not numstat and not untracked:
+    if stats.total == 0 and not untracked_files:
         _log("[JUDGE] Skipping: No changes detected")
         return True
 
-    if not numstat and untracked:
-        untracked_files = untracked.splitlines()
+    if stats.total == 0 and untracked_files:
         if not all(_is_test_or_doc(f) for f in untracked_files):
             _log("[JUDGE] Required: New code files created")
             return False
         _log("[JUDGE] Skipping: Only new test/doc files")
         return True
 
-    # Parse numstat
-    total_add, total_del = 0, 0
-    changed_files: List[str] = []
-
-    for line in numstat.splitlines():
-        parts = line.split('\t')
-        if len(parts) >= 3:
-            add = int(parts[0]) if parts[0] != '-' else 0
-            delete = int(parts[1]) if parts[1] != '-' else 0
-            total_add += add
-            total_del += delete
-            changed_files.append(parts[2])
-
-    if untracked:
-        changed_files.extend(untracked.splitlines())
-
-    total_changes = total_add + total_del
-    has_new_code_files = untracked and not all(_is_test_or_doc(f) for f in untracked.splitlines())
+    # Combine tracked and untracked files
+    changed_files: List[str] = stats.files + untracked_files
+    total_changes = stats.total
+    has_new_code_files = untracked_files and not all(_is_test_or_doc(f) for f in untracked_files)
 
     # Rule B: Risky files always reviewed
     risky_patterns = ['auth', 'login', 'secur', 'payment', 'crypt', 'secret', 'token']
@@ -270,7 +196,7 @@ def phase_judge_ctx(ctx: Context) -> None:
     constitution_path = ctx.project_root / "CLAUDE.md"
     constitution = read_file(constitution_path) if constitution_path.exists() else "[No CLAUDE.md found]"
 
-    changed_files = utils.get_changed_filenames(ctx.project_root, ctx.backup_dir)
+    changed_files = git.get_changed_filenames(ctx.project_root, ctx.backup_dir)
     if changed_files == "[No files detected]":
         _log_ctx(ctx, "[JUDGE] No changes detected. Auto-approving.")
         return
@@ -334,7 +260,7 @@ def phase_judge_ctx(ctx: Context) -> None:
             sys.exit(1)
 
         _log_ctx(ctx, "[JUDGE_FIX] Applying fixes...")
-        changed_files = utils.get_changed_filenames(ctx.project_root, ctx.backup_dir)
+        changed_files = git.get_changed_filenames(ctx.project_root, ctx.backup_dir)
 
         fix_prompt = build_judge_fix_prompt(feedback, constitution, changed_files, plan)
 
@@ -377,7 +303,7 @@ def phase_judge_ctx(ctx: Context) -> None:
         elif state == VerifyState.RUNTIME_MISSING:
             _log_ctx(ctx, "[JUDGE_FIX] Runtime not installed, skipping tests.")
 
-        changed_files = utils.get_changed_filenames(ctx.project_root, ctx.backup_dir)
+        changed_files = git.get_changed_filenames(ctx.project_root, ctx.backup_dir)
 
         if judge_feedback_file.exists():
             judge_feedback_file.unlink()
