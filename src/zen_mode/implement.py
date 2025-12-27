@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import sys
 import threading
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
+
+logger = logging.getLogger(__name__)
 
 from zen_mode import git, linter
 from zen_mode.claude import run_claude
@@ -264,7 +267,7 @@ def phase_implement_ctx(ctx: Context, allowed_files: Optional[str] = None) -> No
             last_line = output.strip().split('\n')[-1] if output.strip() else ""
             if last_line.startswith("STEP_BLOCKED"):
                 _log_ctx(ctx, f"[BLOCKED] Step {step_num}")
-                print(f"\n{output}")
+                logger.info(f"\n{output}")
                 sys.exit(1)
 
             if "STEP_COMPLETE" in output:
@@ -272,7 +275,7 @@ def phase_implement_ctx(ctx: Context, allowed_files: Optional[str] = None) -> No
                 if not passed:
                     _log_ctx(ctx, f"[LINT FAIL] Step {step_num}")
                     for line in lint_out.splitlines()[:20]:
-                        print(f"    {line}")
+                        logger.info(f"    {line}")
 
                     truncated = "\n".join(lint_out.splitlines()[:30])
                     last_error_summary = truncated[:300]

@@ -7,10 +7,13 @@ PHILOSOPHY:
 3. If a file exists, that step is done.
 """
 from __future__ import annotations
+import logging
 import shutil
 import sys
 from pathlib import Path
 from typing import Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 from zen_mode.claude import run_claude
 from zen_mode.config import MODEL_EYES, WORK_DIR_NAME, PROJECT_ROOT, WORK_DIR
@@ -110,10 +113,10 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
     task_path = Path(task_file)
     resolved_path = task_path.resolve()
     if not resolved_path.is_relative_to(PROJECT_ROOT.resolve()):
-        print(f"ERROR: Task file must be within project directory: {task_file}")
+        logger.error(f"Task file must be within project directory: {task_file}")
         sys.exit(1)
     if not task_path.exists():
-        print(f"ERROR: Task file not found: {task_file}")
+        logger.error(f"Task file not found: {task_file}")
         sys.exit(1)
 
     # Set up paths
@@ -129,20 +132,20 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
     if "--reset" in flags:
         if WORK_DIR.exists():
             shutil.rmtree(WORK_DIR)
-        print("Reset complete.")
+        logger.info("Reset complete.")
         WORK_DIR.mkdir(exist_ok=True)
 
     if "--reset" not in flags and _check_previous_completion():
-        print("[COMPLETE] Previous run finished successfully.")
-        print(f"  → See {NOTES_FILE.relative_to(PROJECT_ROOT)} for summary")
-        print("  → Use --reset to start fresh")
+        logger.info("[COMPLETE] Previous run finished successfully.")
+        logger.info(f"  → See {NOTES_FILE.relative_to(PROJECT_ROOT)} for summary")
+        logger.info("  → Use --reset to start fresh")
         return
 
     if "--retry" in flags and LOG_FILE.exists():
         lines = read_file(LOG_FILE).splitlines()
         cleaned = "\n".join(line for line in lines if "[COMPLETE] Step" not in line)
         write_file(LOG_FILE, cleaned, WORK_DIR)
-        print("Cleared completion markers.")
+        logger.info("Cleared completion markers.")
 
     skip_judge = "--skip-judge" in flags
     skip_verify = "--skip-verify" in flags
@@ -164,10 +167,10 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
             scout_path = Path(scout_context)
             resolved_scout = scout_path.resolve()
             if not resolved_scout.is_relative_to(PROJECT_ROOT.resolve()):
-                print(f"ERROR: Scout context file must be within project directory: {scout_context}")
+                logger.error(f"Scout context file must be within project directory: {scout_context}")
                 sys.exit(1)
             if not scout_path.exists():
-                print(f"ERROR: Scout context file not found: {scout_context}")
+                logger.error(f"Scout context file not found: {scout_context}")
                 sys.exit(1)
             WORK_DIR.mkdir(exist_ok=True)
             shutil.copy(str(scout_path), str(ctx.scout_file))
@@ -242,13 +245,13 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
 
         _write_cost_summary(ctx)
 
-        print("\n[SUCCESS]")
+        logger.info("[SUCCESS]")
     except KeyboardInterrupt:
         _log("[INTERRUPTED] User cancelled execution")
-        print("\nInterrupted. Progress saved to log.")
+        logger.info("Interrupted. Progress saved to log.")
         sys.exit(130)
     except VerifyTimeout as e:
         _log(f"[TIMEOUT] {e}")
-        print(f"\n[TIMEOUT] {e}")
-        print("Run again to retry.")
+        logger.error(f"[TIMEOUT] {e}")
+        logger.error("Run again to retry.")
         sys.exit(1)

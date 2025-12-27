@@ -2,6 +2,7 @@
 Zen Mode CLI - argparse-based command line interface.
 """
 import argparse
+import logging
 import os
 import sys
 from pathlib import Path
@@ -9,6 +10,31 @@ from types import SimpleNamespace
 from typing import Any
 
 from . import __version__
+
+
+def setup_logging(verbose: bool = False) -> None:
+    """Configure logging for the CLI.
+
+    Args:
+        verbose: If True, enable DEBUG level. Otherwise INFO level.
+    """
+    level = logging.DEBUG if verbose else logging.INFO
+
+    # Simple format - just the message for clean CLI output
+    # Errors get prefixed automatically by using logger.error()
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+
+    # Configure root logger for zen_mode package
+    root_logger = logging.getLogger("zen_mode")
+    root_logger.setLevel(level)
+    root_logger.addHandler(handler)
+
+    # Prevent propagation to root logger (avoids duplicate messages)
+    root_logger.propagate = False
+
+
+logger = logging.getLogger(__name__)
 
 
 def cmd_init(args: Any) -> None:
@@ -29,14 +55,14 @@ def cmd_init(args: Any) -> None:
                 with resources.open_text('zen_mode.defaults', 'CLAUDE.md') as f:
                     template = f.read()
             claude_md.write_text(template, encoding='utf-8')
-            print(f"Created {claude_md}")
+            logger.info(f"Created {claude_md}")
         except Exception as e:
-            print(f"Warning: Could not copy default CLAUDE.md: {e}")
+            logger.warning(f"Could not copy default CLAUDE.md: {e}")
     else:
-        print("CLAUDE.md already exists, skipping.")
+        logger.info("CLAUDE.md already exists, skipping.")
 
-    print(f"Initialized {zen_dir}")
-    print("Run 'zen <task.md>' to start.")
+    logger.info(f"Initialized {zen_dir}")
+    logger.info("Run 'zen <task.md>' to start.")
 
 
 def cmd_run(args: Any) -> None:
@@ -46,7 +72,7 @@ def cmd_run(args: Any) -> None:
     # Check for local zen.py first (ejected mode)
     local_zen = Path.cwd() / "zen.py"
     if local_zen.exists():
-        print(f"Using local {local_zen} (ejected mode)")
+        logger.info(f"Using local {local_zen} (ejected mode)")
         import subprocess
         cmd = [sys.executable, str(local_zen), task_file]
         if args.reset:
@@ -86,14 +112,14 @@ def cmd_swarm(args: Any) -> None:
     from . import swarm
 
     if not args.tasks:
-        print("Error: At least one task file required")
+        logger.error("At least one task file required")
         sys.exit(1)
 
     # Validate task files
     for task_file in args.tasks:
         task_path = Path(task_file)
         if not task_path.exists():
-            print(f"Error: Task file not found: {task_file}")
+            logger.error(f"Task file not found: {task_file}")
             sys.exit(1)
 
     # Build config with validation
@@ -105,7 +131,7 @@ def cmd_swarm(args: Any) -> None:
             verbose=getattr(args, 'verbose', False)
         )
     except ValueError as e:
-        print(f"Error: {e}")
+        logger.error(str(e))
         sys.exit(1)
 
     # Execute
@@ -113,7 +139,7 @@ def cmd_swarm(args: Any) -> None:
     try:
         summary = dispatcher.execute()
     except ValueError as e:
-        print(f"Error: {e}")
+        logger.error(str(e))
         sys.exit(1)
 
     # Print report
@@ -124,6 +150,10 @@ def cmd_swarm(args: Any) -> None:
 
 
 def main() -> None:
+    # Check for --verbose early so logging is configured before any output
+    verbose = "--verbose" in sys.argv or "-v" in sys.argv
+    setup_logging(verbose=verbose)
+
     # Check for subcommands first, before argparse sees the args
     if len(sys.argv) >= 2:
         cmd = sys.argv[1]
@@ -162,6 +192,7 @@ def main() -> None:
             parser.add_argument("--skip-verify", action="store_true", help="Skip Verify phase (for infra-only tasks)")
             parser.add_argument("--scout-context", type=str, default=None, help="Path to pre-computed scout context file")
             parser.add_argument("--allowed-files", type=str, default=None, help="Glob pattern for allowed files to modify")
+            parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose/debug output")
             args = parser.parse_args(sys.argv[1:])
             cmd_run(args)
             return
@@ -180,7 +211,7 @@ Options:
   --skip-judge                Skip Judge phase review (Opus architectural review)
   --skip-verify               Skip Verify phase (for infra-only tasks)
   --workers N                 Number of parallel workers for swarm (default: auto)
-  --verbose, -v               Show full logs instead of status ticker (swarm)
+  --verbose, -v               Enable verbose/debug output
 
 Examples:
   zen init

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -9,6 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
+logger = logging.getLogger(__name__)
 
 _claude_exe: Optional[str] = None
 
@@ -20,8 +22,8 @@ def _init_claude() -> str:
         return _claude_exe
     _claude_exe = shutil.which("claude") or os.getenv("CLAUDE_EXE")
     if not _claude_exe:
-        print("ERROR: 'claude' CLI not found.")
-        print("Install: npm i -g @anthropic-ai/claude-cli")
+        logger.error("'claude' CLI not found.")
+        logger.error("Install: npm i -g @anthropic-ai/claude-cli")
         sys.exit(1)
     return _claude_exe
 
@@ -82,7 +84,7 @@ def run_claude(
         if log_fn:
             log_fn(msg)
         else:
-            print(f"  {msg}")
+            logger.info(msg)
 
     claude_exe = _init_claude()
     cmd = [claude_exe, "-p", "--dangerously-skip-permissions", "--model", model,

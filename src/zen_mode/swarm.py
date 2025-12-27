@@ -3,6 +3,7 @@ Zen Swarm: Parallel task execution with cost aggregation and
 conflict detection.
 """
 from __future__ import annotations
+import logging
 import os
 import re
 import shutil
@@ -15,6 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 from zen_mode.claude import run_claude
 from zen_mode.config import TIMEOUT_EXEC, MODEL_EYES
@@ -156,7 +159,7 @@ def print_status_block(lines: List[str], prev_line_count: int = 0, is_tty: bool 
     else:
         # Non-TTY: just print summary line
         if lines:
-            print(lines[-1])
+            logger.info(lines[-1])
         return 0
 
 
@@ -607,7 +610,7 @@ class SwarmDispatcher:
         status_line_count = 0
 
         # Show startup message
-        print(f"[SWARM] Starting {len(self.config.tasks)} tasks with {self.config.workers} workers...")
+        logger.info(f"[SWARM] Starting {len(self.config.tasks)} tasks with {self.config.workers} workers...")
 
         # Run scout once for all tasks using the first task as reference
         scout_context = None
@@ -616,7 +619,7 @@ class SwarmDispatcher:
         swarm_scout_dir = base_dir / f"swarm_{swarm_id}"
         scout_file = swarm_scout_dir / "scout.md"
 
-        print("[SWARM] Running shared scout...")
+        logger.info("[SWARM] Running shared scout...")
         first_task = self.config.tasks[0]
         scout_context = self._run_shared_scout(first_task, swarm_scout_dir, scout_file)
 
@@ -714,10 +717,10 @@ class SwarmDispatcher:
             except TimeoutError:
                 # Swarm-level timeout - some workers didn't complete
                 timed_out = True
-                print(f"\n[SWARM] ERROR: Timeout after {TIMEOUT_WORKER}s waiting for workers")
+                logger.error(f"[SWARM] Timeout after {TIMEOUT_WORKER}s waiting for workers")
                 for future, (task, work_dir) in futures.items():
                     if not future.done():
-                        print(f"  - {task} still running")
+                        logger.error(f"  - {task} still running")
                         future.cancel()
                         self.results.append(WorkerResult(
                             task_path=task,
@@ -738,7 +741,7 @@ class SwarmDispatcher:
             monitor_thread.join(timeout=1)
             # Print final newline to move past status line
             if is_tty:
-                print()
+                logger.info("")
 
         # Preserve worker logs in .zen/workers/ before cleanup
         workers_log_dir = self.config.project_root / self.config.work_dir_base / "workers"

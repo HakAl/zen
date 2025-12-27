@@ -146,9 +146,10 @@ class TestModelEscalation:
     @patch('zen_mode.implement.run_linter_with_timeout')
     @patch('zen_mode.implement.run_claude')
     def test_escalation_logs_message(
-        self, mock_claude, mock_linter, mock_ctx, capsys
+        self, mock_claude, mock_linter, mock_ctx, caplog
     ):
         """Should log 'Escalating to MODEL_BRAIN' when escalating."""
+        import logging
         from zen_mode.implement import phase_implement_ctx
 
         mock_claude.return_value = "STEP_COMPLETE"
@@ -156,12 +157,13 @@ class TestModelEscalation:
         lint_results = [(False, "error")] * (MAX_RETRIES - 1) + [(True, "")]
         mock_linter.side_effect = lint_results
 
-        phase_implement_ctx(mock_ctx)
+        with caplog.at_level(logging.INFO, logger="zen_mode"):
+            phase_implement_ctx(mock_ctx)
 
-        # Check that escalation was logged (printed to console)
-        captured = capsys.readouterr()
-        assert "Escalating" in captured.out and MODEL_BRAIN in captured.out, \
-            f"Should log escalation message. Got: {captured.out}"
+        # Check that escalation was logged
+        log_output = caplog.text
+        assert "Escalating" in log_output and MODEL_BRAIN in log_output, \
+            f"Should log escalation message. Got: {log_output}"
 
     @patch('zen_mode.implement.run_linter_with_timeout')
     @patch('zen_mode.implement.run_claude')
