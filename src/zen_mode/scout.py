@@ -5,7 +5,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set
 
 from zen_mode.claude import run_claude
 from zen_mode.config import MODEL_EYES
@@ -61,7 +61,7 @@ def file_size_tag(line_count: Optional[int]) -> str:
 
 
 def annotate_file_sizes(scout_file: Path, project_root: Path,
-                        log_fn: Optional[callable] = None) -> None:
+                        log_fn: Optional[Callable[[str], None]] = None) -> None:
     """Post-process scout.md to add file size annotations.
 
     Adds [LARGE] or [MASSIVE] tags to file entries in Targeted Files and
@@ -233,7 +233,7 @@ def expand_dependencies(targeted_files: List[str], project_root: Path) -> List[s
 
 
 def append_grep_impact_to_scout(scout_file: Path, targeted_files: List[str],
-                                 project_root: Path, log_fn: Optional[callable] = None) -> None:
+                                 project_root: Path, log_fn: Optional[Callable[[str], None]] = None) -> None:
     """Append grep impact section to scout file.
 
     Args:

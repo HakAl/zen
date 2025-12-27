@@ -20,21 +20,13 @@ def _blocked_run_claude(*args, **kwargs):
 
 
 @pytest.fixture(autouse=True)
-def block_real_api_calls():
+def block_real_api_calls(request):
     """
     Auto-applied fixture that blocks real Claude API calls.
-    Tests that need real calls must explicitly disable this.
+    Tests marked with @pytest.mark.allow_real_api skip this block.
     """
-    with patch("zen_mode.claude.run_claude", side_effect=_blocked_run_claude):
-        yield
-
-
-@pytest.fixture
-def allow_real_api_calls():
-    """
-    Fixture to explicitly allow real API calls in a test.
-    Usage: def test_integration(allow_real_api_calls): ...
-    """
-    # This fixture does nothing - just naming it opts out of the autouse fixture
-    # Actually we need to undo the patch... let's use a different approach
-    pass
+    if request.node.get_closest_marker("allow_real_api"):
+        yield  # Don't patch - allow real API calls
+    else:
+        with patch("zen_mode.claude.run_claude", side_effect=_blocked_run_claude):
+            yield

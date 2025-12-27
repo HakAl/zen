@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 
 _claude_exe: Optional[str] = None
@@ -55,8 +55,8 @@ def run_claude(
     phase: str = "unknown",
     timeout: Optional[int] = None,
     project_root: Path,
-    log_fn: Optional[callable] = None,
-    cost_callback: Optional[callable] = None,
+    log_fn: Optional[Callable[[str], None]] = None,
+    cost_callback: Optional[Callable[..., Any]] = None,
     show_costs: bool = True,
 ) -> Optional[str]:
     """Run Claude CLI with prompt and return response.

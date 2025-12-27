@@ -1,6 +1,11 @@
 """Zen Mode: Minimalist autonomous agent runner."""
 
-__version__ = "0.1.0"
+from importlib.metadata import version, PackageNotFoundError
+
+try:
+    __version__ = version("zen-mode")
+except PackageNotFoundError:
+    __version__ = "0.0.0-dev"  # Not installed as package
 
 from zen_mode.context import Context
 from zen_mode.files import read_file, write_file, log
