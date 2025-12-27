@@ -2,15 +2,25 @@
 
 Consolidates git subprocess calls from linter, judge, utils, and scout.
 All functions accept a project_root parameter and return clean data structures.
+
+All functions gracefully degrade when git is unavailable or errors occur,
+returning sensible defaults (False, None, [], empty stats).
 """
 from __future__ import annotations
 
+import logging
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Set
 
 from zen_mode.files import should_ignore_path
+
+# Logger for debugging git operations - disabled by default
+_logger = logging.getLogger(__name__)
+
+# Exceptions we expect from subprocess git calls
+_GIT_ERRORS = (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError)
 
 
 # -----------------------------------------------------------------------------
@@ -26,7 +36,8 @@ def is_repo(project_root: Path) -> bool:
             timeout=5
         )
         return result.returncode == 0
-    except Exception:
+    except _GIT_ERRORS as e:
+        _logger.debug("is_repo check failed: %s", e)
         return False
 
 
@@ -40,7 +51,8 @@ def has_head(project_root: Path) -> bool:
             timeout=5
         )
         return result.returncode == 0
-    except Exception:
+    except _GIT_ERRORS as e:
+        _logger.debug("has_head check failed: %s", e)
         return False
 
 
@@ -56,8 +68,8 @@ def get_head_commit(project_root: Path) -> Optional[str]:
         )
         if result.returncode == 0:
             return result.stdout.strip()
-    except Exception:
-        pass
+    except _GIT_ERRORS as e:
+        _logger.debug("get_head_commit failed: %s", e)
     return None
 
 
@@ -86,8 +98,8 @@ def get_staged_files(project_root: Path) -> List[str]:
             )
         if result.returncode == 0:
             return [f for f in result.stdout.strip().splitlines() if f]
-    except Exception:
-        pass
+    except _GIT_ERRORS as e:
+        _logger.debug("get_staged_files failed: %s", e)
     return []
 
 
@@ -105,8 +117,8 @@ def get_unstaged_files(project_root: Path) -> List[str]:
         )
         if result.returncode == 0:
             return [f for f in result.stdout.strip().splitlines() if f]
-    except Exception:
-        pass
+    except _GIT_ERRORS as e:
+        _logger.debug("get_unstaged_files failed: %s", e)
     return []
 
 
@@ -122,8 +134,8 @@ def get_untracked_files(project_root: Path) -> List[str]:
         )
         if result.returncode == 0:
             return [f for f in result.stdout.strip().splitlines() if f]
-    except Exception:
-        pass
+    except _GIT_ERRORS as e:
+        _logger.debug("get_untracked_files failed: %s", e)
     return []
 
 
@@ -218,8 +230,8 @@ def get_diff_stats(project_root: Path) -> DiffStats:
                     if deleted != "-":
                         stats.deleted += int(deleted)
                     stats.files.append(filepath)
-    except Exception:
-        pass
+    except _GIT_ERRORS as e:
+        _logger.debug("get_diff_stats failed: %s", e)
 
     return stats
 
@@ -267,8 +279,8 @@ def grep_files(
         )
         if result.returncode == 0:
             return [f for f in result.stdout.strip().splitlines() if f]
-    except Exception:
-        pass
+    except _GIT_ERRORS as e:
+        _logger.debug("grep_files failed: %s", e)
 
     return []
 

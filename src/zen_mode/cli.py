@@ -5,11 +5,13 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 from . import __version__
 
 
-def cmd_init(args):
+def cmd_init(args: Any) -> None:
     """Initialize .zen/ directory and create CLAUDE.md if none exists."""
     zen_dir = Path.cwd() / ".zen"
     zen_dir.mkdir(exist_ok=True)
@@ -37,7 +39,7 @@ def cmd_init(args):
     print("Run 'zen <task.md>' to start.")
 
 
-def cmd_run(args):
+def cmd_run(args: Any) -> None:
     """Run the 4-phase workflow on a task file."""
     task_file = args.task_file
 
@@ -79,7 +81,7 @@ def cmd_run(args):
     core.run(task_file, flags, scout_context=args.scout_context, allowed_files=args.allowed_files)
 
 
-def cmd_swarm(args):
+def cmd_swarm(args: Any) -> None:
     """Execute multiple tasks in parallel with conflict detection."""
     from . import swarm
 
@@ -121,19 +123,15 @@ def cmd_swarm(args):
     sys.exit(0 if summary.failed == 0 else 1)
 
 
-def main():
+def main() -> None:
     # Check for subcommands first, before argparse sees the args
     if len(sys.argv) >= 2:
         cmd = sys.argv[1]
         if cmd == "init":
-            class Args:
-                pass
-            cmd_init(Args())
+            cmd_init(SimpleNamespace())
             return
         elif cmd == "eject":
-            class Args:
-                pass
-            cmd_eject(Args())
+            cmd_eject(SimpleNamespace())
             return
         elif cmd == "swarm":
             # zen swarm <task1.md> [task2.md ...] [--workers N] [--verbose]

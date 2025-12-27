@@ -131,29 +131,33 @@ def format_status_block(
     return lines
 
 
-# Track previous line count for clearing
-_prev_line_count = 0
+def print_status_block(lines: List[str], prev_line_count: int = 0, is_tty: bool = True) -> int:
+    """Print status block, clearing previous output.
 
+    Args:
+        lines: Lines to print
+        prev_line_count: Number of lines from previous call (for clearing)
+        is_tty: Whether output is a TTY (enables ANSI escape codes)
 
-def print_status_block(lines: List[str], is_tty: bool = True):
-    """Print status block, clearing previous output."""
-    global _prev_line_count
-
+    Returns:
+        Number of lines printed (pass to next call as prev_line_count)
+    """
     if is_tty:
         # Move up and clear previous lines
-        if _prev_line_count > 0:
-            sys.stdout.write(f"\033[{_prev_line_count}A")
+        if prev_line_count > 0:
+            sys.stdout.write(f"\033[{prev_line_count}A")
 
         # Print new lines
         for line in lines:
             sys.stdout.write(f"\r{line}\033[K\n")
         sys.stdout.flush()
 
-        _prev_line_count = len(lines)
+        return len(lines)
     else:
         # Non-TTY: just print summary line
         if lines:
             print(lines[-1])
+        return 0
 
 
 # ============================================================================
@@ -599,9 +603,8 @@ class SwarmDispatcher:
                 conflict_msg += f"[CONFLICT] {file_path} targeted by: {', '.join(tasks)}\n"
             raise ValueError(conflict_msg.rstrip())
 
-        # Reset status display state
-        global _prev_line_count
-        _prev_line_count = 0
+        # Status display state (used by monitor thread via nonlocal)
+        status_line_count = 0
 
         # Show startup message
         print(f"[SWARM] Starting {len(self.config.tasks)} tasks with {self.config.workers} workers...")
@@ -640,7 +643,7 @@ class SwarmDispatcher:
 
         def status_monitor():
             """Background thread that polls worker logs and updates status."""
-            nonlocal max_completed_seen
+            nonlocal max_completed_seen, status_line_count
             while not stop_monitoring.wait(STATUS_UPDATE_INTERVAL):
                 # Collect status from all workers
                 worker_statuses = []
@@ -671,7 +674,7 @@ class SwarmDispatcher:
                 lines = format_status_block(
                     completed_count, total_tasks, active, total_cost, worker_statuses
                 )
-                print_status_block(lines, is_tty)
+                status_line_count = print_status_block(lines, status_line_count, is_tty)
 
         # Start monitoring thread (unless verbose mode)
         monitor_thread = None

@@ -111,7 +111,7 @@ class TestGetChangedFilenames:
         from pathlib import Path
         from unittest.mock import Mock
 
-        mock_run.side_effect = Exception("git not found")
+        mock_run.side_effect = OSError("git not found")
 
         project_root = Path("/fake/project")
         mock_backup_dir = Mock(spec=Path)
@@ -136,7 +136,7 @@ class TestGetChangedFilenames:
         from pathlib import Path
         from unittest.mock import Mock
 
-        mock_run.side_effect = Exception("git not found")
+        mock_run.side_effect = OSError("git not found")
 
         project_root = Path("/fake/project")
         mock_backup_dir = Mock(spec=Path)
@@ -206,7 +206,7 @@ class TestShouldSkipJudgeGitOperations:
         """Git exception should require judge (safe default)."""
         from zen_mode.judge import should_skip_judge_ctx
 
-        mock_is_repo.side_effect = Exception("git not found")
+        mock_is_repo.side_effect = OSError("git not found")
         ctx = self._make_mock_ctx(tmp_path)
 
         # Exception propagates, causing default False behavior
