@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Optional, List
+from typing import Callable, List, Optional
 
 from zen_mode import git
 from zen_mode.claude import run_claude
@@ -110,7 +110,7 @@ End with: FIXES_COMPLETE or FIXES_BLOCKED: <reason>
 # -----------------------------------------------------------------------------
 # Skip Judge Logic
 # -----------------------------------------------------------------------------
-def should_skip_judge_ctx(ctx: Context, log_fn: Optional[callable] = None) -> bool:
+def should_skip_judge_ctx(ctx: Context, log_fn: Optional[Callable[[str], None]] = None) -> bool:
     """Determine if judge phase can be skipped.
 
     Args:

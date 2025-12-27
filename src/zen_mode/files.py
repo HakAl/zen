@@ -7,7 +7,7 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
-from typing import Optional, Set
+from typing import Callable, Optional, Set
 
 
 # Directories to ignore during linting and file scanning
@@ -154,7 +154,7 @@ def write_file(path: Path, content: str, work_dir: Optional[Path] = None) -> Non
             raise OSError(f"Failed to write {path}: {e}")
 
 
-def backup_file(path: Path, backup_dir: Path, project_root: Path, log_fn: Optional[callable] = None) -> None:
+def backup_file(path: Path, backup_dir: Path, project_root: Path, log_fn: Optional[Callable[[str], None]] = None) -> None:
     """Create a backup of a file before modification."""
     if not path.exists():
         return
