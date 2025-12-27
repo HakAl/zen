@@ -955,17 +955,18 @@ class TestLoadConfig:
 
         assert config is None
 
-    def test_invalid_json_returns_none(self, tmp_path, monkeypatch, capsys):
-        """Invalid JSON returns None and prints warning."""
+    def test_invalid_json_returns_none(self, tmp_path, monkeypatch, caplog):
+        """Invalid JSON returns None and logs warning."""
+        import logging
         monkeypatch.chdir(tmp_path)
         config_file = tmp_path / "bad.json"
         config_file.write_text('{"invalid json')
 
-        config = load_config(str(config_file))
+        with caplog.at_level(logging.WARNING, logger="zen_mode"):
+            config = load_config(str(config_file))
 
         assert config is None
-        captured = capsys.readouterr()
-        assert "Warning" in captured.err
+        assert "Could not load config" in caplog.text
 
     def test_no_config_returns_none(self, tmp_path, monkeypatch):
         """No config file in directory returns None."""

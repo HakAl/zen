@@ -2,16 +2,19 @@
 Zen Lint: Universal "Lazy Coder" Detector.
 Scans for forbidden patterns (TODO, FIXME, SHIM).
 """
-import os
-import sys
-import re
-import json
 import fnmatch
 import ipaddress
-from pathlib import Path
+import json
+import logging
+import os
+import re
+import sys
 from dataclasses import dataclass, field
-from typing import List, Tuple, Dict, Optional, Set
 from io import StringIO
+from pathlib import Path
+from typing import Dict, List, Optional, Set, Tuple
+
+logger = logging.getLogger(__name__)
 
 # Import shared utilities
 from zen_mode.files import IGNORE_DIRS, IGNORE_FILES, BINARY_EXTS
@@ -490,7 +493,7 @@ def check_file(path: str, min_severity: str = "LOW", config: Optional[Dict] = No
                     })
 
     except Exception as e:
-        print(f"Error scanning {path}: {e}", file=sys.stderr)
+        logger.error(f"Error scanning {path}: {e}")
 
     return violations
 
@@ -509,7 +512,7 @@ def load_config(config_path: Optional[str]) -> Optional[Dict]:
             with open(config_path) as f:
                 return json.load(f)
         except Exception as e:
-            print(f"Warning: Could not load config {config_path}: {e}", file=sys.stderr)
+            logger.warning(f"Could not load config {config_path}: {e}")
 
     return None
 

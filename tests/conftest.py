@@ -2,8 +2,22 @@
 Pytest configuration for zen tests.
 Auto-patches run_claude to prevent accidental API calls during tests.
 """
+import logging
 import pytest
 from unittest.mock import patch
+
+
+@pytest.fixture(autouse=True)
+def configure_logging():
+    """Configure logging for tests so log messages are captured."""
+    from zen_mode.cli import setup_logging
+    setup_logging(verbose=True)
+    # Enable propagation so caplog can capture logs
+    logger = logging.getLogger("zen_mode")
+    logger.propagate = True
+    yield
+    # Clean up handlers after test to avoid accumulation
+    logger.handlers.clear()
 
 
 class AccidentalAPICallError(Exception):

@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import fnmatch
+import logging
 import re
 import shutil
 import tempfile
 import time
 from pathlib import Path
 from typing import Callable, Optional, Set
+
+logger = logging.getLogger(__name__)
 
 
 # Directories to ignore during linting and file scanning
@@ -241,4 +244,4 @@ def log(msg: str, log_file: Path, work_dir: Path) -> None:
     line = f"[{ts}] {msg}"
     with log_file.open("a", encoding="utf-8") as f:
         f.write(line + "\n")
-    print(f"  {msg}")
+    logger.info(msg)

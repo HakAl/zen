@@ -1,9 +1,12 @@
 """Judge phase: Architectural review of implementation."""
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 from typing import Callable, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from zen_mode import git
 from zen_mode.claude import run_claude
@@ -252,7 +255,7 @@ def phase_judge_ctx(ctx: Context) -> None:
         write_file(judge_feedback_file, feedback, ctx.work_dir)
 
         for line in feedback.splitlines()[:10]:
-            print(f"    {line}")
+            logger.info(f"    {line}")
 
         if loop >= MAX_JUDGE_LOOPS:
             _log_ctx(ctx, "[ESCALATE_TO_HUMAN] Max judge loops reached. Manual review required.")
@@ -288,7 +291,7 @@ def phase_judge_ctx(ctx: Context) -> None:
         if not passed:
             _log_ctx(ctx, "[JUDGE_FIX] Lint failed after fixes.")
             for line in lint_out.splitlines()[:10]:
-                print(f"    {line}")
+                logger.info(f"    {line}")
             sys.exit(1)
 
         # Re-run verify
