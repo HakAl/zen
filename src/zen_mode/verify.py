@@ -15,6 +15,7 @@ from typing import Optional, Tuple
 
 from zen_mode import linter
 from zen_mode.claude import run_claude
+from zen_mode.context import Context
 from zen_mode.config import (
     MODEL_EYES,
     MODEL_HANDS,
@@ -22,6 +23,7 @@ from zen_mode.config import (
     TIMEOUT_FIX,
     MAX_FIX_ATTEMPTS,
     MAX_TEST_OUTPUT_PROMPT,
+    MAX_TEST_OUTPUT_RAW,
     PARSE_TEST_THRESHOLD,
     PROJECT_ROOT,
     WORK_DIR,
@@ -78,6 +80,11 @@ LOG_FILE = WORK_DIR / "log.md"
 def _log(msg: str) -> None:
     """Log message using config globals."""
     log(msg, LOG_FILE, WORK_DIR)
+
+
+def _log_ctx(ctx: Context, msg: str) -> None:
+    """Log using context's log file."""
+    log(msg, ctx.log_file, ctx.work_dir)
 
 
 def _run_claude(prompt: str, model: str, *, phase: str = "unknown", timeout: Optional[int] = None) -> Optional[str]:
@@ -368,7 +375,9 @@ End with exactly one of:
         _log("[VERIFY] Agent did not write test output file.")
         return VerifyState.ERROR, ""
 
-    test_output = read_file(TEST_OUTPUT_FILE)
+    # Size-limited read to prevent OOM from huge test output
+    with open(TEST_OUTPUT_FILE, "r", encoding="utf-8", errors="replace") as f:
+        test_output = f.read(MAX_TEST_OUTPUT_RAW)
 
     # Determine state from output markers and test results
     if "TESTS_NONE" in output or detect_no_tests(test_output):
@@ -518,4 +527,245 @@ def verify_and_fix() -> bool:
             break
 
     _log(f"[VERIFY] Failed after {MAX_FIX_ATTEMPTS} fix attempts.")
+    return False
+
+
+# -----------------------------------------------------------------------------
+# Context-based API (preferred for new code)
+# -----------------------------------------------------------------------------
+def phase_verify_ctx(ctx: Context) -> Tuple[VerifyState, str]:
+    """
+    Run tests once, no fixing. Returns (state, raw_output).
+
+    Uses MODEL_EYES (haiku) - only runs tests, doesn't fix.
+    Context-based version for testability.
+    """
+    _log_ctx(ctx, "\n[VERIFY] Running tests...")
+
+    # Ensure work dir exists
+    ctx.work_dir.mkdir(parents=True, exist_ok=True)
+
+    # Pre-check: detect project runtime and verify it's installed
+    runtime, available = detect_project_runtime()
+    if not available:
+        _log_ctx(ctx, f"[VERIFY] Runtime '{runtime}' not installed, skipping tests.")
+        return VerifyState.RUNTIME_MISSING, f"Runtime '{runtime}' not found"
+
+    # Get plan context for intelligent test selection
+    plan = read_file(ctx.plan_file) if ctx.plan_file.exists() else "[No plan available]"
+
+    prompt = f"""<task>
+Verify the implementation by running relevant tests.
+</task>
+
+<context>
+Plan that was executed:
+{plan[:2000]}
+</context>
+
+<actions>
+1. Based on the plan, run tests for what was implemented
+2. Use minimal output (e.g., pytest -q --tb=short)
+3. If the plan created new tests, focus on those
+4. If unsure, run the project's minimal test suite
+5. Write test output to: {TEST_OUTPUT_PATH_STR}
+</actions>
+
+<rules>
+- Focus on testing what the PLAN implemented, not all changed files
+- Avoid running unrelated tests with pre-existing failures
+- Do NOT attempt to fix any failures
+- Do NOT re-run tests
+- Just run tests once and report results
+</rules>
+
+<output>
+End with exactly one of:
+- TESTS_PASS (all tests passed)
+- TESTS_FAIL (one or more failures)
+- TESTS_NONE (no tests found)
+- TESTS_ERROR (could not run tests)
+</output>"""
+
+    output = run_claude(
+        prompt,
+        model=MODEL_EYES,
+        phase="verify",
+        project_root=ctx.project_root,
+        log_fn=lambda msg: _log_ctx(ctx, msg),
+        cost_callback=ctx.record_cost,
+        timeout=TIMEOUT_VERIFY,
+    )
+
+    if not output:
+        _log_ctx(ctx, "[VERIFY] No output from agent (timeout or error).")
+        raise VerifyTimeout("Claude did not respond during verification. Please retry.")
+
+    # Check for test output file
+    if not ctx.test_output_file.exists():
+        _log_ctx(ctx, "[VERIFY] Agent did not write test output file.")
+        return VerifyState.ERROR, ""
+
+    # Size-limited read to prevent OOM from huge test output
+    with open(ctx.test_output_file, "r", encoding="utf-8", errors="replace") as f:
+        test_output = f.read(MAX_TEST_OUTPUT_RAW)
+
+    # Determine state from output markers and test results
+    if "TESTS_NONE" in output or detect_no_tests(test_output):
+        return VerifyState.NONE, test_output
+
+    if "TESTS_ERROR" in output:
+        return VerifyState.ERROR, test_output
+
+    if "TESTS_PASS" in output:
+        # Verify it looks like real test output
+        if verify_test_output(test_output) or not test_output.strip():
+            return VerifyState.PASS, test_output
+
+    if "TESTS_FAIL" in output:
+        return VerifyState.FAIL, test_output
+
+    # Fallback: check test output directly
+    failure_count = extract_failure_count(test_output)
+    if failure_count is not None and failure_count > 0:
+        return VerifyState.FAIL, test_output
+
+    if verify_test_output(test_output):
+        return VerifyState.PASS, test_output
+
+    # Can't determine state
+    return VerifyState.ERROR, test_output
+
+
+def phase_fix_tests_ctx(ctx: Context, test_output: str, attempt: int) -> FixResult:
+    """
+    Fix failing tests based on test output. Returns APPLIED or BLOCKED.
+
+    Uses MODEL_HANDS (sonnet) for code changes.
+    Context-based version for testability.
+    """
+    _log_ctx(ctx, f"[FIX] Analyzing failures (attempt {attempt})...")
+
+    # Parse test output for concise summary
+    parsed = parse_test_output(test_output)
+
+    # Escape hatch: if parse returned nothing useful
+    if not parsed or not parsed.strip():
+        parsed = truncate_preserve_tail(test_output, MAX_TEST_OUTPUT_PROMPT)
+    if not parsed or not parsed.strip():
+        parsed = "Test output too large or unparseable. See .zen/test_output.txt"
+
+    # Extract filenames for context
+    filenames = extract_filenames(test_output)
+    files_context = "\n".join(f"- {f}" for f in filenames[:10]) if filenames else "See tracebacks above"
+
+    # Get plan for context
+    plan = read_file(ctx.plan_file) if ctx.plan_file.exists() else "[No plan file]"
+
+    # Build retry hint
+    retry_hint = ""
+    if attempt > 1:
+        retry_hint = f"\n\nThis is retry #{attempt} - try a DIFFERENT approach than before."
+
+    prompt = f"""<task>
+Fix the failing tests.{retry_hint}
+</task>
+
+<test_failures>
+{parsed}
+</test_failures>
+
+<files_to_check>
+{files_context}
+</files_to_check>
+
+<context>
+Plan that was executed:
+{plan[:2000]}
+</context>
+
+<rules>
+- Prefer modifying implementation code over test files
+- If you modify a test, explain why the original assertion was incorrect
+- Do NOT run tests - verification happens in a separate phase
+- Do NOT add features or refactor unrelated code
+</rules>
+
+<output>
+End with exactly one of:
+- FIXES_APPLIED (made changes to fix the failures)
+- FIXES_BLOCKED: <reason> (cannot fix, explain why)
+</output>"""
+
+    output = run_claude(
+        prompt,
+        model=MODEL_HANDS,
+        phase="fix_tests",
+        project_root=ctx.project_root,
+        log_fn=lambda msg: _log_ctx(ctx, msg),
+        cost_callback=ctx.record_cost,
+        timeout=TIMEOUT_FIX,
+    )
+
+    if not output:
+        _log_ctx(ctx, "[FIX] No output from agent.")
+        return FixResult.BLOCKED
+
+    if "FIXES_BLOCKED" in output:
+        _log_ctx(ctx, "[FIX] Agent reports fixes blocked.")
+        return FixResult.BLOCKED
+
+    if "FIXES_APPLIED" in output:
+        _log_ctx(ctx, "[FIX] Fixes applied.")
+        return FixResult.APPLIED
+
+    # Assume applied if we got output without explicit block
+    _log_ctx(ctx, "[FIX] Assuming fixes applied (no explicit marker).")
+    return FixResult.APPLIED
+
+
+def verify_and_fix_ctx(ctx: Context) -> bool:
+    """
+    Run verify/fix cycle. Returns True if tests pass or no tests exist.
+
+    Context-based version for testability.
+    Orchestrates:
+    1. phase_verify_ctx (haiku) - just run tests
+    2. phase_fix_tests_ctx (sonnet) - fix failures if any
+    3. Repeat up to MAX_FIX_ATTEMPTS times
+    """
+    for attempt in range(MAX_FIX_ATTEMPTS + 1):
+        state, output = phase_verify_ctx(ctx)
+
+        if state == VerifyState.PASS:
+            _log_ctx(ctx, "[VERIFY] Passed.")
+            return True
+
+        if state == VerifyState.NONE:
+            _log_ctx(ctx, "[VERIFY] No tests found, skipping verification.")
+            return True
+
+        if state == VerifyState.RUNTIME_MISSING:
+            _log_ctx(ctx, "[VERIFY] Runtime not installed, skipping verification.")
+            return True
+
+        if state == VerifyState.ERROR:
+            _log_ctx(ctx, "[VERIFY] Test runner error.")
+            return False
+
+        # state == FAIL
+        if attempt < MAX_FIX_ATTEMPTS:
+            _log_ctx(ctx, f"[FIX] Attempt {attempt + 1}/{MAX_FIX_ATTEMPTS}")
+            result = phase_fix_tests_ctx(ctx, output, attempt + 1)
+
+            if result == FixResult.BLOCKED:
+                _log_ctx(ctx, "[FIX] Blocked - cannot proceed.")
+                return False
+
+            _log_ctx(ctx, "[FIX] Fix applied, re-verifying...")
+        else:
+            # Last attempt failed, no more retries
+            break
+
+    _log_ctx(ctx, f"[VERIFY] Failed after {MAX_FIX_ATTEMPTS} fix attempts.")
     return False

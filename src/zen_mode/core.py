@@ -21,7 +21,7 @@ from zen_mode.judge import phase_judge_ctx, should_skip_judge_ctx
 from zen_mode.plan import phase_plan_ctx
 from zen_mode.scout import phase_scout_ctx
 from zen_mode.triage import parse_triage, should_fast_track, generate_synthetic_plan
-from zen_mode.verify import verify_and_fix, project_has_tests, VerifyTimeout
+from zen_mode.verify import verify_and_fix_ctx, project_has_tests, VerifyTimeout
 
 # -----------------------------------------------------------------------------
 # Derived Paths (from config)
@@ -162,6 +162,10 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
         # Scout phase
         if scout_context:
             scout_path = Path(scout_context)
+            resolved_scout = scout_path.resolve()
+            if not resolved_scout.is_relative_to(PROJECT_ROOT.resolve()):
+                print(f"ERROR: Scout context file must be within project directory: {scout_context}")
+                sys.exit(1)
             if not scout_path.exists():
                 print(f"ERROR: Scout context file not found: {scout_context}")
                 sys.exit(1)
@@ -190,7 +194,7 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
             elif not project_has_tests():
                 _log("[VERIFY] Skipped (no test files in project)")
                 fast_track_succeeded = True
-            elif verify_and_fix():
+            elif verify_and_fix_ctx(ctx):
                 _log("[TRIAGE] Fast Track verified. Skipping Judge.")
                 fast_track_succeeded = True
             else:
@@ -212,7 +216,7 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
                 _log("[VERIFY] Skipped (--skip-verify flag)")
             elif not project_has_tests():
                 _log("[VERIFY] Skipped (no test files in project)")
-            elif not verify_and_fix():
+            elif not verify_and_fix_ctx(ctx):
                 sys.exit(1)
 
             if not skip_judge and not should_skip_judge_ctx(ctx, log_fn=_log):

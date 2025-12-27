@@ -11,6 +11,7 @@ from zen_mode.claude import run_claude
 from zen_mode.config import MODEL_EYES
 from zen_mode.context import Context
 from zen_mode.files import read_file, write_file, log
+from zen_mode import ratchet
 
 
 # -----------------------------------------------------------------------------
@@ -358,6 +359,15 @@ def phase_scout_ctx(ctx: Context) -> None:
             ctx.scout_file,
             targeted_files,
             ctx.project_root,
+            log_fn=lambda msg: _log_ctx(ctx, msg)
+        )
+
+    # Capture lint baseline for ratchet model (allow pre-existing violations)
+    if targeted_files:
+        full_paths = [str(ctx.project_root / f) for f in targeted_files]
+        ratchet.capture_baseline(
+            full_paths,
+            ctx.baseline_file,
             log_fn=lambda msg: _log_ctx(ctx, msg)
         )
 

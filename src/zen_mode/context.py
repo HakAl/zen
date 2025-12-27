@@ -23,6 +23,7 @@ class Context:
     _notes_file: Optional[Path] = field(default=None, repr=False)
     _backup_dir: Optional[Path] = field(default=None, repr=False)
     _test_output_file: Optional[Path] = field(default=None, repr=False)
+    _baseline_file: Optional[Path] = field(default=None, repr=False)
 
     @property
     def scout_file(self) -> Path:
@@ -59,6 +60,12 @@ class Context:
         if self._test_output_file is None:
             self._test_output_file = self.work_dir / "test_output.txt"
         return self._test_output_file
+
+    @property
+    def baseline_file(self) -> Path:
+        if self._baseline_file is None:
+            self._baseline_file = self.work_dir / "lint_baseline.json"
+        return self._baseline_file
 
     def record_cost(self, phase: str, cost: float, tokens: Dict[str, int]) -> None:
         """Record cost and tokens for a phase."""

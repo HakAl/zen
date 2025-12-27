@@ -48,7 +48,7 @@ INSTRUCTION: Add a comment at line 10
     @patch('zen_mode.core.phase_scout_ctx')
     @patch('zen_mode.core.phase_plan_ctx')
     @patch('zen_mode.core.phase_implement_ctx')
-    @patch('zen_mode.core.verify_and_fix')
+    @patch('zen_mode.core.verify_and_fix_ctx')
     @patch('zen_mode.core.should_skip_judge_ctx')
     @patch('zen_mode.core.run_claude')
     def test_escalation_clears_plan_on_verify_failure(
@@ -111,7 +111,7 @@ INSTRUCTION: Add a comment at line 10
     @patch('zen_mode.core.phase_scout_ctx')
     @patch('zen_mode.core.phase_plan_ctx')
     @patch('zen_mode.core.phase_implement_ctx')
-    @patch('zen_mode.core.verify_and_fix')
+    @patch('zen_mode.core.verify_and_fix_ctx')
     @patch('zen_mode.core.should_skip_judge_ctx')
     @patch('zen_mode.core.run_claude')
     def test_escalation_clears_completion_markers(
@@ -188,7 +188,7 @@ class TestFastTrackNoEscalation:
     @patch('zen_mode.core.phase_scout_ctx')
     @patch('zen_mode.core.phase_plan_ctx')
     @patch('zen_mode.core.phase_implement_ctx')
-    @patch('zen_mode.core.verify_and_fix')
+    @patch('zen_mode.core.verify_and_fix_ctx')
     @patch('zen_mode.core.run_claude')
     def test_successful_fast_track_skips_planner(
         self,
