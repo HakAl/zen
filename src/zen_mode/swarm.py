@@ -212,10 +212,14 @@ def expand_targets(targets: List[str], project_root: Path) -> Set[Path]:
         try:
             matches = list(project_root.glob(target))
             if matches:
-                expanded.update(matches)
+                # Filter to paths within project_root (blocks ../ traversal)
+                for m in matches:
+                    if m.resolve().is_relative_to(project_root.resolve()):
+                        expanded.add(m)
             elif pattern_path.exists():
-                # If no glob matches but literal path exists, add it
-                expanded.add(pattern_path)
+                # If no glob matches but literal path exists, add it if within project
+                if pattern_path.resolve().is_relative_to(project_root.resolve()):
+                    expanded.add(pattern_path)
         except (NotImplementedError, ValueError):
             # Skip invalid glob patterns
             continue
