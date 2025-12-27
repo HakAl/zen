@@ -174,7 +174,7 @@ SUPPRESS_PATTERNS = {
     ';': re.compile(r";\s*(?:zen)?lint:\s*(ignore|disable)(?:\s+([A-Z_]+))?\b", re.IGNORECASE),
 }
 
-def get_suppression_match(line: str, ext: str):
+def get_suppression_match(line: str, ext: str) -> Optional[re.Match[str]]:
     """Check for lint suppression comment based on language."""
     syntax = LANG_SYNTAX.get(ext)
     if syntax and syntax[0]:

@@ -53,6 +53,8 @@ class TestNodeProject:
             cwd=project,
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=120,
             shell=(os.name == "nt")
         )
@@ -67,6 +69,8 @@ class TestNodeProject:
             cwd=node_project,
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=60,
             shell=(os.name == "nt")
         )
@@ -91,6 +95,8 @@ test('intentional failure', () => {
             capture_output=True,
             shell=(os.name == "nt"),
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=60
         )
         # Non-zero exit code is the reliable failure signal
@@ -117,6 +123,8 @@ class TestGoProject:
             cwd=go_project,
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=60
         )
         assert result.returncode == 0
@@ -142,6 +150,8 @@ func TestIntentionalFailure(t *testing.T) {
             cwd=go_project,
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=60
         )
         assert result.returncode != 0
@@ -171,6 +181,8 @@ class TestJavaProject:
             cwd=java_project,
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=180,
             shell=(os.name == "nt")  # Windows needs shell for gradlew.bat
         )
@@ -200,6 +212,8 @@ class TestJavaProject:
             cwd=java_project,
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=180,
             shell=(os.name == "nt")
         )
@@ -225,6 +239,8 @@ class TestCSharpProject:
             cwd=project,
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=120
         )
         if result.returncode != 0:
@@ -238,6 +254,8 @@ class TestCSharpProject:
             cwd=csharp_project,
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=120
         )
         assert result.returncode == 0
@@ -269,6 +287,8 @@ public class CalculatorTestsOriginal"""
             cwd=csharp_project,
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=120
         )
         assert result.returncode != 0
