@@ -7,8 +7,9 @@ import re
 import shutil
 import tempfile
 import time
+from functools import lru_cache
 from pathlib import Path
-from typing import Callable, Optional, Set
+from typing import Callable, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -223,6 +224,22 @@ def get_full_constitution(project_root: Path, *sections: str) -> str:
     Returns:
         Combined constitution string with zen defaults and project rules.
     """
+    # Use cached helper with hashable args (str path, tuple of sections)
+    return _get_full_constitution_cached(str(project_root), sections)
+
+
+@lru_cache(maxsize=4)
+def _get_full_constitution_cached(project_root_str: str, sections: Tuple[str, ...]) -> str:
+    """Cached implementation of get_full_constitution.
+
+    Args:
+        project_root_str: String path to project root (hashable)
+        sections: Tuple of section names (hashable)
+
+    Returns:
+        Combined constitution string.
+    """
+    project_root = Path(project_root_str)
     zen_rules = load_constitution(*sections)
 
     # Prefer CLAUDE.md, fall back to AGENTS.md

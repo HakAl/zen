@@ -48,13 +48,15 @@ INSTRUCTION: Add a comment at line 10
     @patch('zen_mode.core.phase_scout_ctx')
     @patch('zen_mode.core.phase_plan_ctx')
     @patch('zen_mode.core.phase_implement_ctx')
-    @patch('zen_mode.core.verify_and_fix_ctx')
+    @patch('zen_mode.core.verify_and_fix')
+    @patch('zen_mode.core.project_has_tests')
     @patch('zen_mode.core.should_skip_judge_ctx')
     @patch('zen_mode.core.run_claude')
     def test_escalation_clears_plan_on_verify_failure(
         self,
         mock_run_claude,
         mock_skip_judge,
+        mock_has_tests,
         mock_verify,
         mock_implement,
         mock_plan,
@@ -75,11 +77,9 @@ INSTRUCTION: Add a comment at line 10
         task_file = project_root / "task.md"
         task_file.write_text("# Test task")
 
-        # Monkeypatch config
+        # Monkeypatch config - only PROJECT_ROOT needed (WORK_DIR is local now)
         monkeypatch.setattr('zen_mode.core.PROJECT_ROOT', project_root)
-        monkeypatch.setattr('zen_mode.core.WORK_DIR', work_dir)
         monkeypatch.setattr('zen_mode.config.PROJECT_ROOT', project_root)
-        monkeypatch.setattr('zen_mode.config.WORK_DIR', work_dir)
 
         # Setup scout to return fast-track output
         def scout_side_effect(ctx):
@@ -96,6 +96,7 @@ INSTRUCTION: Add a comment at line 10
         mock_plan.side_effect = plan_side_effect
 
         # First verify fails (fast track), second succeeds (after planner)
+        mock_has_tests.return_value = True  # Project has tests, so verify_and_fix will be called
         mock_verify.side_effect = [False, True]
         mock_skip_judge.return_value = True
         mock_run_claude.return_value = "Summary done"
@@ -111,13 +112,15 @@ INSTRUCTION: Add a comment at line 10
     @patch('zen_mode.core.phase_scout_ctx')
     @patch('zen_mode.core.phase_plan_ctx')
     @patch('zen_mode.core.phase_implement_ctx')
-    @patch('zen_mode.core.verify_and_fix_ctx')
+    @patch('zen_mode.core.verify_and_fix')
+    @patch('zen_mode.core.project_has_tests')
     @patch('zen_mode.core.should_skip_judge_ctx')
     @patch('zen_mode.core.run_claude')
     def test_escalation_clears_completion_markers(
         self,
         mock_run_claude,
         mock_skip_judge,
+        mock_has_tests,
         mock_verify,
         mock_implement,
         mock_plan,
@@ -137,10 +140,9 @@ INSTRUCTION: Add a comment at line 10
         task_file = project_root / "task.md"
         task_file.write_text("# Test task")
 
+        # Monkeypatch config - only PROJECT_ROOT needed (WORK_DIR is local now)
         monkeypatch.setattr('zen_mode.core.PROJECT_ROOT', project_root)
-        monkeypatch.setattr('zen_mode.core.WORK_DIR', work_dir)
         monkeypatch.setattr('zen_mode.config.PROJECT_ROOT', project_root)
-        monkeypatch.setattr('zen_mode.config.WORK_DIR', work_dir)
 
         def scout_side_effect(ctx):
             scout_file = ctx.work_dir / "scout.md"
@@ -167,6 +169,7 @@ INSTRUCTION: Add a comment at line 10
             ctx.plan_file.write_text("## Step 1: New plan step\n")
         mock_plan.side_effect = plan_side_effect
 
+        mock_has_tests.return_value = True  # Project has tests, so verify_and_fix will be called
         mock_verify.side_effect = [False, True]
         mock_skip_judge.return_value = True
         mock_run_claude.return_value = "Summary"
@@ -188,7 +191,7 @@ class TestFastTrackNoEscalation:
     @patch('zen_mode.core.phase_scout_ctx')
     @patch('zen_mode.core.phase_plan_ctx')
     @patch('zen_mode.core.phase_implement_ctx')
-    @patch('zen_mode.core.verify_and_fix_ctx')
+    @patch('zen_mode.core.verify_and_fix')
     @patch('zen_mode.core.run_claude')
     def test_successful_fast_track_skips_planner(
         self,
@@ -211,10 +214,9 @@ class TestFastTrackNoEscalation:
         task_file = project_root / "task.md"
         task_file.write_text("# Test task")
 
+        # Monkeypatch config - only PROJECT_ROOT needed (WORK_DIR is local now)
         monkeypatch.setattr('zen_mode.core.PROJECT_ROOT', project_root)
-        monkeypatch.setattr('zen_mode.core.WORK_DIR', work_dir)
         monkeypatch.setattr('zen_mode.config.PROJECT_ROOT', project_root)
-        monkeypatch.setattr('zen_mode.config.WORK_DIR', work_dir)
 
         def scout_side_effect(ctx):
             scout_file = ctx.work_dir / "scout.md"

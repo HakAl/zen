@@ -10,6 +10,7 @@ from typing import Callable, Dict, List, Optional, Set
 from zen_mode.claude import run_claude
 from zen_mode.config import MODEL_EYES
 from zen_mode.context import Context
+from zen_mode.exceptions import ScoutError
 from zen_mode.files import read_file, write_file, log
 from zen_mode import ratchet
 
@@ -345,7 +346,7 @@ def phase_scout_ctx(ctx: Context) -> None:
 
     if not output:
         _log_ctx(ctx, "[SCOUT] Failed.")
-        sys.exit(1)
+        raise ScoutError("Scout phase failed - no output from Claude")
 
     # Fallback: write output if Claude didn't
     if not ctx.scout_file.exists():

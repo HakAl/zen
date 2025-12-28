@@ -6,13 +6,15 @@ see test_git.py which consolidates all git operations with proper mocking.
 """
 import sys
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 import pytest
 
 # Import from package
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-from zen_mode.judge import _is_test_or_doc
-from zen_mode.core import _check_previous_completion, NOTES_FILE
+from zen_mode.judge import _is_test_or_doc, phase_judge_ctx
+from zen_mode.context import Context
+from zen_mode.core import _check_previous_completion
 
 
 class TestIsTestOrDoc:
@@ -80,27 +82,22 @@ class TestIsTestOrDoc:
 class TestCheckPreviousCompletion:
     """Tests for _check_previous_completion() helper function."""
 
-    def test_no_notes_file(self, tmp_path, monkeypatch):
+    def test_no_notes_file(self, tmp_path):
         """Returns False when final_notes.md doesn't exist."""
-        import zen_mode.core as core
-        monkeypatch.setattr(core, "NOTES_FILE", tmp_path / "final_notes.md")
-        assert _check_previous_completion() is False
+        notes_file = tmp_path / "final_notes.md"
+        assert _check_previous_completion(notes_file) is False
 
-    def test_notes_without_cost_summary(self, tmp_path, monkeypatch):
+    def test_notes_without_cost_summary(self, tmp_path):
         """Returns False when final_notes.md exists but has no cost summary."""
-        import zen_mode.core as core
         notes_file = tmp_path / "final_notes.md"
         notes_file.write_text("# Summary\n- Changed some files\n")
-        monkeypatch.setattr(core, "NOTES_FILE", notes_file)
-        assert _check_previous_completion() is False
+        assert _check_previous_completion(notes_file) is False
 
-    def test_notes_with_cost_summary(self, tmp_path, monkeypatch):
+    def test_notes_with_cost_summary(self, tmp_path):
         """Returns True when final_notes.md has cost summary (completed run)."""
-        import zen_mode.core as core
         notes_file = tmp_path / "final_notes.md"
         notes_file.write_text("# Summary\n- Changed files\n\n## Cost Summary\nTotal: $0.05\n")
-        monkeypatch.setattr(core, "NOTES_FILE", notes_file)
-        assert _check_previous_completion() is True
+        assert _check_previous_completion(notes_file) is True
 
 
 class TestConsecutiveRetryCheckpoint:
@@ -188,3 +185,65 @@ class TestConsecutiveRetryCheckpoint:
         else:
             consecutive_retry_steps = 0
         assert consecutive_retry_steps == 0
+
+
+class TestNonInteractiveMode:
+    """Tests for non_interactive parameter in phase_judge_ctx."""
+
+    @patch('zen_mode.judge.run_claude')
+    @patch('zen_mode.judge.git')
+    def test_non_interactive_auto_fails_on_no_response(self, mock_git, mock_run_claude, tmp_path):
+        """When non_interactive=True and judge returns None, should exit without input()."""
+        # Setup mock git
+        mock_git.is_repo.return_value = True
+        mock_git.get_changed_filenames.return_value = "file1.py"
+
+        # Setup context
+        work_dir = tmp_path / ".zen"
+        work_dir.mkdir()
+        (work_dir / "scout.md").write_text("scout content")
+        (work_dir / "plan.md").write_text("plan content")
+        (work_dir / "test_output.txt").write_text("test output")
+
+        ctx = Context(
+            project_root=tmp_path,
+            work_dir=work_dir,
+            task_file=tmp_path / "task.md",
+        )
+
+        # run_claude returns None (simulating failure)
+        mock_run_claude.return_value = None
+
+        # Should raise JudgeError without blocking on input()
+        from zen_mode.exceptions import JudgeError
+        with pytest.raises(JudgeError):
+            phase_judge_ctx(ctx, non_interactive=True)
+
+    @patch('zen_mode.judge.run_claude')
+    @patch('zen_mode.judge.git')
+    def test_non_interactive_auto_fails_on_unclear_verdict(self, mock_git, mock_run_claude, tmp_path):
+        """When non_interactive=True and judge gives unclear verdict, should exit."""
+        # Setup mock git
+        mock_git.is_repo.return_value = True
+        mock_git.get_changed_filenames.return_value = "file1.py"
+
+        # Setup context
+        work_dir = tmp_path / ".zen"
+        work_dir.mkdir()
+        (work_dir / "scout.md").write_text("scout content")
+        (work_dir / "plan.md").write_text("plan content")
+        (work_dir / "test_output.txt").write_text("test output")
+
+        ctx = Context(
+            project_root=tmp_path,
+            work_dir=work_dir,
+            task_file=tmp_path / "task.md",
+        )
+
+        # run_claude returns unclear verdict (neither APPROVED nor REJECTED)
+        mock_run_claude.return_value = "Some unclear response"
+
+        # Should raise JudgeError without blocking on input()
+        from zen_mode.exceptions import JudgeError
+        with pytest.raises(JudgeError):
+            phase_judge_ctx(ctx, non_interactive=True)

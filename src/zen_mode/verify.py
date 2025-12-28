@@ -25,9 +25,7 @@ from zen_mode.config import (
     MAX_TEST_OUTPUT_PROMPT,
     MAX_TEST_OUTPUT_RAW,
     PARSE_TEST_THRESHOLD,
-    PROJECT_ROOT,
-    WORK_DIR,
-    TEST_OUTPUT_PATH_STR,
+    WORK_DIR_NAME,
 )
 from zen_mode.files import read_file, log
 
@@ -67,36 +65,11 @@ class FixResult(Enum):
 
 
 # -----------------------------------------------------------------------------
-# Path Constants (derived from config)
+# Logging helper
 # -----------------------------------------------------------------------------
-TEST_OUTPUT_FILE = WORK_DIR / "test_output.txt"
-PLAN_FILE = WORK_DIR / "plan.md"
-LOG_FILE = WORK_DIR / "log.md"
-
-
-# -----------------------------------------------------------------------------
-# Wrappers (use config globals)
-# -----------------------------------------------------------------------------
-def _log(msg: str) -> None:
-    """Log message using config globals."""
-    log(msg, LOG_FILE, WORK_DIR)
-
-
 def _log_ctx(ctx: Context, msg: str) -> None:
     """Log using context's log file."""
     log(msg, ctx.log_file, ctx.work_dir)
-
-
-def _run_claude(prompt: str, model: str, *, phase: str = "unknown", timeout: Optional[int] = None) -> Optional[str]:
-    """Run Claude using config globals."""
-    return run_claude(
-        prompt,
-        model=model,
-        phase=phase,
-        timeout=timeout,
-        project_root=PROJECT_ROOT,
-        log_fn=_log,
-    )
 
 
 # -----------------------------------------------------------------------------
@@ -199,14 +172,18 @@ def detect_no_tests(output: str) -> bool:
     return False
 
 
-def project_has_tests() -> bool:
-    """Quick filesystem scan to detect if project has any test files."""
+def project_has_tests(project_root: Path) -> bool:
+    """Quick filesystem scan to detect if project has any test files.
+
+    Args:
+        project_root: Root directory of the project to scan
+    """
     skip_dirs = {'.git', 'node_modules', 'venv', '.venv', '__pycache__', '.zen'}
 
-    for root, dirs, files in os.walk(PROJECT_ROOT):
+    for root, dirs, files in os.walk(project_root):
         dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith('.')]
 
-        depth = len(Path(root).relative_to(PROJECT_ROOT).parts)
+        depth = len(Path(root).relative_to(project_root).parts)
         if depth > 3:
             dirs.clear()
             continue
@@ -218,9 +195,12 @@ def project_has_tests() -> bool:
     return False
 
 
-def detect_project_runtime() -> Tuple[Optional[str], bool]:
+def detect_project_runtime(project_root: Path) -> Tuple[Optional[str], bool]:
     """
     Detect project type from config files and check if runtime is available.
+
+    Args:
+        project_root: Root directory of the project to scan
 
     Returns (runtime_name, is_available). If no config detected, returns (None, True)
     to allow fallback to Python/pytest.
@@ -248,7 +228,7 @@ def detect_project_runtime() -> Tuple[Optional[str], bool]:
     ]
 
     for config_pattern, runtime in checks:
-        if list(PROJECT_ROOT.glob(config_pattern)):
+        if list(project_root.glob(config_pattern)):
             return runtime, shutil.which(runtime) is not None
 
     # No specific config found - assume Python (always available)
@@ -278,10 +258,14 @@ def extract_failure_count(output: str) -> Optional[int]:
     return None
 
 
-def parse_test_output(raw_output: str) -> str:
+def parse_test_output_ctx(ctx: Context, raw_output: str) -> str:
     """
     Use Haiku to extract actionable failure info from verbose test output.
     Reduces token count for Sonnet fix prompts.
+
+    Args:
+        ctx: Execution context
+        raw_output: Raw test output to parse
     """
     if len(raw_output) < PARSE_TEST_THRESHOLD:
         return raw_output
@@ -299,246 +283,31 @@ Keep under 400 words. Preserve exact error messages.
 """ + raw_output[:4000] + """
 </test_output>"""
 
-    parsed = _run_claude(prompt, model=MODEL_EYES, phase="parse_tests", timeout=45)
+    parsed = run_claude(
+        prompt,
+        model=MODEL_EYES,
+        phase="parse_tests",
+        timeout=45,
+        project_root=ctx.project_root,
+        log_fn=lambda msg: _log_ctx(ctx, msg),
+        cost_callback=ctx.record_cost,
+    )
 
     if not parsed or len(parsed) > len(raw_output):
         return truncate_preserve_tail(raw_output, MAX_TEST_OUTPUT_PROMPT)
 
-    _log(f"[PARSE] Reduced test output: {len(raw_output)} -> {len(parsed)} chars")
+    _log_ctx(ctx, f"[PARSE] Reduced test output: {len(raw_output)} -> {len(parsed)} chars")
     return parsed
 
 
 # -----------------------------------------------------------------------------
 # Phase Functions
 # -----------------------------------------------------------------------------
-def phase_verify() -> Tuple[VerifyState, str]:
+def phase_verify(ctx: Context) -> Tuple[VerifyState, str]:
     """
     Run tests once, no fixing. Returns (state, raw_output).
 
     Uses MODEL_EYES (haiku) - only runs tests, doesn't fix.
-    """
-    _log("\n[VERIFY] Running tests...")
-
-    # Ensure work dir exists
-    WORK_DIR.mkdir(parents=True, exist_ok=True)
-
-    # Pre-check: detect project runtime and verify it's installed
-    runtime, available = detect_project_runtime()
-    if not available:
-        _log(f"[VERIFY] Runtime '{runtime}' not installed, skipping tests.")
-        return VerifyState.RUNTIME_MISSING, f"Runtime '{runtime}' not found"
-
-    # Get plan context for intelligent test selection
-    plan = read_file(PLAN_FILE) if PLAN_FILE.exists() else "[No plan available]"
-
-    prompt = f"""<task>
-Verify the implementation by running relevant tests.
-</task>
-
-<context>
-Plan that was executed:
-{plan[:2000]}
-</context>
-
-<actions>
-1. Based on the plan, run tests for what was implemented
-2. Use minimal output (e.g., pytest -q --tb=short)
-3. If the plan created new tests, focus on those
-4. If unsure, run the project's minimal test suite
-5. Write test output to: {TEST_OUTPUT_PATH_STR}
-</actions>
-
-<rules>
-- Focus on testing what the PLAN implemented, not all changed files
-- Avoid running unrelated tests with pre-existing failures
-- Do NOT attempt to fix any failures
-- Do NOT re-run tests
-- Just run tests once and report results
-</rules>
-
-<output>
-End with exactly one of:
-- TESTS_PASS (all tests passed)
-- TESTS_FAIL (one or more failures)
-- TESTS_NONE (no tests found)
-- TESTS_ERROR (could not run tests)
-</output>"""
-
-    output = _run_claude(prompt, model=MODEL_EYES, phase="verify", timeout=TIMEOUT_VERIFY)
-
-    if not output:
-        _log("[VERIFY] No output from agent (timeout or error).")
-        raise VerifyTimeout("Claude did not respond during verification. Please retry.")
-
-    # Check for test output file
-    if not TEST_OUTPUT_FILE.exists():
-        _log("[VERIFY] Agent did not write test output file.")
-        return VerifyState.ERROR, ""
-
-    # Size-limited read to prevent OOM from huge test output
-    with open(TEST_OUTPUT_FILE, "r", encoding="utf-8", errors="replace") as f:
-        test_output = f.read(MAX_TEST_OUTPUT_RAW)
-
-    # Determine state from output markers and test results
-    if "TESTS_NONE" in output or detect_no_tests(test_output):
-        return VerifyState.NONE, test_output
-
-    if "TESTS_ERROR" in output:
-        return VerifyState.ERROR, test_output
-
-    if "TESTS_PASS" in output:
-        # Verify it looks like real test output
-        if verify_test_output(test_output) or not test_output.strip():
-            return VerifyState.PASS, test_output
-
-    if "TESTS_FAIL" in output:
-        return VerifyState.FAIL, test_output
-
-    # Fallback: check test output directly
-    failure_count = extract_failure_count(test_output)
-    if failure_count is not None and failure_count > 0:
-        return VerifyState.FAIL, test_output
-
-    if verify_test_output(test_output):
-        return VerifyState.PASS, test_output
-
-    # Can't determine state
-    return VerifyState.ERROR, test_output
-
-
-def phase_fix_tests(test_output: str, attempt: int) -> FixResult:
-    """
-    Fix failing tests based on test output. Returns APPLIED or BLOCKED.
-
-    Uses MODEL_HANDS (sonnet) for code changes.
-    """
-    _log(f"[FIX] Analyzing failures (attempt {attempt})...")
-
-    # Parse test output for concise summary
-    parsed = parse_test_output(test_output)
-
-    # Escape hatch: if parse returned nothing useful
-    if not parsed or not parsed.strip():
-        parsed = truncate_preserve_tail(test_output, MAX_TEST_OUTPUT_PROMPT)
-    if not parsed or not parsed.strip():
-        parsed = "Test output too large or unparseable. See .zen/test_output.txt"
-
-    # Extract filenames for context
-    filenames = extract_filenames(test_output)
-    files_context = "\n".join(f"- {f}" for f in filenames[:10]) if filenames else "See tracebacks above"
-
-    # Get plan for context
-    plan = read_file(PLAN_FILE) if PLAN_FILE.exists() else "[No plan file]"
-
-    # Build retry hint
-    retry_hint = ""
-    if attempt > 1:
-        retry_hint = f"\n\nThis is retry #{attempt} - try a DIFFERENT approach than before."
-
-    prompt = f"""<task>
-Fix the failing tests.{retry_hint}
-</task>
-
-<test_failures>
-{parsed}
-</test_failures>
-
-<files_to_check>
-{files_context}
-</files_to_check>
-
-<context>
-Plan that was executed:
-{plan[:2000]}
-</context>
-
-<rules>
-- Prefer modifying implementation code over test files
-- If you modify a test, explain why the original assertion was incorrect
-- Do NOT run tests - verification happens in a separate phase
-- Do NOT add features or refactor unrelated code
-</rules>
-
-<output>
-End with exactly one of:
-- FIXES_APPLIED (made changes to fix the failures)
-- FIXES_BLOCKED: <reason> (cannot fix, explain why)
-</output>"""
-
-    output = _run_claude(prompt, model=MODEL_HANDS, phase="fix_tests", timeout=TIMEOUT_FIX)
-
-    if not output:
-        _log("[FIX] No output from agent.")
-        return FixResult.BLOCKED
-
-    if "FIXES_BLOCKED" in output:
-        _log("[FIX] Agent reports fixes blocked.")
-        return FixResult.BLOCKED
-
-    if "FIXES_APPLIED" in output:
-        _log("[FIX] Fixes applied.")
-        return FixResult.APPLIED
-
-    # Assume applied if we got output without explicit block
-    _log("[FIX] Assuming fixes applied (no explicit marker).")
-    return FixResult.APPLIED
-
-
-def verify_and_fix() -> bool:
-    """
-    Run verify/fix cycle. Returns True if tests pass or no tests exist.
-
-    Orchestrates:
-    1. phase_verify (haiku) - just run tests
-    2. phase_fix_tests (sonnet) - fix failures if any
-    3. Repeat up to MAX_FIX_ATTEMPTS times
-    """
-    for attempt in range(MAX_FIX_ATTEMPTS + 1):
-        state, output = phase_verify()
-
-        if state == VerifyState.PASS:
-            _log("[VERIFY] Passed.")
-            return True
-
-        if state == VerifyState.NONE:
-            _log("[VERIFY] No tests found, skipping verification.")
-            return True
-
-        if state == VerifyState.RUNTIME_MISSING:
-            _log("[VERIFY] Runtime not installed, skipping verification.")
-            return True
-
-        if state == VerifyState.ERROR:
-            _log("[VERIFY] Test runner error.")
-            return False
-
-        # state == FAIL
-        if attempt < MAX_FIX_ATTEMPTS:
-            _log(f"[FIX] Attempt {attempt + 1}/{MAX_FIX_ATTEMPTS}")
-            result = phase_fix_tests(output, attempt + 1)
-
-            if result == FixResult.BLOCKED:
-                _log("[FIX] Blocked - cannot proceed.")
-                return False
-
-            _log("[FIX] Fix applied, re-verifying...")
-        else:
-            # Last attempt failed, no more retries
-            break
-
-    _log(f"[VERIFY] Failed after {MAX_FIX_ATTEMPTS} fix attempts.")
-    return False
-
-
-# -----------------------------------------------------------------------------
-# Context-based API (preferred for new code)
-# -----------------------------------------------------------------------------
-def phase_verify_ctx(ctx: Context) -> Tuple[VerifyState, str]:
-    """
-    Run tests once, no fixing. Returns (state, raw_output).
-
-    Uses MODEL_EYES (haiku) - only runs tests, doesn't fix.
-    Context-based version for testability.
     """
     _log_ctx(ctx, "\n[VERIFY] Running tests...")
 
@@ -546,13 +315,16 @@ def phase_verify_ctx(ctx: Context) -> Tuple[VerifyState, str]:
     ctx.work_dir.mkdir(parents=True, exist_ok=True)
 
     # Pre-check: detect project runtime and verify it's installed
-    runtime, available = detect_project_runtime()
+    runtime, available = detect_project_runtime(ctx.project_root)
     if not available:
         _log_ctx(ctx, f"[VERIFY] Runtime '{runtime}' not installed, skipping tests.")
         return VerifyState.RUNTIME_MISSING, f"Runtime '{runtime}' not found"
 
     # Get plan context for intelligent test selection
     plan = read_file(ctx.plan_file) if ctx.plan_file.exists() else "[No plan available]"
+
+    # Construct test output path string for prompt
+    test_output_path_str = WORK_DIR_NAME + "/test_output.txt"
 
     prompt = f"""<task>
 Verify the implementation by running relevant tests.
@@ -568,7 +340,7 @@ Plan that was executed:
 2. Use minimal output (e.g., pytest -q --tb=short)
 3. If the plan created new tests, focus on those
 4. If unsure, run the project's minimal test suite
-5. Write test output to: {TEST_OUTPUT_PATH_STR}
+5. Write test output to: {test_output_path_str}
 </actions>
 
 <rules>
@@ -637,17 +409,16 @@ End with exactly one of:
     return VerifyState.ERROR, test_output
 
 
-def phase_fix_tests_ctx(ctx: Context, test_output: str, attempt: int) -> FixResult:
+def phase_fix_tests(ctx: Context, test_output: str, attempt: int) -> FixResult:
     """
     Fix failing tests based on test output. Returns APPLIED or BLOCKED.
 
     Uses MODEL_HANDS (sonnet) for code changes.
-    Context-based version for testability.
     """
     _log_ctx(ctx, f"[FIX] Analyzing failures (attempt {attempt})...")
 
     # Parse test output for concise summary
-    parsed = parse_test_output(test_output)
+    parsed = parse_test_output_ctx(ctx, test_output)
 
     # Escape hatch: if parse returned nothing useful
     if not parsed or not parsed.strip():
@@ -724,18 +495,17 @@ End with exactly one of:
     return FixResult.APPLIED
 
 
-def verify_and_fix_ctx(ctx: Context) -> bool:
+def verify_and_fix(ctx: Context) -> bool:
     """
     Run verify/fix cycle. Returns True if tests pass or no tests exist.
 
-    Context-based version for testability.
     Orchestrates:
-    1. phase_verify_ctx (haiku) - just run tests
-    2. phase_fix_tests_ctx (sonnet) - fix failures if any
+    1. phase_verify (haiku) - just run tests
+    2. phase_fix_tests (sonnet) - fix failures if any
     3. Repeat up to MAX_FIX_ATTEMPTS times
     """
     for attempt in range(MAX_FIX_ATTEMPTS + 1):
-        state, output = phase_verify_ctx(ctx)
+        state, output = phase_verify(ctx)
 
         if state == VerifyState.PASS:
             _log_ctx(ctx, "[VERIFY] Passed.")
@@ -756,7 +526,7 @@ def verify_and_fix_ctx(ctx: Context) -> bool:
         # state == FAIL
         if attempt < MAX_FIX_ATTEMPTS:
             _log_ctx(ctx, f"[FIX] Attempt {attempt + 1}/{MAX_FIX_ATTEMPTS}")
-            result = phase_fix_tests_ctx(ctx, output, attempt + 1)
+            result = phase_fix_tests(ctx, output, attempt + 1)
 
             if result == FixResult.BLOCKED:
                 _log_ctx(ctx, "[FIX] Blocked - cannot proceed.")

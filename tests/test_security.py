@@ -2,6 +2,7 @@
 Security tests for zen-mode.
 Tests for path traversal and input sanitization.
 """
+import os
 import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -12,6 +13,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from zen_mode.core import run
+from zen_mode import claude
+from zen_mode.exceptions import ConfigError
 
 
 class TestBugPathTraversalVulnerability:
@@ -39,16 +42,16 @@ class TestBugPathTraversalVulnerability:
         mock_claude.return_value = "mocked output"
 
         # Currently this DOES NOT raise an error (demonstrating the bug)
-        # After fix, this should raise SystemExit
+        # After fix, this should raise ConfigError
         with caplog.at_level(logging.ERROR, logger="zen_mode"):
             try:
                 run(str(outside_task), flags=set())
                 # If we get here, the bug exists (no path validation)
                 pytest.fail("BUG CONFIRMED: Path traversal is allowed - no security check!")
-            except SystemExit:
+            except ConfigError as e:
                 # After fix is implemented, we should reach here
-                # Check that proper error was logged
-                assert "must be within project" in caplog.text
+                # Check that proper error message
+                assert "must be within project" in str(e)
 
     @patch('zen_mode.claude.run_claude')
     @patch('zen_mode.core.shutil.which', return_value='/usr/bin/claude')
@@ -77,9 +80,9 @@ class TestBugPathTraversalVulnerability:
                 run("../evil_task.md", flags=set())
                 # If we get here, the bug exists
                 pytest.fail("BUG CONFIRMED: ../ path traversal is allowed!")
-            except SystemExit:
+            except ConfigError as e:
                 # After fix, should get "must be within project" error
-                assert "must be within project" in caplog.text
+                assert "must be within project" in str(e)
 
     @patch('zen_mode.claude.run_claude')
     @patch('zen_mode.core.shutil.which', return_value='/usr/bin/claude')
@@ -106,10 +109,13 @@ class TestBugPathTraversalVulnerability:
         with caplog.at_level(logging.ERROR, logger="zen_mode"):
             try:
                 run("task.md", flags=set())
-            except SystemExit:
+            except ConfigError as e:
                 # Should not fail due to path validation
-                assert "must be within project" not in caplog.text
+                assert "must be within project" not in str(e)
                 # It might fail for other reasons (e.g., missing dependencies), that's ok
+            except Exception:
+                # Other exceptions are fine - we only care about path validation
+                pass
 
     @patch('zen_mode.claude.run_claude')
     @patch('zen_mode.core.shutil.which', return_value='/usr/bin/claude')
@@ -138,6 +144,69 @@ class TestBugPathTraversalVulnerability:
         with caplog.at_level(logging.ERROR, logger="zen_mode"):
             try:
                 run("tasks/subtask.md", flags=set())
-            except SystemExit:
+            except ConfigError as e:
                 # Should not fail due to path validation
-                assert "must be within project" not in caplog.text
+                assert "must be within project" not in str(e)
+            except Exception:
+                # Other exceptions are fine - we only care about path validation
+                pass
+
+
+class TestSkipPermissionsEnvVar:
+    """Tests for ZEN_SKIP_PERMISSIONS env var gating.
+
+    Note: These tests directly call the module's run_claude bypassing conftest's
+    auto-patch by using allow_real_api marker and mocking subprocess.Popen.
+    """
+
+    @pytest.mark.allow_real_api
+    @patch('zen_mode.claude.subprocess.Popen')
+    @patch('zen_mode.claude._init_claude', return_value='/usr/bin/claude')
+    def test_skip_permissions_flag_absent_by_default(self, mock_init, mock_popen, tmp_path, monkeypatch):
+        """By default, --dangerously-skip-permissions should NOT be in command."""
+        # Ensure env var is not set
+        monkeypatch.delenv("ZEN_SKIP_PERMISSIONS", raising=False)
+
+        # Mock process
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate.return_value = ('{"result": "test", "total_cost_usd": 0}', '')
+        mock_popen.return_value = mock_proc
+
+        # Reset cached claude exe
+        claude._claude_exe = None
+
+        # Call run_claude - directly import to bypass conftest patch
+        from zen_mode.claude import run_claude
+        run_claude("test prompt", "sonnet", project_root=tmp_path)
+
+        # Check command does NOT contain dangerous flag
+        call_args = mock_popen.call_args
+        cmd = call_args[0][0]
+        assert "--dangerously-skip-permissions" not in cmd
+
+    @pytest.mark.allow_real_api
+    @patch('zen_mode.claude.subprocess.Popen')
+    @patch('zen_mode.claude._init_claude', return_value='/usr/bin/claude')
+    def test_skip_permissions_flag_present_when_env_var_set(self, mock_init, mock_popen, tmp_path, monkeypatch):
+        """When ZEN_SKIP_PERMISSIONS=true, flag should be added."""
+        # Set env var
+        monkeypatch.setenv("ZEN_SKIP_PERMISSIONS", "true")
+
+        # Mock process
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate.return_value = ('{"result": "test", "total_cost_usd": 0}', '')
+        mock_popen.return_value = mock_proc
+
+        # Reset cached claude exe
+        claude._claude_exe = None
+
+        # Call run_claude - directly import to bypass conftest patch
+        from zen_mode.claude import run_claude
+        run_claude("test prompt", "sonnet", project_root=tmp_path)
+
+        # Check command DOES contain dangerous flag
+        call_args = mock_popen.call_args
+        cmd = call_args[0][0]
+        assert "--dangerously-skip-permissions" in cmd

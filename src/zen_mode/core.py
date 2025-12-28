@@ -16,31 +16,16 @@ from typing import Dict, Optional
 logger = logging.getLogger(__name__)
 
 from zen_mode.claude import run_claude
-from zen_mode.config import MODEL_EYES, WORK_DIR_NAME, PROJECT_ROOT, WORK_DIR
+from zen_mode.config import MODEL_EYES, WORK_DIR_NAME, PROJECT_ROOT
 from zen_mode.context import Context
+from zen_mode.exceptions import ZenError, ConfigError, VerifyError
 from zen_mode.files import read_file, write_file, log
 from zen_mode.implement import phase_implement_ctx
 from zen_mode.judge import phase_judge_ctx, should_skip_judge_ctx
 from zen_mode.plan import phase_plan_ctx
 from zen_mode.scout import phase_scout_ctx
 from zen_mode.triage import parse_triage, should_fast_track, generate_synthetic_plan
-from zen_mode.verify import verify_and_fix_ctx, project_has_tests, VerifyTimeout
-
-# -----------------------------------------------------------------------------
-# Derived Paths (from config)
-# -----------------------------------------------------------------------------
-SCOUT_FILE = WORK_DIR / "scout.md"
-PLAN_FILE = WORK_DIR / "plan.md"
-LOG_FILE = WORK_DIR / "log.md"
-NOTES_FILE = WORK_DIR / "final_notes.md"
-BACKUP_DIR = WORK_DIR / "backup"
-TEST_OUTPUT_FILE = WORK_DIR / "test_output.txt"
-JUDGE_FEEDBACK_FILE = WORK_DIR / "judge_feedback.md"
-
-# -----------------------------------------------------------------------------
-# Runtime state
-# -----------------------------------------------------------------------------
-ALLOWED_FILES: Optional[str] = None
+from zen_mode.verify import verify_and_fix, project_has_tests, VerifyTimeout
 
 
 # -----------------------------------------------------------------------------
@@ -81,12 +66,12 @@ def _write_cost_summary(ctx: Context) -> None:
         f.write(f"Breakdown: {breakdown}\n")
 
 
-def _check_previous_completion() -> bool:
+def _check_previous_completion(notes_file: Path) -> bool:
     """Check if previous run completed successfully."""
-    if not NOTES_FILE.exists():
+    if not notes_file.exists():
         return False
     try:
-        content = read_file(NOTES_FILE)
+        content = read_file(notes_file)
         return "## Cost Summary" in content
     except Exception:
         return False
@@ -95,7 +80,7 @@ def _check_previous_completion() -> bool:
 # -----------------------------------------------------------------------------
 # Public API
 # -----------------------------------------------------------------------------
-def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str] = None, allowed_files: Optional[str] = None) -> None:
+def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str] = None, allowed_files: Optional[str] = None, non_interactive: bool = False) -> None:
     """
     Run the Zen workflow on a task file.
 
@@ -104,55 +89,46 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
         flags: Set of flags (--reset, --retry)
         scout_context: Optional path to pre-computed scout context file
         allowed_files: Optional glob pattern for allowed files to modify
+        non_interactive: If True, skip input() prompts and fail-closed
     """
-    global WORK_DIR, SCOUT_FILE, PLAN_FILE, LOG_FILE, NOTES_FILE, BACKUP_DIR, TEST_OUTPUT_FILE, JUDGE_FEEDBACK_FILE, ALLOWED_FILES
-
-    ALLOWED_FILES = allowed_files
     flags = flags or set()
 
     task_path = Path(task_file)
     resolved_path = task_path.resolve()
     if not resolved_path.is_relative_to(PROJECT_ROOT.resolve()):
-        logger.error(f"Task file must be within project directory: {task_file}")
-        sys.exit(1)
+        raise ConfigError(f"Task file must be within project directory: {task_file}")
     if not task_path.exists():
-        logger.error(f"Task file not found: {task_file}")
-        sys.exit(1)
+        raise ConfigError(f"Task file not found: {task_file}")
 
-    # Set up paths
-    WORK_DIR = PROJECT_ROOT / WORK_DIR_NAME
-    SCOUT_FILE = WORK_DIR / "scout.md"
-    PLAN_FILE = WORK_DIR / "plan.md"
-    LOG_FILE = WORK_DIR / "log.md"
-    NOTES_FILE = WORK_DIR / "final_notes.md"
-    BACKUP_DIR = WORK_DIR / "backup"
-    TEST_OUTPUT_FILE = WORK_DIR / "test_output.txt"
-    JUDGE_FEEDBACK_FILE = WORK_DIR / "judge_feedback.md"
+    # Set up paths (local, not global)
+    work_dir = PROJECT_ROOT / WORK_DIR_NAME
+    notes_file = work_dir / "final_notes.md"
+    log_file = work_dir / "log.md"
 
     if "--reset" in flags:
-        if WORK_DIR.exists():
-            shutil.rmtree(WORK_DIR)
+        if work_dir.exists():
+            shutil.rmtree(work_dir)
         logger.info("Reset complete.")
-        WORK_DIR.mkdir(exist_ok=True)
+        work_dir.mkdir(exist_ok=True)
 
-    if "--reset" not in flags and _check_previous_completion():
+    if "--reset" not in flags and _check_previous_completion(notes_file):
         logger.info("[COMPLETE] Previous run finished successfully.")
-        logger.info(f"  → See {NOTES_FILE.relative_to(PROJECT_ROOT)} for summary")
-        logger.info("  → Use --reset to start fresh")
+        logger.info(f"  -> See {notes_file.relative_to(PROJECT_ROOT)} for summary")
+        logger.info("  -> Use --reset to start fresh")
         return
 
-    if "--retry" in flags and LOG_FILE.exists():
-        lines = read_file(LOG_FILE).splitlines()
+    if "--retry" in flags and log_file.exists():
+        lines = read_file(log_file).splitlines()
         cleaned = "\n".join(line for line in lines if "[COMPLETE] Step" not in line)
-        write_file(LOG_FILE, cleaned, WORK_DIR)
+        write_file(log_file, cleaned, work_dir)
         logger.info("Cleared completion markers.")
 
     skip_judge = "--skip-judge" in flags
     skip_verify = "--skip-verify" in flags
 
-    # Create execution context
+    # Create execution context - all paths derived from context
     ctx = Context(
-        work_dir=WORK_DIR,
+        work_dir=work_dir,
         task_file=task_file,
         project_root=PROJECT_ROOT,
         flags=flags,
@@ -167,12 +143,10 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
             scout_path = Path(scout_context)
             resolved_scout = scout_path.resolve()
             if not resolved_scout.is_relative_to(PROJECT_ROOT.resolve()):
-                logger.error(f"Scout context file must be within project directory: {scout_context}")
-                sys.exit(1)
+                raise ConfigError(f"Scout context file must be within project directory: {scout_context}")
             if not scout_path.exists():
-                logger.error(f"Scout context file not found: {scout_context}")
-                sys.exit(1)
-            WORK_DIR.mkdir(exist_ok=True)
+                raise ConfigError(f"Scout context file not found: {scout_context}")
+            ctx.work_dir.mkdir(exist_ok=True)
             shutil.copy(str(scout_path), str(ctx.scout_file))
             _log(f"[SCOUT] Using provided context: {scout_context}")
         else:
@@ -194,10 +168,10 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
             if skip_verify:
                 _log("[VERIFY] Skipped (--skip-verify flag)")
                 fast_track_succeeded = True
-            elif not project_has_tests():
+            elif not project_has_tests(ctx.project_root):
                 _log("[VERIFY] Skipped (no test files in project)")
                 fast_track_succeeded = True
-            elif verify_and_fix_ctx(ctx):
+            elif verify_and_fix(ctx):
                 _log("[TRIAGE] Fast Track verified. Skipping Judge.")
                 fast_track_succeeded = True
             else:
@@ -217,13 +191,13 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
 
             if skip_verify:
                 _log("[VERIFY] Skipped (--skip-verify flag)")
-            elif not project_has_tests():
+            elif not project_has_tests(ctx.project_root):
                 _log("[VERIFY] Skipped (no test files in project)")
-            elif not verify_and_fix_ctx(ctx):
-                sys.exit(1)
+            elif not verify_and_fix(ctx):
+                raise VerifyError("Verification failed")
 
             if not skip_judge and not should_skip_judge_ctx(ctx, log_fn=_log):
-                phase_judge_ctx(ctx)
+                phase_judge_ctx(ctx, non_interactive=non_interactive)
             elif skip_judge:
                 _log("[JUDGE] Skipped (--skip-judge flag)")
 
@@ -249,9 +223,9 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
     except KeyboardInterrupt:
         _log("[INTERRUPTED] User cancelled execution")
         logger.info("Interrupted. Progress saved to log.")
-        sys.exit(130)
+        raise KeyboardInterrupt("User cancelled execution")
     except VerifyTimeout as e:
         _log(f"[TIMEOUT] {e}")
         logger.error(f"[TIMEOUT] {e}")
         logger.error("Run again to retry.")
-        sys.exit(1)
+        raise ZenError(f"Timeout: {e}")

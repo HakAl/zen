@@ -1,5 +1,6 @@
 """Tests for zen_mode.verify module."""
 import pytest
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 from zen_mode.verify import (
     VerifyState,
@@ -10,7 +11,23 @@ from zen_mode.verify import (
     verify_test_output,
     detect_no_tests,
     extract_failure_count,
+    phase_verify,
+    phase_fix_tests,
+    verify_and_fix,
 )
+from zen_mode.context import Context
+
+
+def make_test_context(tmp_path: Path) -> Context:
+    """Create a test context with temporary directories."""
+    work_dir = tmp_path / ".zen"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    return Context(
+        work_dir=work_dir,
+        task_file=str(tmp_path / "task.md"),
+        project_root=tmp_path,
+        flags=set(),
+    )
 
 
 class TestVerifyStateEnumValues:
@@ -60,18 +77,14 @@ class TestVerifyTimeoutException:
         exc = VerifyTimeout("test message")
         assert str(exc) == "test message"
 
-    @patch('zen_mode.verify._run_claude')
-    @patch('zen_mode.verify.WORK_DIR')
-    def test_phase_verify_raises_on_no_output(self, mock_work_dir, mock_run_claude, tmp_path):
+    @patch('zen_mode.verify.run_claude')
+    def test_phase_verify_raises_on_no_output(self, mock_run_claude, tmp_path):
         """phase_verify raises VerifyTimeout when Claude returns no output."""
-        from zen_mode.verify import phase_verify
-
-        mock_work_dir.__truediv__ = lambda self, x: tmp_path / x
-        mock_work_dir.mkdir = MagicMock()
+        ctx = make_test_context(tmp_path)
         mock_run_claude.return_value = None  # Claude returns nothing
 
         with pytest.raises(VerifyTimeout, match="Claude did not respond"):
-            phase_verify()
+            phase_verify(ctx)
 
 
 class TestTruncatePreserveTail:
@@ -232,69 +245,60 @@ class TestExtractFailureCount:
 
     def test_unicode_normalization(self):
         # Test with smart quotes and em-dashes
-        output = "2 tests failed – see details"
+        output = "2 tests failed - see details"
         assert extract_failure_count(output) == 2
 
 
 class TestPhaseVerifyMocked:
     """Test phase_verify with mocked Claude calls."""
 
-    @patch('zen_mode.verify._run_claude')
+    @patch('zen_mode.verify.run_claude')
     @patch('zen_mode.verify.read_file')
-    def test_returns_pass_state(self, mock_read_file, mock_run_claude):
-        from zen_mode.verify import phase_verify, TEST_OUTPUT_FILE
-        import tempfile
-        from pathlib import Path
+    def test_returns_pass_state(self, mock_read_file, mock_run_claude, tmp_path):
+        ctx = make_test_context(tmp_path)
 
-        # Create a temp directory and file
-        with tempfile.TemporaryDirectory() as tmpdir:
-            test_file = Path(tmpdir) / "test_output.txt"
-            test_file.write_text("===== 5 passed in 0.23s =====")
+        # Create test output file
+        test_file = ctx.test_output_file
+        test_file.write_text("===== 5 passed in 0.23s =====")
 
-            mock_run_claude.return_value = "Tests completed. TESTS_PASS"
-            mock_read_file.return_value = "===== 5 passed in 0.23s ====="
+        mock_run_claude.return_value = "Tests completed. TESTS_PASS"
+        mock_read_file.return_value = "[No plan available]"
 
-            with patch('zen_mode.verify.TEST_OUTPUT_FILE', test_file):
-                with patch('zen_mode.verify.WORK_DIR', Path(tmpdir)):
-                    state, output = phase_verify()
-
-            assert state == VerifyState.PASS
+        state, output = phase_verify(ctx)
+        assert state == VerifyState.PASS
 
 
 class TestPhaseFixTestsMocked:
     """Test phase_fix_tests with mocked Claude calls."""
 
-    @patch('zen_mode.verify._run_claude')
+    @patch('zen_mode.verify.run_claude')
     @patch('zen_mode.verify.read_file')
-    def test_returns_applied_on_success(self, mock_read_file, mock_run_claude):
-        from zen_mode.verify import phase_fix_tests
-
+    def test_returns_applied_on_success(self, mock_read_file, mock_run_claude, tmp_path):
+        ctx = make_test_context(tmp_path)
         mock_read_file.return_value = "# Plan content"
         mock_run_claude.return_value = "Fixed the issue. FIXES_APPLIED"
 
-        result = phase_fix_tests("test failure output", attempt=1)
+        result = phase_fix_tests(ctx, "test failure output", attempt=1)
         assert result == FixResult.APPLIED
 
-    @patch('zen_mode.verify._run_claude')
+    @patch('zen_mode.verify.run_claude')
     @patch('zen_mode.verify.read_file')
-    def test_returns_blocked_on_failure(self, mock_read_file, mock_run_claude):
-        from zen_mode.verify import phase_fix_tests
-
+    def test_returns_blocked_on_failure(self, mock_read_file, mock_run_claude, tmp_path):
+        ctx = make_test_context(tmp_path)
         mock_read_file.return_value = "# Plan content"
         mock_run_claude.return_value = "Cannot fix. FIXES_BLOCKED: Missing dependency"
 
-        result = phase_fix_tests("test failure output", attempt=1)
+        result = phase_fix_tests(ctx, "test failure output", attempt=1)
         assert result == FixResult.BLOCKED
 
-    @patch('zen_mode.verify._run_claude')
+    @patch('zen_mode.verify.run_claude')
     @patch('zen_mode.verify.read_file')
-    def test_returns_blocked_on_no_output(self, mock_read_file, mock_run_claude):
-        from zen_mode.verify import phase_fix_tests
-
+    def test_returns_blocked_on_no_output(self, mock_read_file, mock_run_claude, tmp_path):
+        ctx = make_test_context(tmp_path)
         mock_read_file.return_value = "# Plan content"
         mock_run_claude.return_value = None
 
-        result = phase_fix_tests("test failure output", attempt=1)
+        result = phase_fix_tests(ctx, "test failure output", attempt=1)
         assert result == FixResult.BLOCKED
 
 
@@ -303,41 +307,38 @@ class TestVerifyAndFixMocked:
 
     @patch('zen_mode.verify.phase_fix_tests')
     @patch('zen_mode.verify.phase_verify')
-    def test_returns_true_on_pass(self, mock_verify, mock_fix):
-        from zen_mode.verify import verify_and_fix
-
+    def test_returns_true_on_pass(self, mock_verify, mock_fix, tmp_path):
+        ctx = make_test_context(tmp_path)
         mock_verify.return_value = (VerifyState.PASS, "test output")
 
-        result = verify_and_fix()
+        result = verify_and_fix(ctx)
         assert result is True
         mock_fix.assert_not_called()
 
     @patch('zen_mode.verify.phase_fix_tests')
     @patch('zen_mode.verify.phase_verify')
-    def test_returns_true_on_no_tests(self, mock_verify, mock_fix):
-        from zen_mode.verify import verify_and_fix
-
+    def test_returns_true_on_no_tests(self, mock_verify, mock_fix, tmp_path):
+        ctx = make_test_context(tmp_path)
         mock_verify.return_value = (VerifyState.NONE, "")
 
-        result = verify_and_fix()
+        result = verify_and_fix(ctx)
         assert result is True
         mock_fix.assert_not_called()
 
     @patch('zen_mode.verify.phase_fix_tests')
     @patch('zen_mode.verify.phase_verify')
-    def test_returns_false_on_error(self, mock_verify, mock_fix):
-        from zen_mode.verify import verify_and_fix
-
+    def test_returns_false_on_error(self, mock_verify, mock_fix, tmp_path):
+        ctx = make_test_context(tmp_path)
         mock_verify.return_value = (VerifyState.ERROR, "")
 
-        result = verify_and_fix()
+        result = verify_and_fix(ctx)
         assert result is False
         mock_fix.assert_not_called()
 
     @patch('zen_mode.verify.phase_fix_tests')
     @patch('zen_mode.verify.phase_verify')
-    def test_calls_fix_on_failure(self, mock_verify, mock_fix):
-        from zen_mode.verify import verify_and_fix
+    def test_calls_fix_on_failure(self, mock_verify, mock_fix, tmp_path):
+        ctx = make_test_context(tmp_path)
 
         # First call fails, second call passes
         mock_verify.side_effect = [
@@ -346,32 +347,31 @@ class TestVerifyAndFixMocked:
         ]
         mock_fix.return_value = FixResult.APPLIED
 
-        result = verify_and_fix()
+        result = verify_and_fix(ctx)
         assert result is True
         mock_fix.assert_called_once()
 
     @patch('zen_mode.verify.phase_fix_tests')
     @patch('zen_mode.verify.phase_verify')
-    def test_stops_on_fix_blocked(self, mock_verify, mock_fix):
-        from zen_mode.verify import verify_and_fix
-
+    def test_stops_on_fix_blocked(self, mock_verify, mock_fix, tmp_path):
+        ctx = make_test_context(tmp_path)
         mock_verify.return_value = (VerifyState.FAIL, "failure output")
         mock_fix.return_value = FixResult.BLOCKED
 
-        result = verify_and_fix()
+        result = verify_and_fix(ctx)
         assert result is False
 
     @patch('zen_mode.verify.phase_fix_tests')
     @patch('zen_mode.verify.phase_verify')
     @patch('zen_mode.verify.MAX_FIX_ATTEMPTS', 2)
-    def test_respects_max_attempts(self, mock_verify, mock_fix):
-        from zen_mode.verify import verify_and_fix
+    def test_respects_max_attempts(self, mock_verify, mock_fix, tmp_path):
+        ctx = make_test_context(tmp_path)
 
         # Always fail
         mock_verify.return_value = (VerifyState.FAIL, "failure output")
         mock_fix.return_value = FixResult.APPLIED
 
-        result = verify_and_fix()
+        result = verify_and_fix(ctx)
         assert result is False
         # Should call fix MAX_FIX_ATTEMPTS times (2)
         assert mock_fix.call_count == 2

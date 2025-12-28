@@ -9,7 +9,17 @@ from typing import List, Optional, Set, Tuple
 from zen_mode.claude import run_claude
 from zen_mode.config import MODEL_BRAIN
 from zen_mode.context import Context
+from zen_mode.exceptions import PlanError
 from zen_mode.files import read_file, write_file, get_full_constitution, log
+
+
+# Pre-compiled regex patterns for step parsing
+_STEP_STRICT_PATTERN = re.compile(r"^## Step (\d+):\s*(.+)$", re.MULTILINE)
+_STEP_FLEXIBLE_PATTERN = re.compile(
+    r"(?:^|\n)(?:#{1,6}\s*)?(?:Step\s+(\d+)|(\d+)\.)[:\s]+(.*?)(?=\n(?:#{1,6}\s*)?(?:Step\s+\d+|\d+\.)|$)",
+    re.DOTALL | re.IGNORECASE,
+)
+_BULLET_PATTERN = re.compile(r"(?:^|\n)[-*]\s+(.*?)(?=\n[-*]|$)")
 
 
 # -----------------------------------------------------------------------------
@@ -119,7 +129,7 @@ def parse_steps(plan: str) -> List[Tuple[int, str]]:
     - Fallback: bullet points
     """
     # Strict format: ## Step N: description
-    strict = re.findall(r"^## Step (\d+):\s*(.+)$", plan, re.M)
+    strict = _STEP_STRICT_PATTERN.findall(plan)
     if strict:
         seen: Set[int] = set()
         result: List[Tuple[int, str]] = []
@@ -131,11 +141,7 @@ def parse_steps(plan: str) -> List[Tuple[int, str]]:
         return result
 
     # Fallback: flexible parsing
-    pattern = re.compile(
-        r"(?:^|\n)(?:#{1,6}\s*)?(?:Step\s+(\d+)|(\d+)\.)[:\s]+(.*?)(?=\n(?:#{1,6}\s*)?(?:Step\s+\d+|\d+\.)|$)",
-        re.DOTALL | re.IGNORECASE,
-    )
-    matches = pattern.findall(plan + "\n")
+    matches = _STEP_FLEXIBLE_PATTERN.findall(plan + "\n")
     if matches:
         seen = set()
         result = []
@@ -147,7 +153,7 @@ def parse_steps(plan: str) -> List[Tuple[int, str]]:
         return result
 
     # Last resort: bullets
-    bullets = re.findall(r"(?:^|\n)[-*]\s+(.*?)(?=\n[-*]|$)", plan)
+    bullets = _BULLET_PATTERN.findall(plan)
     return [(i, txt.strip()) for i, txt in enumerate(bullets, 1) if txt.strip()]
 
 
@@ -268,7 +274,7 @@ def phase_plan_ctx(ctx: Context) -> None:
     if not ctx.plan_file.exists():
         if not output:
             _log_ctx(ctx, "[PLAN] Failed.")
-            sys.exit(1)
+            raise PlanError("Plan phase failed - no output from Claude")
         write_file(ctx.plan_file, output, ctx.work_dir)
 
     plan_content = read_file(ctx.plan_file)

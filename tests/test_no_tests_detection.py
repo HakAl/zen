@@ -109,45 +109,39 @@ class TestShouldNotMatch:
 class TestProjectHasTests:
     """Tests for project_has_tests() filesystem detection."""
 
-    def test_detects_tests_dir(self, tmp_path, monkeypatch):
+    def test_detects_tests_dir(self, tmp_path):
         """Detects tests/ directory."""
         (tmp_path / "tests").mkdir()
         (tmp_path / "tests" / "test_foo.py").touch()
-        monkeypatch.setattr(verify, "PROJECT_ROOT", tmp_path)
-        assert project_has_tests() is True
+        assert project_has_tests(tmp_path) is True
 
-    def test_detects_test_file_pattern(self, tmp_path, monkeypatch):
+    def test_detects_test_file_pattern(self, tmp_path):
         """Detects test_*.py files."""
         (tmp_path / "src").mkdir()
         (tmp_path / "src" / "test_utils.py").touch()
-        monkeypatch.setattr(verify, "PROJECT_ROOT", tmp_path)
-        assert project_has_tests() is True
+        assert project_has_tests(tmp_path) is True
 
-    def test_detects_spec_file(self, tmp_path, monkeypatch):
+    def test_detects_spec_file(self, tmp_path):
         """Detects *.spec.js files."""
         (tmp_path / "Button.spec.js").touch()
-        monkeypatch.setattr(verify, "PROJECT_ROOT", tmp_path)
-        assert project_has_tests() is True
+        assert project_has_tests(tmp_path) is True
 
-    def test_no_tests_empty_project(self, tmp_path, monkeypatch):
+    def test_no_tests_empty_project(self, tmp_path):
         """Returns False for empty project."""
         (tmp_path / "src").mkdir()
         (tmp_path / "src" / "main.py").touch()
-        monkeypatch.setattr(verify, "PROJECT_ROOT", tmp_path)
-        assert project_has_tests() is False
+        assert project_has_tests(tmp_path) is False
 
-    def test_no_tests_code_only(self, tmp_path, monkeypatch):
+    def test_no_tests_code_only(self, tmp_path):
         """Returns False when only code files exist."""
         (tmp_path / "app.py").touch()
         (tmp_path / "utils.py").touch()
         (tmp_path / "config.json").touch()
-        monkeypatch.setattr(verify, "PROJECT_ROOT", tmp_path)
-        assert project_has_tests() is False
+        assert project_has_tests(tmp_path) is False
 
-    def test_skips_node_modules(self, tmp_path, monkeypatch):
+    def test_skips_node_modules(self, tmp_path):
         """Skips node_modules even if it contains test files."""
         (tmp_path / "node_modules").mkdir()
         (tmp_path / "node_modules" / "test_foo.py").touch()
         (tmp_path / "app.js").touch()
-        monkeypatch.setattr(verify, "PROJECT_ROOT", tmp_path)
-        assert project_has_tests() is False
+        assert project_has_tests(tmp_path) is False
