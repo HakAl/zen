@@ -194,6 +194,58 @@ def parse_targets_header(task_path: Path) -> List[str]:
     return []
 
 
+def _normalize_path_for_comparison(path: Path) -> str:
+    """
+    Normalize path for comparison, handling Windows-specific issues.
+
+    - Converts to lowercase on Windows (case-insensitive filesystem)
+    - Normalizes path separators to forward slashes
+    - Resolves to canonical absolute path
+    """
+    resolved = str(path.resolve())
+    normalized = resolved.replace("\\", "/")
+    if sys.platform == "win32":
+        normalized = normalized.lower()
+    return normalized
+
+
+def _is_safe_path(target_path: Path, project_root: Path) -> bool:
+    """
+    Check if a path is safely within the project root.
+
+    Handles Windows-specific path traversal attempts:
+    - Case insensitivity
+    - Both forward and backslash separators
+    - UNC paths
+    - Drive letter changes
+    """
+    try:
+        resolved_target = target_path.resolve()
+        resolved_root = project_root.resolve()
+
+        target_str = _normalize_path_for_comparison(resolved_target)
+        root_str = _normalize_path_for_comparison(resolved_root)
+
+        # On Windows, block UNC paths and ensure same drive
+        if sys.platform == "win32":
+            if target_str.startswith("//"):
+                return False
+            if len(target_str) > 1 and len(root_str) > 1:
+                if target_str[0].isalpha() and root_str[0].isalpha():
+                    if target_str[0] != root_str[0]:
+                        return False
+
+        if not resolved_target.is_relative_to(resolved_root):
+            return False
+
+        if not target_str.startswith(root_str):
+            return False
+
+        return True
+    except (ValueError, OSError):
+        return False
+
+
 def expand_targets(targets: List[str], project_root: Path) -> Set[Path]:
     """
     Expand glob patterns and literal paths into a set of resolved files.
@@ -208,27 +260,30 @@ def expand_targets(targets: List[str], project_root: Path) -> Set[Path]:
     expanded: Set[Path] = set()
 
     for target in targets:
-        # Skip absolute paths (security: don't allow targeting files outside project)
-        if Path(target).is_absolute():
+        # Normalize separators for Windows
+        normalized_target = target.replace("\\", "/")
+
+        # Skip absolute paths
+        if Path(target).is_absolute() or Path(normalized_target).is_absolute():
             continue
 
-        # Resolve relative to project root
-        pattern_path = project_root / target
+        # Block path traversal patterns
+        if ".." in normalized_target:
+            logger.warning(f"[SWARM] Blocked path traversal attempt: {target}")
+            continue
 
-        # Try glob expansion first
+        pattern_path = project_root / normalized_target
+
         try:
-            matches = list(project_root.glob(target))
+            matches = list(project_root.glob(normalized_target))
             if matches:
-                # Filter to paths within project_root (blocks ../ traversal)
                 for m in matches:
-                    if m.resolve().is_relative_to(project_root.resolve()):
+                    if _is_safe_path(m, project_root):
                         expanded.add(m)
             elif pattern_path.exists():
-                # If no glob matches but literal path exists, add it if within project
-                if pattern_path.resolve().is_relative_to(project_root.resolve()):
+                if _is_safe_path(pattern_path, project_root):
                     expanded.add(pattern_path)
-        except (NotImplementedError, ValueError):
-            # Skip invalid glob patterns
+        except (NotImplementedError, ValueError, OSError):
             continue
 
     return expanded

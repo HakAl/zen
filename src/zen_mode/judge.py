@@ -21,6 +21,7 @@ from zen_mode.config import (
     JUDGE_SIMPLE_PLAN_STEPS,
 )
 from zen_mode.context import Context
+from zen_mode.exceptions import JudgeError
 from zen_mode.files import read_file, write_file, get_full_constitution, log
 from zen_mode.plan import parse_steps
 from zen_mode.verify import VerifyState, phase_verify
@@ -184,11 +185,12 @@ def should_skip_judge_ctx(ctx: Context, log_fn: Optional[Callable[[str], None]] 
 # -----------------------------------------------------------------------------
 # Judge Phase (Context-based API)
 # -----------------------------------------------------------------------------
-def phase_judge_ctx(ctx: Context) -> None:
+def phase_judge_ctx(ctx: Context, non_interactive: bool = False) -> None:
     """Execute judge phase using Context object.
 
     Args:
         ctx: Execution context
+        non_interactive: If True, skip input() prompts and fail-closed
     """
     _log_ctx(ctx, "\n[JUDGE] Senior Architect review...")
 
@@ -223,6 +225,9 @@ def phase_judge_ctx(ctx: Context) -> None:
 
         if not output:
             _log_ctx(ctx, "[JUDGE] No response from Judge.")
+            if non_interactive:
+                _log_ctx(ctx, "[JUDGE] Non-interactive mode: auto-failing (fail-closed).")
+                raise JudgeError("Judge failed in non-interactive mode (fail-closed)")
             try:
                 choice = input(">> Judge failed. Proceed anyway? [y/N]: ").strip().lower()
                 if choice == 'y':
@@ -231,7 +236,7 @@ def phase_judge_ctx(ctx: Context) -> None:
             except EOFError:
                 pass
             _log_ctx(ctx, "[JUDGE] Aborting (fail-closed).")
-            sys.exit(1)
+            raise JudgeError("Judge aborted by user (fail-closed)")
 
         if "JUDGE_APPROVED" in output:
             _log_ctx(ctx, "[JUDGE_APPROVED] Code passed architectural review.")
@@ -239,6 +244,9 @@ def phase_judge_ctx(ctx: Context) -> None:
 
         if "JUDGE_REJECTED" not in output:
             _log_ctx(ctx, "[JUDGE] Unclear verdict from Judge.")
+            if non_interactive:
+                _log_ctx(ctx, "[JUDGE] Non-interactive mode: auto-failing (fail-closed).")
+                raise JudgeError("Judge unclear verdict in non-interactive mode (fail-closed)")
             try:
                 choice = input(">> Judge gave unclear verdict. Proceed anyway? [y/N]: ").strip().lower()
                 if choice == 'y':
@@ -247,7 +255,7 @@ def phase_judge_ctx(ctx: Context) -> None:
             except EOFError:
                 pass
             _log_ctx(ctx, "[JUDGE] Aborting (fail-closed).")
-            sys.exit(1)
+            raise JudgeError("Judge aborted by user - unclear verdict (fail-closed)")
 
         _log_ctx(ctx, f"[JUDGE_REJECTED] Issues found (loop {loop})")
 
@@ -260,7 +268,7 @@ def phase_judge_ctx(ctx: Context) -> None:
         if loop >= MAX_JUDGE_LOOPS:
             _log_ctx(ctx, "[ESCALATE_TO_HUMAN] Max judge loops reached. Manual review required.")
             _log_ctx(ctx, f"[INFO] Judge feedback saved to: {judge_feedback_file}")
-            sys.exit(1)
+            raise JudgeError("Max judge loops reached - manual review required")
 
         _log_ctx(ctx, "[JUDGE_FIX] Applying fixes...")
         changed_files = git.get_changed_filenames(ctx.project_root, ctx.backup_dir)
@@ -279,11 +287,11 @@ def phase_judge_ctx(ctx: Context) -> None:
 
         if not fix_output:
             _log_ctx(ctx, "[JUDGE_FIX] No response from fixer.")
-            sys.exit(1)
+            raise JudgeError("No response from fixer")
 
         if "FIXES_BLOCKED" in fix_output:
             _log_ctx(ctx, "[JUDGE_FIX] Fixes blocked. Manual intervention required.")
-            sys.exit(1)
+            raise JudgeError("Fixes blocked - manual intervention required")
 
         # Re-run linter
         from zen_mode.implement import run_linter_with_timeout
@@ -292,17 +300,17 @@ def phase_judge_ctx(ctx: Context) -> None:
             _log_ctx(ctx, "[JUDGE_FIX] Lint failed after fixes.")
             for line in lint_out.splitlines()[:10]:
                 logger.info(f"    {line}")
-            sys.exit(1)
+            raise JudgeError("Lint check failed after judge fixes")
 
         # Re-run verify
         _log_ctx(ctx, "[JUDGE_FIX] Checking tests...")
-        state, _ = phase_verify()
+        state, _ = phase_verify(ctx)
         if state == VerifyState.FAIL:
             _log_ctx(ctx, "[JUDGE_FIX] Tests failed after fixes.")
-            sys.exit(1)
+            raise JudgeError("Tests failed after judge fixes")
         elif state == VerifyState.ERROR:
             _log_ctx(ctx, "[JUDGE_FIX] Test runner error.")
-            sys.exit(1)
+            raise JudgeError("Test runner error after judge fixes")
         elif state == VerifyState.RUNTIME_MISSING:
             _log_ctx(ctx, "[JUDGE_FIX] Runtime not installed, skipping tests.")
 
@@ -312,7 +320,7 @@ def phase_judge_ctx(ctx: Context) -> None:
             judge_feedback_file.unlink()
 
     _log_ctx(ctx, "[JUDGE] Unexpected exit from judge loop.")
-    sys.exit(1)
+    raise JudgeError("Unexpected exit from judge loop")
 
 
 def _log_ctx(ctx: Context, msg: str) -> None:

@@ -21,6 +21,7 @@ from zen_mode.config import (
     MAX_RETRIES,
 )
 from zen_mode.context import Context
+from zen_mode.exceptions import ImplementError
 from zen_mode.files import read_file, backup_file, get_full_constitution, log
 from zen_mode.plan import parse_steps, get_completed_steps
 
@@ -48,7 +49,7 @@ def run_linter_with_timeout(timeout: Optional[int] = None, paths: Optional[List[
     def target():
         result[0], result[1] = linter.run_lint(paths=paths)
 
-    thread = threading.Thread(target=target)
+    thread = threading.Thread(target=target, daemon=True)
     thread.start()
     thread.join(timeout=timeout)
 
@@ -210,7 +211,7 @@ def phase_implement_ctx(ctx: Context, allowed_files: Optional[str] = None) -> No
 
     if not steps:
         _log_ctx(ctx, "[IMPLEMENT] No steps found in plan.")
-        sys.exit(1)
+        raise ImplementError("No steps found in plan")
 
     # Check that plan includes a verification step
     last_step_desc = steps[-1][1].lower() if steps else ""
@@ -268,7 +269,7 @@ def phase_implement_ctx(ctx: Context, allowed_files: Optional[str] = None) -> No
             if last_line.startswith("STEP_BLOCKED"):
                 _log_ctx(ctx, f"[BLOCKED] Step {step_num}")
                 logger.info(f"\n{output}")
-                sys.exit(1)
+                raise ImplementError(f"Step {step_num} blocked: {last_line}")
 
             if "STEP_COMPLETE" in output:
                 passed, lint_out = run_linter_with_timeout()
@@ -291,7 +292,7 @@ def phase_implement_ctx(ctx: Context, allowed_files: Optional[str] = None) -> No
                         _log_ctx(ctx, f"[FAILED] Step {step_num}: {len(seen_lint_hashes)} distinct lint failures")
                         if ctx.backup_dir.exists():
                             _log_ctx(ctx, f"[RECOVERY] Backups available in: {ctx.backup_dir}")
-                        sys.exit(1)
+                        raise ImplementError(f"Step {step_num} failed: {len(seen_lint_hashes)} distinct lint failures")
                     continue
 
                 _log_ctx(ctx, f"[COMPLETE] Step {step_num}")
@@ -302,7 +303,7 @@ def phase_implement_ctx(ctx: Context, allowed_files: Optional[str] = None) -> No
             _log_ctx(ctx, f"[FAILED] Step {step_num} after {MAX_RETRIES} attempts")
             if ctx.backup_dir.exists():
                 _log_ctx(ctx, f"[RECOVERY] Backups available in: {ctx.backup_dir}")
-            sys.exit(1)
+            raise ImplementError(f"Step {step_num} failed after {MAX_RETRIES} attempts")
 
         if step_succeeded_on_attempt > 1:
             consecutive_retry_steps += 1

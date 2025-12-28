@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from . import __version__
+from .exceptions import ZenError
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -72,7 +73,21 @@ def cmd_run(args: Any) -> None:
     # Check for local zen.py first (ejected mode)
     local_zen = Path.cwd() / "zen.py"
     if local_zen.exists():
-        logger.info(f"Using local {local_zen} (ejected mode)")
+        logger.warning("Executing local ./zen.py - ensure you trust this file")
+        trust_local = getattr(args, 'trust_local', False)
+        if not trust_local:
+            if sys.stdin.isatty():
+                try:
+                    choice = input(">> Execute local zen.py? [y/N]: ").strip().lower()
+                    if choice != 'y':
+                        logger.info("Aborted by user.")
+                        sys.exit(1)
+                except EOFError:
+                    logger.error("Cannot confirm in non-interactive mode. Use --trust-local to proceed.")
+                    sys.exit(1)
+            else:
+                logger.error("Cannot execute local zen.py in non-interactive mode without --trust-local")
+                sys.exit(1)
         import subprocess
         cmd = [sys.executable, str(local_zen), task_file]
         if args.reset:
@@ -104,7 +119,16 @@ def cmd_run(args: Any) -> None:
     if args.skip_verify:
         flags.add("--skip-verify")
 
-    core.run(task_file, flags, scout_context=args.scout_context, allowed_files=args.allowed_files)
+    # Auto-detect non-interactive mode when stdin is not a TTY (e.g., swarm subprocess)
+    non_interactive = not sys.stdin.isatty()
+
+    try:
+        core.run(task_file, flags, scout_context=args.scout_context, allowed_files=args.allowed_files, non_interactive=non_interactive)
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except ZenError as e:
+        logger.error(str(e))
+        sys.exit(1)
 
 
 def cmd_swarm(args: Any) -> None:
@@ -160,9 +184,6 @@ def main() -> None:
         if cmd == "init":
             cmd_init(SimpleNamespace())
             return
-        elif cmd == "eject":
-            cmd_eject(SimpleNamespace())
-            return
         elif cmd == "swarm":
             # zen swarm <task1.md> [task2.md ...] [--workers N] [--verbose]
             parser = argparse.ArgumentParser(prog="zen swarm")
@@ -192,6 +213,7 @@ def main() -> None:
             parser.add_argument("--skip-verify", action="store_true", help="Skip Verify phase (for infra-only tasks)")
             parser.add_argument("--scout-context", type=str, default=None, help="Path to pre-computed scout context file")
             parser.add_argument("--allowed-files", type=str, default=None, help="Glob pattern for allowed files to modify")
+            parser.add_argument("--trust-local", action="store_true", help="Trust local zen.py without confirmation")
             parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose/debug output")
             args = parser.parse_args(sys.argv[1:])
             cmd_run(args)
@@ -210,6 +232,7 @@ Options:
   --retry                     Clear completion markers to retry failed steps
   --skip-judge                Skip Judge phase review (Opus architectural review)
   --skip-verify               Skip Verify phase (for infra-only tasks)
+  --trust-local               Trust local zen.py without confirmation
   --workers N                 Number of parallel workers for swarm (default: auto)
   --verbose, -v               Enable verbose/debug output
 

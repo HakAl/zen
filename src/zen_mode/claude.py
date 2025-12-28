@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from zen_mode.exceptions import ConfigError
+
 logger = logging.getLogger(__name__)
 
 _claude_exe: Optional[str] = None
@@ -22,9 +24,9 @@ def _init_claude() -> str:
         return _claude_exe
     _claude_exe = shutil.which("claude") or os.getenv("CLAUDE_EXE")
     if not _claude_exe:
-        logger.error("'claude' CLI not found.")
-        logger.error("Install: npm i -g @anthropic-ai/claude-cli")
-        sys.exit(1)
+        raise ConfigError(
+            "'claude' CLI not found. Install: npm i -g @anthropic-ai/claude-cli"
+        )
     return _claude_exe
 
 
@@ -87,8 +89,12 @@ def run_claude(
             logger.info(msg)
 
     claude_exe = _init_claude()
-    cmd = [claude_exe, "-p", "--dangerously-skip-permissions", "--model", model,
-           "--output-format", "json"]
+    cmd = [claude_exe, "-p", "--model", model, "--output-format", "json"]
+
+    # Only add dangerous flag if explicitly enabled via env var
+    if os.getenv("ZEN_SKIP_PERMISSIONS", "").lower() == "true":
+        _log("[WARN] ZEN_SKIP_PERMISSIONS enabled - skipping Claude permission checks")
+        cmd.insert(2, "--dangerously-skip-permissions")
     proc = None
     try:
         proc = subprocess.Popen(

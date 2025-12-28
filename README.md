@@ -216,6 +216,22 @@ export ZEN_MODEL_HANDS=claude-3-5-sonnet-20241022
 export ZEN_SHOW_COSTS=false
 ```
 
+### Security Considerations
+
+**⚠️ Zen has full file system access within your project directory.**
+
+| Risk | Mitigation |
+|------|------------|
+| **Untrusted task files** | Task files are executed by an LLM with write access. Review `.md` files from external sources before running. |
+| **Local `zen.py` override** | If a `zen.py` exists in your project root, Zen executes it instead of the package. Requires `--trust-local` flag or interactive confirmation. |
+| **`ZEN_SKIP_PERMISSIONS`** | Bypasses Claude CLI's permission prompts. **Use only in trusted CI/CD environments** where tasks are pre-reviewed. Never set in interactive sessions. |
+
+```bash
+# CI/CD example - only if tasks are trusted
+export ZEN_SKIP_PERMISSIONS=true
+zen task.md
+```
+
 ### Judge Auto-Skip
 
 The Judge phase (Opus architectural review) is automatically skipped to save costs when:
