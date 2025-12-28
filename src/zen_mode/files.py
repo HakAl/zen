@@ -128,8 +128,15 @@ def should_ignore_path(path_str: str) -> bool:
 
 
 def read_file(path: Path) -> str:
-    """Read file contents, returning empty string if not exists."""
-    return path.read_text(encoding="utf-8") if path.exists() else ""
+    """Read file contents, returning empty string if not exists or unreadable."""
+    try:
+        return path.read_text(encoding="utf-8") if path.exists() else ""
+    except OSError as e:  # Includes PermissionError
+        logger.warning(f"Failed to read {path}: {e}")
+        return ""
+    except UnicodeDecodeError as e:
+        logger.warning(f"Encoding error in {path}: {e}")
+        return ""
 
 
 def write_file(path: Path, content: str, work_dir: Optional[Path] = None) -> None:

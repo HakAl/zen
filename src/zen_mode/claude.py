@@ -119,9 +119,9 @@ def run_claude(
             return None
 
         data = _parse_json_response(stdout)
-        if not isinstance(data, dict):
-            _log("[WARN] Failed to parse JSON response, cost not tracked")
-            return stdout
+        if data is None:
+            _log(f"[ERROR] Failed to parse JSON response (len={len(stdout)}, first_100={stdout[:100]!r})")
+            return None  # NOT raw stdout
 
         try:
             cost, tokens = _extract_cost(data)
@@ -146,7 +146,7 @@ def run_claude(
                     _log(f"[DEBUG] Timeout partial: stdout_len={len(stdout) if stdout else 0}")
             except subprocess.TimeoutExpired:
                 proc.kill()
-                proc.communicate()
+                proc.wait()  # Process is dead, just reap it
         return None
     except OSError as e:
         # File not found, permission denied, etc.

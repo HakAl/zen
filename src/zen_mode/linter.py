@@ -221,8 +221,9 @@ def is_binary(path: Path, sample_size: int = 8192, threshold: float = 0.10, min_
         if not blob:
             return False
         return blob.count(b'\0') / len(blob) > threshold
-    except Exception:
-        return True
+    except OSError as e:  # Includes PermissionError, FileNotFoundError
+        logger.debug(f"Cannot read {path} for binary check: {e}")
+        return True  # Conservative: treat as binary
 
 
 def find_string_ranges(line: str) -> List[Tuple[int, int]]:
