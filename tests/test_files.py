@@ -1,19 +1,18 @@
 """Tests for zen_mode.files module."""
 import pytest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+
 from zen_mode.files import (
     should_ignore_path,
     read_file,
     write_file,
     backup_file,
-    load_constitution,
-    get_full_constitution,
     log,
     IGNORE_DIRS,
     IGNORE_FILES,
     BINARY_EXTS,
 )
+# Note: load_constitution and get_full_constitution tests are in test_constitution.py
 
 
 class TestShouldIgnorePath:
@@ -194,63 +193,6 @@ class TestBackupFile:
 
         assert len(messages) == 1
         assert "BACKUP" in messages[0]
-
-
-class TestLoadConstitution:
-    """Tests for load_constitution() function."""
-
-    def test_returns_empty_if_no_file(self):
-        with patch("zen_mode.files.Path") as mock_path:
-            mock_path.return_value.parent.__truediv__.return_value.__truediv__.return_value.exists.return_value = False
-            # Can't easily test this without mocking Path heavily
-            # The function returns empty string if file doesn't exist
-            pass
-
-    def test_extracts_section_by_name(self, tmp_path):
-        constitution_content = """# Constitution
-
-## GOLDEN RULES
-- Rule 1
-- Rule 2
-
-## ARCHITECTURE
-Architecture section content.
-
-## OTHER
-Other content.
-"""
-        # Patch the constitution path
-        with patch("zen_mode.files.Path") as mock_path_class:
-            mock_constitution = MagicMock()
-            mock_constitution.exists.return_value = True
-            mock_constitution.read_text.return_value = constitution_content
-            mock_path_class.return_value.parent.__truediv__.return_value.__truediv__.return_value = mock_constitution
-
-            result = load_constitution("GOLDEN RULES")
-            assert "Rule 1" in result or result == ""  # Depends on mocking
-
-
-class TestGetFullConstitution:
-    """Tests for get_full_constitution() function."""
-
-    def test_returns_zen_rules_only_if_no_project_file(self, tmp_path):
-        # No CLAUDE.md or AGENTS.md in project
-        with patch("zen_mode.files.load_constitution", return_value="Zen rules"):
-            with patch("zen_mode.files._get_full_constitution_cached.cache_clear"):
-                pass  # Cache management
-
-    def test_appends_project_rules_from_claude_md(self, tmp_path):
-        claude_md = tmp_path / "CLAUDE.md"
-        claude_md.write_text("Project specific rules")
-
-        # Clear cache and test
-        from zen_mode.files import _get_full_constitution_cached
-        _get_full_constitution_cached.cache_clear()
-
-        with patch("zen_mode.files.load_constitution", return_value="Zen rules"):
-            result = get_full_constitution(tmp_path, "GOLDEN RULES")
-            # Should contain project rules if file exists
-            assert "Project" in result or "Zen" in result
 
 
 class TestLog:

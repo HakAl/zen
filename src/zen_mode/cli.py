@@ -7,7 +7,6 @@ import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
 from . import __version__
 from .exceptions import ZenError
@@ -38,7 +37,7 @@ def setup_logging(verbose: bool = False) -> None:
 logger = logging.getLogger(__name__)
 
 
-def cmd_init(args: Any) -> None:
+def cmd_init(args: argparse.Namespace) -> None:
     """Initialize .zen/ directory and create CLAUDE.md if none exists."""
     zen_dir = Path.cwd() / ".zen"
     zen_dir.mkdir(exist_ok=True)
@@ -66,7 +65,7 @@ def cmd_init(args: Any) -> None:
     logger.info("Run 'zen <task.md>' to start.")
 
 
-def cmd_run(args: Any) -> None:
+def cmd_run(args: argparse.Namespace) -> None:
     """Run the 4-phase workflow on a task file."""
     task_file = args.task_file
 
@@ -131,7 +130,7 @@ def cmd_run(args: Any) -> None:
         sys.exit(1)
 
 
-def cmd_swarm(args: Any) -> None:
+def cmd_swarm(args: argparse.Namespace) -> None:
     """Execute multiple tasks in parallel with conflict detection."""
     from . import swarm
 

@@ -154,6 +154,40 @@ class TestGrepImpact:
             # other.py only references core
             assert "other.py" in result["src/core.py"]
 
+    def test_javascript_files_use_js_extension(self, tmp_path):
+        """JavaScript targets should search *.js files."""
+        # Create JS files
+        (tmp_path / "caller.js").write_text("import { utils } from './utils';\n")
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "caller.js\n"
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            result = grep_impact(["src/utils.js"], tmp_path)
+
+            # Verify command uses *.js pattern
+            cmd = mock_run.call_args[0][0]
+            assert "*.js" in cmd
+            assert set(result["src/utils.js"]) == {"caller.js"}
+
+    def test_mixed_extensions_search_all(self, tmp_path):
+        """Mixed file types should search all relevant extensions."""
+        (tmp_path / "caller.py").write_text("from api import something\n")
+        (tmp_path / "caller.ts").write_text("import { api } from './api';\n")
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "caller.py\ncaller.ts\n"
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            result = grep_impact(["src/api.py", "lib/types.ts"], tmp_path)
+
+            # Verify command includes both extensions
+            cmd = mock_run.call_args[0][0]
+            assert "*.py" in cmd or ".py" in str(cmd)
+            assert "*.ts" in cmd or ".ts" in str(cmd)
+
 
 class TestExpandDependencies:
     """Tests for expand_dependencies() function.
