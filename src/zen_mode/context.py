@@ -75,3 +75,11 @@ class Context:
             "tokens": tokens,
         })
         self.tokens += tokens.get("in", 0) + tokens.get("out", 0)
+
+    def log(self, msg: str) -> None:
+        """Log a message to the context's log file.
+
+        This consolidates the _log_ctx pattern used across phases.
+        """
+        from zen_mode.files import log as file_log
+        file_log(msg, self.log_file, self.work_dir)

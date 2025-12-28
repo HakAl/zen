@@ -27,7 +27,7 @@ from zen_mode.config import (
     PARSE_TEST_THRESHOLD,
     WORK_DIR_NAME,
 )
-from zen_mode.files import read_file, log
+from zen_mode.files import log
 
 # -----------------------------------------------------------------------------
 # Regex constants (copied from core for independence)
@@ -67,9 +67,6 @@ class FixResult(Enum):
 # -----------------------------------------------------------------------------
 # Logging helper
 # -----------------------------------------------------------------------------
-def _log_ctx(ctx: Context, msg: str) -> None:
-    """Log using context's log file."""
-    log(msg, ctx.log_file, ctx.work_dir)
 
 
 # -----------------------------------------------------------------------------
@@ -289,14 +286,14 @@ Keep under 400 words. Preserve exact error messages.
         phase="parse_tests",
         timeout=45,
         project_root=ctx.project_root,
-        log_fn=lambda msg: _log_ctx(ctx, msg),
+        log_fn=ctx.log,
         cost_callback=ctx.record_cost,
     )
 
     if not parsed or len(parsed) > len(raw_output):
         return truncate_preserve_tail(raw_output, MAX_TEST_OUTPUT_PROMPT)
 
-    _log_ctx(ctx, f"[PARSE] Reduced test output: {len(raw_output)} -> {len(parsed)} chars")
+    ctx.log( f"[PARSE] Reduced test output: {len(raw_output)} -> {len(parsed)} chars")
     return parsed
 
 
@@ -309,7 +306,7 @@ def phase_verify(ctx: Context) -> Tuple[VerifyState, str]:
 
     Uses MODEL_EYES (haiku) - only runs tests, doesn't fix.
     """
-    _log_ctx(ctx, "\n[VERIFY] Running tests...")
+    ctx.log( "\n[VERIFY] Running tests...")
 
     # Ensure work dir exists
     ctx.work_dir.mkdir(parents=True, exist_ok=True)
@@ -317,11 +314,8 @@ def phase_verify(ctx: Context) -> Tuple[VerifyState, str]:
     # Pre-check: detect project runtime and verify it's installed
     runtime, available = detect_project_runtime(ctx.project_root)
     if not available:
-        _log_ctx(ctx, f"[VERIFY] Runtime '{runtime}' not installed, skipping tests.")
+        ctx.log( f"[VERIFY] Runtime '{runtime}' not installed, skipping tests.")
         return VerifyState.RUNTIME_MISSING, f"Runtime '{runtime}' not found"
-
-    # Get plan context for intelligent test selection
-    plan = read_file(ctx.plan_file) if ctx.plan_file.exists() else "[No plan available]"
 
     # Construct test output path string for prompt
     test_output_path_str = WORK_DIR_NAME + "/test_output.txt"
@@ -331,14 +325,14 @@ Verify the implementation by running relevant tests.
 </task>
 
 <context>
-Plan that was executed:
-{plan[:2000]}
+Run tests for recently modified files. If unsure what to test, run the minimal test suite.
+If you need implementation context, READ .zen/plan.md for the execution plan.
 </context>
 
 <actions>
-1. Based on the plan, run tests for what was implemented
+1. Run tests related to modified files (check git status)
 2. Use minimal output (e.g., pytest -q --tb=short)
-3. If the plan created new tests, focus on those
+3. Focus on new or modified test files if present
 4. If unsure, run the project's minimal test suite
 5. Write test output to: {test_output_path_str}
 </actions>
@@ -364,18 +358,18 @@ End with exactly one of:
         model=MODEL_EYES,
         phase="verify",
         project_root=ctx.project_root,
-        log_fn=lambda msg: _log_ctx(ctx, msg),
+        log_fn=ctx.log,
         cost_callback=ctx.record_cost,
         timeout=TIMEOUT_VERIFY,
     )
 
     if not output:
-        _log_ctx(ctx, "[VERIFY] No output from agent (timeout or error).")
+        ctx.log( "[VERIFY] No output from agent (timeout or error).")
         raise VerifyTimeout("Claude did not respond during verification. Please retry.")
 
     # Check for test output file
     if not ctx.test_output_file.exists():
-        _log_ctx(ctx, "[VERIFY] Agent did not write test output file.")
+        ctx.log( "[VERIFY] Agent did not write test output file.")
         return VerifyState.ERROR, ""
 
     # Size-limited read to prevent OOM from huge test output
@@ -415,7 +409,7 @@ def phase_fix_tests(ctx: Context, test_output: str, attempt: int) -> FixResult:
 
     Uses MODEL_HANDS (sonnet) for code changes.
     """
-    _log_ctx(ctx, f"[FIX] Analyzing failures (attempt {attempt})...")
+    ctx.log( f"[FIX] Analyzing failures (attempt {attempt})...")
 
     # Parse test output for concise summary
     parsed = parse_test_output_ctx(ctx, test_output)
@@ -429,9 +423,6 @@ def phase_fix_tests(ctx: Context, test_output: str, attempt: int) -> FixResult:
     # Extract filenames for context
     filenames = extract_filenames(test_output)
     files_context = "\n".join(f"- {f}" for f in filenames[:10]) if filenames else "See tracebacks above"
-
-    # Get plan for context
-    plan = read_file(ctx.plan_file) if ctx.plan_file.exists() else "[No plan file]"
 
     # Build retry hint
     retry_hint = ""
@@ -451,8 +442,7 @@ Fix the failing tests.{retry_hint}
 </files_to_check>
 
 <context>
-Plan that was executed:
-{plan[:2000]}
+For implementation context, READ .zen/plan.md to understand what was being built.
 </context>
 
 <rules>
@@ -473,25 +463,25 @@ End with exactly one of:
         model=MODEL_HANDS,
         phase="fix_tests",
         project_root=ctx.project_root,
-        log_fn=lambda msg: _log_ctx(ctx, msg),
+        log_fn=ctx.log,
         cost_callback=ctx.record_cost,
         timeout=TIMEOUT_FIX,
     )
 
     if not output:
-        _log_ctx(ctx, "[FIX] No output from agent.")
+        ctx.log( "[FIX] No output from agent.")
         return FixResult.BLOCKED
 
     if "FIXES_BLOCKED" in output:
-        _log_ctx(ctx, "[FIX] Agent reports fixes blocked.")
+        ctx.log( "[FIX] Agent reports fixes blocked.")
         return FixResult.BLOCKED
 
     if "FIXES_APPLIED" in output:
-        _log_ctx(ctx, "[FIX] Fixes applied.")
+        ctx.log( "[FIX] Fixes applied.")
         return FixResult.APPLIED
 
     # Assume applied if we got output without explicit block
-    _log_ctx(ctx, "[FIX] Assuming fixes applied (no explicit marker).")
+    ctx.log( "[FIX] Assuming fixes applied (no explicit marker).")
     return FixResult.APPLIED
 
 
@@ -508,34 +498,34 @@ def verify_and_fix(ctx: Context) -> bool:
         state, output = phase_verify(ctx)
 
         if state == VerifyState.PASS:
-            _log_ctx(ctx, "[VERIFY] Passed.")
+            ctx.log( "[VERIFY] Passed.")
             return True
 
         if state == VerifyState.NONE:
-            _log_ctx(ctx, "[VERIFY] No tests found, skipping verification.")
+            ctx.log( "[VERIFY] No tests found, skipping verification.")
             return True
 
         if state == VerifyState.RUNTIME_MISSING:
-            _log_ctx(ctx, "[VERIFY] Runtime not installed, skipping verification.")
+            ctx.log( "[VERIFY] Runtime not installed, skipping verification.")
             return True
 
         if state == VerifyState.ERROR:
-            _log_ctx(ctx, "[VERIFY] Test runner error.")
+            ctx.log( "[VERIFY] Test runner error.")
             return False
 
         # state == FAIL
         if attempt < MAX_FIX_ATTEMPTS:
-            _log_ctx(ctx, f"[FIX] Attempt {attempt + 1}/{MAX_FIX_ATTEMPTS}")
+            ctx.log( f"[FIX] Attempt {attempt + 1}/{MAX_FIX_ATTEMPTS}")
             result = phase_fix_tests(ctx, output, attempt + 1)
 
             if result == FixResult.BLOCKED:
-                _log_ctx(ctx, "[FIX] Blocked - cannot proceed.")
+                ctx.log( "[FIX] Blocked - cannot proceed.")
                 return False
 
-            _log_ctx(ctx, "[FIX] Fix applied, re-verifying...")
+            ctx.log( "[FIX] Fix applied, re-verifying...")
         else:
             # Last attempt failed, no more retries
             break
 
-    _log_ctx(ctx, f"[VERIFY] Failed after {MAX_FIX_ATTEMPTS} fix attempts.")
+    ctx.log( f"[VERIFY] Failed after {MAX_FIX_ATTEMPTS} fix attempts.")
     return False

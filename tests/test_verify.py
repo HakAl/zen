@@ -253,8 +253,7 @@ class TestPhaseVerifyMocked:
     """Test phase_verify with mocked Claude calls."""
 
     @patch('zen_mode.verify.run_claude')
-    @patch('zen_mode.verify.read_file')
-    def test_returns_pass_state(self, mock_read_file, mock_run_claude, tmp_path):
+    def test_returns_pass_state(self, mock_run_claude, tmp_path):
         ctx = make_test_context(tmp_path)
 
         # Create test output file
@@ -262,7 +261,6 @@ class TestPhaseVerifyMocked:
         test_file.write_text("===== 5 passed in 0.23s =====")
 
         mock_run_claude.return_value = "Tests completed. TESTS_PASS"
-        mock_read_file.return_value = "[No plan available]"
 
         state, output = phase_verify(ctx)
         assert state == VerifyState.PASS
@@ -272,30 +270,24 @@ class TestPhaseFixTestsMocked:
     """Test phase_fix_tests with mocked Claude calls."""
 
     @patch('zen_mode.verify.run_claude')
-    @patch('zen_mode.verify.read_file')
-    def test_returns_applied_on_success(self, mock_read_file, mock_run_claude, tmp_path):
+    def test_returns_applied_on_success(self, mock_run_claude, tmp_path):
         ctx = make_test_context(tmp_path)
-        mock_read_file.return_value = "# Plan content"
         mock_run_claude.return_value = "Fixed the issue. FIXES_APPLIED"
 
         result = phase_fix_tests(ctx, "test failure output", attempt=1)
         assert result == FixResult.APPLIED
 
     @patch('zen_mode.verify.run_claude')
-    @patch('zen_mode.verify.read_file')
-    def test_returns_blocked_on_failure(self, mock_read_file, mock_run_claude, tmp_path):
+    def test_returns_blocked_on_failure(self, mock_run_claude, tmp_path):
         ctx = make_test_context(tmp_path)
-        mock_read_file.return_value = "# Plan content"
         mock_run_claude.return_value = "Cannot fix. FIXES_BLOCKED: Missing dependency"
 
         result = phase_fix_tests(ctx, "test failure output", attempt=1)
         assert result == FixResult.BLOCKED
 
     @patch('zen_mode.verify.run_claude')
-    @patch('zen_mode.verify.read_file')
-    def test_returns_blocked_on_no_output(self, mock_read_file, mock_run_claude, tmp_path):
+    def test_returns_blocked_on_no_output(self, mock_run_claude, tmp_path):
         ctx = make_test_context(tmp_path)
-        mock_read_file.return_value = "# Plan content"
         mock_run_claude.return_value = None
 
         result = phase_fix_tests(ctx, "test failure output", attempt=1)

@@ -80,7 +80,7 @@ def backup_scout_files_ctx(ctx: Context) -> None:
                 filepath,
                 ctx.backup_dir,
                 ctx.project_root,
-                log_fn=lambda msg: _log_ctx(ctx, msg)
+                log_fn=ctx.log
             )
 
 
@@ -318,7 +318,7 @@ def phase_implement_ctx(ctx: Context, allowed_files: Optional[str] = None) -> No
     steps = parse_steps(plan)
 
     if not steps:
-        _log_ctx(ctx, "[IMPLEMENT] No steps found in plan.")
+        ctx.log( "[IMPLEMENT] No steps found in plan.")
         raise ImplementError("No steps found in plan")
 
     # Extract goal for lean prompts
@@ -329,11 +329,11 @@ def phase_implement_ctx(ctx: Context, allowed_files: Optional[str] = None) -> No
     verify_keywords = ['verify', 'test', 'check', 'validate', 'confirm']
     has_verify_step = any(kw in last_step_desc for kw in verify_keywords)
     if not has_verify_step:
-        _log_ctx(ctx, "[WARN] Plan missing verification step. Adding implicit verify.")
+        ctx.log( "[WARN] Plan missing verification step. Adding implicit verify.")
 
     backup_scout_files_ctx(ctx)
 
-    _log_ctx(ctx, f"\n[IMPLEMENT] {len(steps)} steps to execute.")
+    ctx.log( f"\n[IMPLEMENT] {len(steps)} steps to execute.")
     completed = get_completed_steps(ctx.log_file)
     seen_lint_hashes: Set[str] = set()
     consecutive_retry_steps = 0
@@ -342,7 +342,7 @@ def phase_implement_ctx(ctx: Context, allowed_files: Optional[str] = None) -> No
         if step_num in completed:
             continue
 
-        _log_ctx(ctx, f"\n[STEP {step_num}] {step_desc[:60]}...")
+        ctx.log( f"\n[STEP {step_num}] {step_desc[:60]}...")
 
         is_verify_only = "OPERATION: VERIFY_COMPLETE" in plan
 
@@ -356,11 +356,11 @@ def phase_implement_ctx(ctx: Context, allowed_files: Optional[str] = None) -> No
 
         for attempt in range(1, MAX_RETRIES + 1):
             if attempt > 1:
-                _log_ctx(ctx, f"  Retry {attempt}/{MAX_RETRIES}...")
+                ctx.log( f"  Retry {attempt}/{MAX_RETRIES}...")
                 use_full_plan = True  # Retries get full context
 
             if attempt == MAX_RETRIES:
-                _log_ctx(ctx, f"  Escalating to {MODEL_BRAIN}...")
+                ctx.log( f"  Escalating to {MODEL_BRAIN}...")
                 use_full_plan = True  # Escalation always gets full context
                 model = MODEL_BRAIN
             else:
@@ -387,20 +387,20 @@ def phase_implement_ctx(ctx: Context, allowed_files: Optional[str] = None) -> No
                 phase="implement",
                 timeout=TIMEOUT_EXEC,
                 project_root=ctx.project_root,
-                log_fn=lambda msg: _log_ctx(ctx, msg),
+                log_fn=ctx.log,
                 cost_callback=ctx.record_cost,
             ) or ""
 
             last_line = output.strip().split('\n')[-1] if output.strip() else ""
             if last_line.startswith("STEP_BLOCKED"):
-                _log_ctx(ctx, f"[BLOCKED] Step {step_num}")
+                ctx.log( f"[BLOCKED] Step {step_num}")
                 logger.info(f"\n{output}")
                 raise ImplementError(f"Step {step_num} blocked: {last_line}")
 
             if "STEP_COMPLETE" in output:
                 passed, lint_out = run_linter_with_timeout()
                 if not passed:
-                    _log_ctx(ctx, f"[LINT FAIL] Step {step_num}")
+                    ctx.log( f"[LINT FAIL] Step {step_num}")
                     for line in lint_out.splitlines()[:20]:
                         logger.info(f"    {line}")
 
@@ -415,34 +415,31 @@ def phase_implement_ctx(ctx: Context, allowed_files: Optional[str] = None) -> No
                     seen_lint_hashes.add(lint_hash)
 
                     if len(seen_lint_hashes) >= MAX_RETRIES + 1:
-                        _log_ctx(ctx, f"[FAILED] Step {step_num}: {len(seen_lint_hashes)} distinct lint failures")
+                        ctx.log( f"[FAILED] Step {step_num}: {len(seen_lint_hashes)} distinct lint failures")
                         if ctx.backup_dir.exists():
-                            _log_ctx(ctx, f"[RECOVERY] Backups available in: {ctx.backup_dir}")
+                            ctx.log( f"[RECOVERY] Backups available in: {ctx.backup_dir}")
                         raise ImplementError(f"Step {step_num} failed: {len(seen_lint_hashes)} distinct lint failures")
                     continue
 
-                _log_ctx(ctx, f"[COMPLETE] Step {step_num}")
+                ctx.log( f"[COMPLETE] Step {step_num}")
                 seen_lint_hashes.clear()
                 step_succeeded_on_attempt = attempt
                 break
         else:
-            _log_ctx(ctx, f"[FAILED] Step {step_num} after {MAX_RETRIES} attempts")
+            ctx.log( f"[FAILED] Step {step_num} after {MAX_RETRIES} attempts")
             if ctx.backup_dir.exists():
-                _log_ctx(ctx, f"[RECOVERY] Backups available in: {ctx.backup_dir}")
+                ctx.log( f"[RECOVERY] Backups available in: {ctx.backup_dir}")
             raise ImplementError(f"Step {step_num} failed after {MAX_RETRIES} attempts")
 
         if step_succeeded_on_attempt > 1:
             consecutive_retry_steps += 1
             if consecutive_retry_steps >= 2:
-                _log_ctx(ctx, "[CHECKPOINT] Multiple consecutive steps needed retries.")
-                _log_ctx(ctx, "  → Something may be wrong with the plan.")
-                _log_ctx(ctx, "  → Review .zen/log.md and consider --reset if plan needs rework.")
+                ctx.log( "[CHECKPOINT] Multiple consecutive steps needed retries.")
+                ctx.log( "  → Something may be wrong with the plan.")
+                ctx.log( "  → Review .zen/log.md and consider --reset if plan needs rework.")
         else:
             consecutive_retry_steps = 0
 
 
-def _log_ctx(ctx: Context, msg: str) -> None:
-    """Log using context's log file."""
-    log(msg, ctx.log_file, ctx.work_dir)
 
 

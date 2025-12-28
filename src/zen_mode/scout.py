@@ -162,6 +162,8 @@ def grep_impact(targeted_files: List[str], project_root: Path) -> Dict[str, List
     - from .module import (relative)
     - from package.module import
 
+    Batches all stems into a single grep call for O(1) subprocess overhead.
+
     Args:
         targeted_files: List of file paths to check
         project_root: Project root directory
@@ -169,49 +171,64 @@ def grep_impact(targeted_files: List[str], project_root: Path) -> Dict[str, List
     Returns:
         Dict mapping target file to list of files that reference it
     """
-    impact: Dict[str, List[str]] = {}
+    if not targeted_files:
+        return {}
 
+    # Build stem -> target mapping
+    stem_to_target: Dict[str, str] = {}
     for target in targeted_files:
-        stem = Path(target).stem  # "user_model.py" -> "user_model"
+        stem = Path(target).stem
+        stem_to_target[stem] = target
 
-        # Use git grep if available (faster, respects .gitignore)
-        # Fall back to grep/findstr
-        matches: Set[str] = set()
+    stems = list(stem_to_target.keys())
+    if not stems:
+        return {t: [] for t in targeted_files}
 
+    # Build regex pattern: stem1|stem2|stem3
+    pattern = "|".join(re.escape(s) for s in stems)
+
+    # Single batched grep call
+    all_matches: Set[str] = set()
+    try:
+        result = subprocess.run(
+            ["git", "grep", "-lE", pattern, "--", "*.py"],
+            capture_output=True,
+            text=True,
+            cwd=project_root,
+            timeout=60
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            all_matches = set(result.stdout.strip().split("\n"))
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        # git not available, try Unix grep
         try:
-            # Try git grep first (cross-platform, respects .gitignore)
             result = subprocess.run(
-                ["git", "grep", "-l", stem, "--", "*.py"],
+                ["grep", "-rlE", "--include=*.py", pattern, "."],
                 capture_output=True,
                 text=True,
                 cwd=project_root,
-                timeout=30
+                timeout=60
             )
             if result.returncode == 0 and result.stdout.strip():
-                for f in result.stdout.strip().split("\n"):
-                    if f and f != target:
-                        matches.add(f)
+                all_matches = {f.lstrip("./") for f in result.stdout.strip().split("\n")}
         except (subprocess.TimeoutExpired, FileNotFoundError):
-            # git not available or timeout, try platform-specific grep
-            try:
-                # Unix grep
-                result = subprocess.run(
-                    ["grep", "-rl", "--include=*.py", stem, "."],
-                    capture_output=True,
-                    text=True,
-                    cwd=project_root,
-                    timeout=30
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    for f in result.stdout.strip().split("\n"):
-                        # Normalize path (remove ./ prefix)
-                        f = f.lstrip("./")
-                        if f and f != target:
-                            matches.add(f)
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                pass  # grep not available, skip
+            pass
 
-        impact[target] = list(matches)
+    # Map matches back to targets by checking which stems appear in each file
+    impact: Dict[str, List[str]] = {t: [] for t in targeted_files}
+    target_set = set(targeted_files)
+
+    for match_file in all_matches:
+        if match_file in target_set:
+            continue  # Don't include self-references
+        # Check which stems this file references (quick string match)
+        try:
+            content = (project_root / match_file).read_text(errors="ignore")
+            for stem, target in stem_to_target.items():
+                if stem in content and match_file not in impact[target]:
+                    impact[target].append(match_file)
+        except OSError:
+            continue
 
     return impact
 
@@ -329,10 +346,10 @@ def phase_scout_ctx(ctx: Context) -> None:
         ctx: Execution context with work_dir, task_file, etc.
     """
     if ctx.scout_file.exists():
-        _log_ctx(ctx, "[SCOUT] Cached. Skipping.")
+        ctx.log( "[SCOUT] Cached. Skipping.")
         return
 
-    _log_ctx(ctx, f"\n[SCOUT] Mapping codebase for {ctx.task_file}...")
+    ctx.log( f"\n[SCOUT] Mapping codebase for {ctx.task_file}...")
     prompt = build_scout_prompt(ctx.task_file, str(ctx.scout_file))
 
     output = run_claude(
@@ -340,12 +357,12 @@ def phase_scout_ctx(ctx: Context) -> None:
         model=MODEL_EYES,
         phase="scout",
         project_root=ctx.project_root,
-        log_fn=lambda msg: _log_ctx(ctx, msg),
+        log_fn=ctx.log,
         cost_callback=ctx.record_cost,
     )
 
     if not output:
-        _log_ctx(ctx, "[SCOUT] Failed.")
+        ctx.log( "[SCOUT] Failed.")
         raise ScoutError("Scout phase failed - no output from Claude")
 
     # Fallback: write output if Claude didn't
@@ -360,7 +377,7 @@ def phase_scout_ctx(ctx: Context) -> None:
             ctx.scout_file,
             targeted_files,
             ctx.project_root,
-            log_fn=lambda msg: _log_ctx(ctx, msg)
+            log_fn=ctx.log
         )
 
     # Capture lint baseline for ratchet model (allow pre-existing violations)
@@ -369,21 +386,18 @@ def phase_scout_ctx(ctx: Context) -> None:
         ratchet.capture_baseline(
             full_paths,
             ctx.baseline_file,
-            log_fn=lambda msg: _log_ctx(ctx, msg)
+            log_fn=ctx.log
         )
 
     # Annotate large files to prevent token waste
     annotate_file_sizes(
         ctx.scout_file,
         ctx.project_root,
-        log_fn=lambda msg: _log_ctx(ctx, msg)
+        log_fn=ctx.log
     )
 
-    _log_ctx(ctx, "[SCOUT] Done.")
+    ctx.log( "[SCOUT] Done.")
 
 
-def _log_ctx(ctx: Context, msg: str) -> None:
-    """Log using context's log file."""
-    log(msg, ctx.log_file, ctx.work_dir)
 
 
