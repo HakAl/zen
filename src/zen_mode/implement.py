@@ -85,10 +85,68 @@ def backup_scout_files_ctx(ctx: Context) -> None:
 
 
 # -----------------------------------------------------------------------------
+# Step Context Helpers
+# -----------------------------------------------------------------------------
+def extract_plan_goal(plan: str) -> str:
+    """Extract the Goal line from a plan.
+
+    Plans follow format: **Goal:** [description]
+    Returns the goal text or a fallback.
+    """
+    match = re.search(r'\*\*Goal:\*\*\s*(.+?)(?:\n|$)', plan)
+    if match:
+        return match.group(1).strip()
+    # Fallback: first non-empty line after header
+    lines = [l.strip() for l in plan.split('\n') if l.strip() and not l.startswith('#')]
+    return lines[0][:100] if lines else "Complete the implementation"
+
+
+def get_step_context(steps: List[Tuple[int, str]], current_idx: int) -> dict:
+    """Get navigation context for a step.
+
+    Args:
+        steps: List of (step_num, step_desc) tuples
+        current_idx: Index of current step in the list
+
+    Returns:
+        Dict with 'prev', 'next', 'total' keys
+    """
+    total = len(steps)
+    prev_desc = steps[current_idx - 1][1][:80] if current_idx > 0 else None
+    next_desc = steps[current_idx + 1][1][:80] if current_idx < total - 1 else None
+    return {
+        'prev': prev_desc,
+        'next': next_desc,
+        'total': total,
+    }
+
+
+# -----------------------------------------------------------------------------
 # Implement Prompt Builders
 # -----------------------------------------------------------------------------
-def build_verify_prompt(step_desc: str, plan: str) -> str:
-    """Build prompt for verification-only step."""
+def build_verify_prompt(step_desc: str, plan: str, goal: Optional[str] = None,
+                        include_full_plan: bool = False) -> str:
+    """Build prompt for verification-only step.
+
+    Args:
+        step_desc: Step description to verify
+        plan: Full plan text (used if include_full_plan=True)
+        goal: Extracted goal from plan
+        include_full_plan: If True, include full plan
+    """
+    if include_full_plan:
+        context_block = f"""<context>
+Full plan:
+{plan}
+</context>"""
+    else:
+        goal_text = goal or "Verify the implementation"
+        context_block = f"""<context>
+Goal: {goal_text}
+
+If you need more context, READ .zen/plan.md for the full plan.
+</context>"""
+
     return f"""<task>
 Verify that the task described below is already complete.
 </task>
@@ -97,10 +155,7 @@ Verify that the task described below is already complete.
 {step_desc}
 </verification>
 
-<context>
-Full plan:
-{plan}
-</context>
+{context_block}
 
 <instructions>
 1. READ the relevant files to confirm the task is complete
@@ -116,20 +171,73 @@ End with: STEP_COMPLETE (if verified) or STEP_BLOCKED: <reason> (if not complete
 
 
 def build_implement_prompt(step_num: int, step_desc: str, plan: str,
-                           project_root: Path, allowed_files: Optional[str] = None) -> str:
-    """Build prompt for implementation step."""
-    constitution = get_full_constitution(project_root, "GOLDEN RULES", "CODE STYLE", "TESTING")
-    base = f"""<task>
-Execute Step {step_num}: {step_desc}
-</task>
+                           project_root: Path, allowed_files: Optional[str] = None,
+                           step_context: Optional[dict] = None, goal: Optional[str] = None,
+                           include_full_plan: bool = False) -> str:
+    """Build prompt for implementation step.
 
-<context>
+    Args:
+        step_num: Current step number
+        step_desc: Current step description
+        plan: Full plan text (used for full_plan mode or fallback)
+        project_root: Project root path
+        allowed_files: Optional glob pattern for allowed files
+        step_context: Dict with 'prev', 'next', 'total' keys for navigation
+        goal: Extracted goal from plan
+        include_full_plan: If True, include full plan (for escalation/retry)
+    """
+    constitution = get_full_constitution(project_root, "GOLDEN RULES", "CODE STYLE", "TESTING")
+
+    # Build navigation context
+    if step_context and not include_full_plan:
+        total = step_context.get('total', '?')
+        prev = step_context.get('prev')
+        next_step = step_context.get('next')
+
+        nav_lines = []
+        if prev:
+            nav_lines.append(f"Previous: {prev}")
+        if next_step:
+            nav_lines.append(f"Next: {next_step}")
+        else:
+            nav_lines.append("Next: (final step)")
+
+        navigation = "\n".join(nav_lines)
+        goal_text = goal or "Complete the implementation"
+
+        context_block = f"""<context>
+Step {step_num} of {total}: {step_desc}
+
+Goal: {goal_text}
+
+<navigation>
+{navigation}
+</navigation>
+
+READ target files first to understand current state before editing.
+</context>
+
+<recovery>
+If blocked or need more context:
+1. READ .zen/plan.md for full implementation plan
+2. READ .zen/scout.md for codebase context
+3. Output STEP_BLOCKED: <reason> if still stuck
+</recovery>"""
+    else:
+        # Full plan mode (escalation, retry, or no step_context)
+        context_block = f"""<context>
 IMPORTANT: This is a fresh session with no memory of previous steps.
 READ target files first to understand current state before editing.
 
 Full plan:
 {plan}
-</context>
+</context>"""
+
+    base = f"""<task>
+Execute Step {step_num}: {step_desc}
+</task>
+
+{context_block}
 
 <constitution>
 {constitution}
@@ -213,6 +321,9 @@ def phase_implement_ctx(ctx: Context, allowed_files: Optional[str] = None) -> No
         _log_ctx(ctx, "[IMPLEMENT] No steps found in plan.")
         raise ImplementError("No steps found in plan")
 
+    # Extract goal for lean prompts
+    goal = extract_plan_goal(plan)
+
     # Check that plan includes a verification step
     last_step_desc = steps[-1][1].lower() if steps else ""
     verify_keywords = ['verify', 'test', 'check', 'validate', 'confirm']
@@ -227,7 +338,7 @@ def phase_implement_ctx(ctx: Context, allowed_files: Optional[str] = None) -> No
     seen_lint_hashes: Set[str] = set()
     consecutive_retry_steps = 0
 
-    for step_num, step_desc in steps:
+    for step_idx, (step_num, step_desc) in enumerate(steps):
         if step_num in completed:
             continue
 
@@ -235,25 +346,40 @@ def phase_implement_ctx(ctx: Context, allowed_files: Optional[str] = None) -> No
 
         is_verify_only = "OPERATION: VERIFY_COMPLETE" in plan
 
-        if is_verify_only:
-            base_prompt = build_verify_prompt(step_desc, plan)
-        else:
-            base_prompt = build_implement_prompt(step_num, step_desc, plan, ctx.project_root, allowed_files)
+        # Build step context for lean prompts
+        step_context = get_step_context(steps, step_idx)
 
-        prompt = base_prompt
+        # First attempt uses lean context; retries/escalation get full plan
+        use_full_plan = False
         last_error_summary = ""
         step_succeeded_on_attempt = 1
 
         for attempt in range(1, MAX_RETRIES + 1):
             if attempt > 1:
                 _log_ctx(ctx, f"  Retry {attempt}/{MAX_RETRIES}...")
+                use_full_plan = True  # Retries get full context
 
             if attempt == MAX_RETRIES:
                 _log_ctx(ctx, f"  Escalating to {MODEL_BRAIN}...")
-                prompt = base_prompt + build_escalation_suffix(attempt, last_error_summary)
+                use_full_plan = True  # Escalation always gets full context
                 model = MODEL_BRAIN
             else:
                 model = MODEL_HANDS
+
+            # Build prompt with appropriate context level
+            if is_verify_only:
+                base_prompt = build_verify_prompt(step_desc, plan, goal=goal,
+                                                  include_full_plan=use_full_plan)
+            else:
+                base_prompt = build_implement_prompt(
+                    step_num, step_desc, plan, ctx.project_root, allowed_files,
+                    step_context=step_context, goal=goal,
+                    include_full_plan=use_full_plan
+                )
+
+            prompt = base_prompt
+            if attempt == MAX_RETRIES:
+                prompt = base_prompt + build_escalation_suffix(attempt, last_error_summary)
 
             output = run_claude(
                 prompt,

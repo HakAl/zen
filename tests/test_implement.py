@@ -19,8 +19,72 @@ from zen_mode.implement import (
     backup_scout_files_ctx,
     build_verify_prompt,
     build_implement_prompt,
+    extract_plan_goal,
+    get_step_context,
 )
 from zen_mode.context import Context
+
+
+class TestExtractPlanGoal:
+    """Tests for extract_plan_goal() function."""
+
+    def test_extracts_goal_from_standard_format(self):
+        plan = "# Plan\n**Goal:** Build a REST API\n## Steps"
+        assert extract_plan_goal(plan) == "Build a REST API"
+
+    def test_handles_missing_goal(self):
+        plan = "# Plan\n## Step 1: Do something"
+        result = extract_plan_goal(plan)
+        # Falls back to first non-header line
+        assert "Step 1" in result or result == "Complete the implementation"
+
+    def test_handles_empty_plan(self):
+        assert extract_plan_goal("") == "Complete the implementation"
+
+    def test_goal_with_extra_whitespace(self):
+        plan = "**Goal:**   Add validation   \n## Steps"
+        assert extract_plan_goal(plan) == "Add validation"
+
+    def test_goal_at_end_of_line(self):
+        plan = "**Goal:** Implement feature"
+        assert extract_plan_goal(plan) == "Implement feature"
+
+
+class TestGetStepContext:
+    """Tests for get_step_context() function."""
+
+    def test_first_step_no_prev(self):
+        steps = [(1, "First"), (2, "Second"), (3, "Third")]
+        ctx = get_step_context(steps, 0)
+        assert ctx['prev'] is None
+        assert ctx['next'] == "Second"
+        assert ctx['total'] == 3
+
+    def test_middle_step_has_both(self):
+        steps = [(1, "First"), (2, "Second"), (3, "Third")]
+        ctx = get_step_context(steps, 1)
+        assert ctx['prev'] == "First"
+        assert ctx['next'] == "Third"
+        assert ctx['total'] == 3
+
+    def test_last_step_no_next(self):
+        steps = [(1, "First"), (2, "Second"), (3, "Third")]
+        ctx = get_step_context(steps, 2)
+        assert ctx['prev'] == "Second"
+        assert ctx['next'] is None
+        assert ctx['total'] == 3
+
+    def test_single_step_plan(self):
+        steps = [(1, "Only step")]
+        ctx = get_step_context(steps, 0)
+        assert ctx['prev'] is None
+        assert ctx['next'] is None
+        assert ctx['total'] == 1
+
+    def test_truncates_long_descriptions(self):
+        steps = [(1, "A" * 100), (2, "B" * 100)]
+        ctx = get_step_context(steps, 1)
+        assert len(ctx['prev']) == 80  # truncated to 80 chars
 
 
 class TestRunLinterWithTimeout:
@@ -172,12 +236,23 @@ class TestBuildVerifyPrompt:
 
         assert step_desc in prompt
 
-    def test_includes_plan_context(self):
-        """Verify prompt includes full plan for context."""
+    def test_lean_mode_excludes_full_plan(self):
+        """Verify prompt uses lean context by default (no full plan)."""
         step_desc = "Verify tests"
         plan = "## Step 1: Add feature\n## Step 2: Verify tests"
 
         prompt = build_verify_prompt(step_desc, plan)
+
+        # Lean mode: plan not included, but recovery hint is
+        assert plan not in prompt
+        assert ".zen/plan.md" in prompt
+
+    def test_full_plan_mode_includes_plan(self):
+        """Verify prompt includes full plan when requested."""
+        step_desc = "Verify tests"
+        plan = "## Step 1: Add feature\n## Step 2: Verify tests"
+
+        prompt = build_verify_prompt(step_desc, plan, include_full_plan=True)
 
         assert plan in prompt
 
@@ -210,14 +285,33 @@ class TestBuildImplementPrompt:
         assert "Step 3" in prompt
         assert "Add error handling" in prompt
 
-    def test_includes_plan_context(self, tmp_path):
-        """Implement prompt includes plan for context."""
+    def test_lean_mode_excludes_full_plan(self, tmp_path):
+        """Implement prompt uses lean context by default."""
+        plan = "## Step 1: Setup\n## Step 2: Implement\n## Step 3: Test"
+        step_context = {'prev': 'Setup', 'next': 'Test', 'total': 3}
+        prompt = build_implement_prompt(
+            step_num=2,
+            step_desc="Implement feature",
+            plan=plan,
+            project_root=tmp_path,
+            step_context=step_context,
+            goal="Build the feature",
+        )
+
+        # Lean mode: plan not included, but navigation and recovery are
+        assert plan not in prompt
+        assert "Step 2 of 3" in prompt
+        assert ".zen/plan.md" in prompt
+
+    def test_full_plan_mode_includes_plan(self, tmp_path):
+        """Implement prompt includes full plan when requested."""
         plan = "## Step 1: Setup\n## Step 2: Implement\n## Step 3: Test"
         prompt = build_implement_prompt(
             step_num=2,
             step_desc="Implement feature",
             plan=plan,
             project_root=tmp_path,
+            include_full_plan=True,
         )
 
         assert plan in prompt
