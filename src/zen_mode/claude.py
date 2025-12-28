@@ -148,8 +148,16 @@ def run_claude(
                 proc.kill()
                 proc.communicate()
         return None
-    except Exception as e:
-        _log(f"[ERROR] Subprocess: {e}")
+    except OSError as e:
+        # File not found, permission denied, etc.
+        _log(f"[ERROR] OS error running Claude: {e}")
+        if proc:
+            proc.terminate()
+            proc.communicate()
+        return None
+    except subprocess.SubprocessError as e:
+        # Other subprocess-related errors
+        _log(f"[ERROR] Subprocess error: {e}")
         if proc:
             proc.terminate()
             proc.communicate()

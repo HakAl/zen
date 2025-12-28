@@ -192,7 +192,7 @@ def phase_judge_ctx(ctx: Context, non_interactive: bool = False) -> None:
         ctx: Execution context
         non_interactive: If True, skip input() prompts and fail-closed
     """
-    _log_ctx(ctx, "\n[JUDGE] Senior Architect review...")
+    ctx.log( "\n[JUDGE] Senior Architect review...")
 
     plan = read_file(ctx.plan_file)
     scout = read_file(ctx.scout_file)
@@ -203,13 +203,13 @@ def phase_judge_ctx(ctx: Context, non_interactive: bool = False) -> None:
 
     changed_files = git.get_changed_filenames(ctx.project_root, ctx.backup_dir)
     if changed_files == "[No files detected]":
-        _log_ctx(ctx, "[JUDGE] No changes detected. Auto-approving.")
+        ctx.log( "[JUDGE] No changes detected. Auto-approving.")
         return
 
     judge_feedback_file = ctx.work_dir / "judge_feedback.md"
 
     for loop in range(1, MAX_JUDGE_LOOPS + 1):
-        _log_ctx(ctx, f"[JUDGE] Review loop {loop}/{MAX_JUDGE_LOOPS}")
+        ctx.log( f"[JUDGE] Review loop {loop}/{MAX_JUDGE_LOOPS}")
 
         prompt = build_judge_prompt(plan, scout, constitution, test_output, changed_files)
 
@@ -219,45 +219,45 @@ def phase_judge_ctx(ctx: Context, non_interactive: bool = False) -> None:
             phase="judge",
             timeout=TIMEOUT_EXEC,
             project_root=ctx.project_root,
-            log_fn=lambda msg: _log_ctx(ctx, msg),
+            log_fn=ctx.log,
             cost_callback=ctx.record_cost,
         )
 
         if not output:
-            _log_ctx(ctx, "[JUDGE] No response from Judge.")
+            ctx.log( "[JUDGE] No response from Judge.")
             if non_interactive:
-                _log_ctx(ctx, "[JUDGE] Non-interactive mode: auto-failing (fail-closed).")
+                ctx.log( "[JUDGE] Non-interactive mode: auto-failing (fail-closed).")
                 raise JudgeError("Judge failed in non-interactive mode (fail-closed)")
             try:
                 choice = input(">> Judge failed. Proceed anyway? [y/N]: ").strip().lower()
                 if choice == 'y':
-                    _log_ctx(ctx, "[JUDGE] User approved proceeding without review.")
+                    ctx.log( "[JUDGE] User approved proceeding without review.")
                     return
             except EOFError:
                 pass
-            _log_ctx(ctx, "[JUDGE] Aborting (fail-closed).")
+            ctx.log( "[JUDGE] Aborting (fail-closed).")
             raise JudgeError("Judge aborted by user (fail-closed)")
 
         if "JUDGE_APPROVED" in output:
-            _log_ctx(ctx, "[JUDGE_APPROVED] Code passed architectural review.")
+            ctx.log( "[JUDGE_APPROVED] Code passed architectural review.")
             return
 
         if "JUDGE_REJECTED" not in output:
-            _log_ctx(ctx, "[JUDGE] Unclear verdict from Judge.")
+            ctx.log( "[JUDGE] Unclear verdict from Judge.")
             if non_interactive:
-                _log_ctx(ctx, "[JUDGE] Non-interactive mode: auto-failing (fail-closed).")
+                ctx.log( "[JUDGE] Non-interactive mode: auto-failing (fail-closed).")
                 raise JudgeError("Judge unclear verdict in non-interactive mode (fail-closed)")
             try:
                 choice = input(">> Judge gave unclear verdict. Proceed anyway? [y/N]: ").strip().lower()
                 if choice == 'y':
-                    _log_ctx(ctx, "[JUDGE] User approved proceeding despite unclear verdict.")
+                    ctx.log( "[JUDGE] User approved proceeding despite unclear verdict.")
                     return
             except EOFError:
                 pass
-            _log_ctx(ctx, "[JUDGE] Aborting (fail-closed).")
+            ctx.log( "[JUDGE] Aborting (fail-closed).")
             raise JudgeError("Judge aborted by user - unclear verdict (fail-closed)")
 
-        _log_ctx(ctx, f"[JUDGE_REJECTED] Issues found (loop {loop})")
+        ctx.log( f"[JUDGE_REJECTED] Issues found (loop {loop})")
 
         feedback = output.split("JUDGE_REJECTED", 1)[-1].strip()
         write_file(judge_feedback_file, feedback, ctx.work_dir)
@@ -266,11 +266,11 @@ def phase_judge_ctx(ctx: Context, non_interactive: bool = False) -> None:
             logger.info(f"    {line}")
 
         if loop >= MAX_JUDGE_LOOPS:
-            _log_ctx(ctx, "[ESCALATE_TO_HUMAN] Max judge loops reached. Manual review required.")
-            _log_ctx(ctx, f"[INFO] Judge feedback saved to: {judge_feedback_file}")
+            ctx.log( "[ESCALATE_TO_HUMAN] Max judge loops reached. Manual review required.")
+            ctx.log( f"[INFO] Judge feedback saved to: {judge_feedback_file}")
             raise JudgeError("Max judge loops reached - manual review required")
 
-        _log_ctx(ctx, "[JUDGE_FIX] Applying fixes...")
+        ctx.log( "[JUDGE_FIX] Applying fixes...")
         changed_files = git.get_changed_filenames(ctx.project_root, ctx.backup_dir)
 
         fix_prompt = build_judge_fix_prompt(feedback, constitution, changed_files, plan)
@@ -281,48 +281,45 @@ def phase_judge_ctx(ctx: Context, non_interactive: bool = False) -> None:
             phase="judge_fix",
             timeout=TIMEOUT_EXEC,
             project_root=ctx.project_root,
-            log_fn=lambda msg: _log_ctx(ctx, msg),
+            log_fn=ctx.log,
             cost_callback=ctx.record_cost,
         )
 
         if not fix_output:
-            _log_ctx(ctx, "[JUDGE_FIX] No response from fixer.")
+            ctx.log( "[JUDGE_FIX] No response from fixer.")
             raise JudgeError("No response from fixer")
 
         if "FIXES_BLOCKED" in fix_output:
-            _log_ctx(ctx, "[JUDGE_FIX] Fixes blocked. Manual intervention required.")
+            ctx.log( "[JUDGE_FIX] Fixes blocked. Manual intervention required.")
             raise JudgeError("Fixes blocked - manual intervention required")
 
         # Re-run linter
         from zen_mode.implement import run_linter_with_timeout
         passed, lint_out = run_linter_with_timeout()
         if not passed:
-            _log_ctx(ctx, "[JUDGE_FIX] Lint failed after fixes.")
+            ctx.log( "[JUDGE_FIX] Lint failed after fixes.")
             for line in lint_out.splitlines()[:10]:
                 logger.info(f"    {line}")
             raise JudgeError("Lint check failed after judge fixes")
 
         # Re-run verify
-        _log_ctx(ctx, "[JUDGE_FIX] Checking tests...")
+        ctx.log( "[JUDGE_FIX] Checking tests...")
         state, _ = phase_verify(ctx)
         if state == VerifyState.FAIL:
-            _log_ctx(ctx, "[JUDGE_FIX] Tests failed after fixes.")
+            ctx.log( "[JUDGE_FIX] Tests failed after fixes.")
             raise JudgeError("Tests failed after judge fixes")
         elif state == VerifyState.ERROR:
-            _log_ctx(ctx, "[JUDGE_FIX] Test runner error.")
+            ctx.log( "[JUDGE_FIX] Test runner error.")
             raise JudgeError("Test runner error after judge fixes")
         elif state == VerifyState.RUNTIME_MISSING:
-            _log_ctx(ctx, "[JUDGE_FIX] Runtime not installed, skipping tests.")
+            ctx.log( "[JUDGE_FIX] Runtime not installed, skipping tests.")
 
         changed_files = git.get_changed_filenames(ctx.project_root, ctx.backup_dir)
 
         if judge_feedback_file.exists():
             judge_feedback_file.unlink()
 
-    _log_ctx(ctx, "[JUDGE] Unexpected exit from judge loop.")
+    ctx.log( "[JUDGE] Unexpected exit from judge loop.")
     raise JudgeError("Unexpected exit from judge loop")
 
 
-def _log_ctx(ctx: Context, msg: str) -> None:
-    """Log using context's log file."""
-    log(msg, ctx.log_file, ctx.work_dir)

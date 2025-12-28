@@ -254,10 +254,10 @@ def phase_plan_ctx(ctx: Context) -> None:
         ctx: Execution context with work_dir, task_file, etc.
     """
     if ctx.plan_file.exists():
-        _log_ctx(ctx, "[PLAN] Cached. Skipping.")
+        ctx.log( "[PLAN] Cached. Skipping.")
         return
 
-    _log_ctx(ctx, "\n[PLAN] Creating execution plan...")
+    ctx.log( "\n[PLAN] Creating execution plan...")
     scout_content = read_file(ctx.scout_file)
     prompt = build_plan_prompt(ctx.task_file, ctx.plan_file, scout_content, ctx.project_root)
 
@@ -266,14 +266,14 @@ def phase_plan_ctx(ctx: Context) -> None:
         model=MODEL_BRAIN,
         phase="plan",
         project_root=ctx.project_root,
-        log_fn=lambda msg: _log_ctx(ctx, msg),
+        log_fn=ctx.log,
         cost_callback=ctx.record_cost,
     )
 
     # Write plan if Claude didn't use Write tool
     if not ctx.plan_file.exists():
         if not output:
-            _log_ctx(ctx, "[PLAN] Failed.")
+            ctx.log( "[PLAN] Failed.")
             raise PlanError("Plan phase failed - no output from Claude")
         write_file(ctx.plan_file, output, ctx.work_dir)
 
@@ -283,18 +283,15 @@ def phase_plan_ctx(ctx: Context) -> None:
     # Validate interface-first structure
     iface_valid, iface_msg = validate_plan_has_interfaces(plan_content)
     if not iface_valid:
-        _log_ctx(ctx, f"[PLAN] Warning: {iface_msg}")
+        ctx.log( f"[PLAN] Warning: {iface_msg}")
 
     # Validate efficiency (warn only, don't retry - Opus doesn't consolidate well)
     eff_valid, efficiency_msg = validate_plan_efficiency(steps)
     if not eff_valid:
-        _log_ctx(ctx, f"[PLAN] Warning: {efficiency_msg}")
+        ctx.log( f"[PLAN] Warning: {efficiency_msg}")
 
-    _log_ctx(ctx, f"[PLAN] Done. {len(steps)} steps.")
+    ctx.log( f"[PLAN] Done. {len(steps)} steps.")
 
 
-def _log_ctx(ctx: Context, msg: str) -> None:
-    """Log using context's log file."""
-    log(msg, ctx.log_file, ctx.work_dir)
 
 

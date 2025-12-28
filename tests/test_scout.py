@@ -85,10 +85,18 @@ Some random text
 
 
 class TestGrepImpact:
-    """Tests for grep_impact() function."""
+    """Tests for grep_impact() function.
+
+    Note: The batched implementation reads file content to map stems back to
+    targets, so tests create real files with expected content.
+    """
 
     def test_finds_references_via_git_grep(self, tmp_path):
         """Find files referencing targets using git grep."""
+        # Create files that contain the stem
+        (tmp_path / "caller1.py").write_text("from utils import something\n")
+        (tmp_path / "caller2.py").write_text("import utils\n")
+
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = "caller1.py\ncaller2.py\n"
@@ -98,11 +106,15 @@ class TestGrepImpact:
 
             mock_run.assert_called_once()
             assert "git" in mock_run.call_args[0][0]
-            assert "utils" in mock_run.call_args[0][0]
             assert set(result["src/utils.py"]) == {"caller1.py", "caller2.py"}
 
     def test_excludes_target_file_from_results(self, tmp_path):
         """Target file itself should not be in results."""
+        # Create file that contains the stem
+        (tmp_path / "caller.py").write_text("from utils import foo\n")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "utils.py").write_text("# utils module\n")
+
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = "src/utils.py\ncaller.py\n"
@@ -124,30 +136,38 @@ class TestGrepImpact:
 
     def test_multiple_targets(self, tmp_path):
         """Handle multiple targeted files."""
-        def mock_run(cmd, **kwargs):
-            mock = MagicMock()
-            if "core" in cmd:
-                mock.returncode = 0
-                mock.stdout = "main.py\n"
-            elif "utils" in cmd:
-                mock.returncode = 0
-                mock.stdout = "core.py\nmain.py\n"
-            else:
-                mock.returncode = 1
-                mock.stdout = ""
-            return mock
+        # Create files with appropriate stem references
+        (tmp_path / "main.py").write_text("import core\nimport utils\n")
+        (tmp_path / "other.py").write_text("from core import something\n")
 
-        with patch("subprocess.run", side_effect=mock_run):
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "main.py\nother.py\n"
+
+        with patch("subprocess.run", return_value=mock_result):
             result = grep_impact(["src/core.py", "src/utils.py"], tmp_path)
             assert "src/core.py" in result
             assert "src/utils.py" in result
+            # main.py references both
+            assert "main.py" in result["src/core.py"]
+            assert "main.py" in result["src/utils.py"]
+            # other.py only references core
+            assert "other.py" in result["src/core.py"]
 
 
 class TestExpandDependencies:
-    """Tests for expand_dependencies() function."""
+    """Tests for expand_dependencies() function.
+
+    Note: The batched implementation reads file content to map stems back to
+    targets, so tests create real files with expected content.
+    """
 
     def test_aggregates_all_dependencies(self, tmp_path):
         """Aggregate dependencies from all targeted files."""
+        # Create files that contain the stem
+        (tmp_path / "caller1.py").write_text("from utils import foo\n")
+        (tmp_path / "caller2.py").write_text("import utils\n")
+
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = "caller1.py\ncaller2.py\n"
@@ -158,6 +178,11 @@ class TestExpandDependencies:
 
     def test_removes_targeted_files_from_results(self, tmp_path):
         """Don't include targeted files in dependency list."""
+        # Create files with stem references
+        (tmp_path / "caller.py").write_text("from utils import something\n")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "utils.py").write_text("# the target\n")
+
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = "src/utils.py\ncaller.py\n"
@@ -169,27 +194,31 @@ class TestExpandDependencies:
 
     def test_deduplicates_across_targets(self, tmp_path):
         """Same dependency from multiple targets appears once."""
-        call_count = [0]
-        def mock_run(cmd, **kwargs):
-            mock = MagicMock()
-            mock.returncode = 0
-            # Both targets are referenced by main.py
-            mock.stdout = "main.py\n"
-            call_count[0] += 1
-            return mock
+        # Create file that references both stems
+        (tmp_path / "main.py").write_text("import a\nimport b\n")
 
-        with patch("subprocess.run", side_effect=mock_run):
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "main.py\n"
+
+        with patch("subprocess.run", return_value=mock_result):
             result = expand_dependencies(["a.py", "b.py"], tmp_path)
             assert result.count("main.py") == 1
 
 
 class TestAppendGrepImpactToScout:
-    """Tests for append_grep_impact_to_scout() function."""
+    """Tests for append_grep_impact_to_scout() function.
+
+    Note: The batched implementation reads file content to map stems back to
+    targets, so tests create real files with expected content.
+    """
 
     def test_appends_section_to_scout_file(self, tmp_path):
         """Append grep impact section when dependencies found."""
         scout_file = tmp_path / "scout.md"
         scout_file.write_text("## Targeted Files\n- `utils.py`: target\n")
+        # Create file that references the stem
+        (tmp_path / "caller.py").write_text("from utils import something\n")
 
         mock_result = MagicMock()
         mock_result.returncode = 0
@@ -231,6 +260,9 @@ class TestAppendGrepImpactToScout:
         """Call log function when dependencies found."""
         scout_file = tmp_path / "scout.md"
         scout_file.write_text("## Targeted Files\n- `utils.py`: target\n")
+        # Create files that reference the stem
+        (tmp_path / "a.py").write_text("from utils import foo\n")
+        (tmp_path / "b.py").write_text("import utils\n")
 
         mock_result = MagicMock()
         mock_result.returncode = 0
