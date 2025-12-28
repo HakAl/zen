@@ -187,11 +187,19 @@ def grep_impact(targeted_files: List[str], project_root: Path) -> Dict[str, List
     # Build regex pattern: stem1|stem2|stem3
     pattern = "|".join(re.escape(s) for s in stems)
 
+    # Derive file extensions from target files (language-aware search)
+    extensions = {Path(t).suffix for t in targeted_files if Path(t).suffix}
+    if not extensions:
+        extensions = {".py"}  # Default to Python if no extension
+
     # Single batched grep call
     all_matches: Set[str] = set()
     try:
+        # Build glob patterns for each extension
+        globs = [f"*{ext}" for ext in extensions]
+        cmd = ["git", "grep", "-lE", pattern, "--"] + globs
         result = subprocess.run(
-            ["git", "grep", "-lE", pattern, "--", "*.py"],
+            cmd,
             capture_output=True,
             text=True,
             cwd=project_root,
@@ -202,8 +210,12 @@ def grep_impact(targeted_files: List[str], project_root: Path) -> Dict[str, List
     except (subprocess.TimeoutExpired, FileNotFoundError):
         # git not available, try Unix grep
         try:
+            # Build --include patterns for each extension
+            include_args = []
+            for ext in extensions:
+                include_args.extend(["--include", f"*{ext}"])
             result = subprocess.run(
-                ["grep", "-rlE", "--include=*.py", pattern, "."],
+                ["grep", "-rlE"] + include_args + [pattern, "."],
                 capture_output=True,
                 text=True,
                 cwd=project_root,
@@ -222,8 +234,11 @@ def grep_impact(targeted_files: List[str], project_root: Path) -> Dict[str, List
         if match_file in target_set:
             continue  # Don't include self-references
         # Check which stems this file references (quick string match)
+        # Read only first 8KB - imports are at top of file
         try:
-            content = (project_root / match_file).read_text(errors="ignore")
+            file_path = project_root / match_file
+            with file_path.open("r", encoding="utf-8", errors="ignore") as f:
+                content = f.read(8192)  # 8KB limit
             for stem, target in stem_to_target.items():
                 if stem in content and match_file not in impact[target]:
                     impact[target].append(match_file)
