@@ -59,6 +59,9 @@ def capture_baseline(
 
     Returns:
         The baseline dict that was captured
+
+    Raises:
+        OSError: If baseline file cannot be written
     """
     if not paths:
         if log_fn:
@@ -90,7 +93,12 @@ def capture_baseline(
 
     # Write baseline file
     baseline_file.parent.mkdir(parents=True, exist_ok=True)
-    baseline_file.write_text(json.dumps(baseline, indent=2, sort_keys=True))
+    try:
+        baseline_file.write_text(json.dumps(baseline, indent=2, sort_keys=True))
+    except OSError as e:
+        if log_fn:
+            log_fn(f"[BASELINE] Failed to write baseline: {e}")
+        raise
 
     # Log summary
     total = sum(baseline.values())
