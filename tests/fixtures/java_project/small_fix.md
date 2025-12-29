@@ -1,0 +1,1 @@
+add a third parameter to calculator 'c'. it should add a+b+c. update test.

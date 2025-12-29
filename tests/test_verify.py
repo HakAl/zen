@@ -14,6 +14,8 @@ from zen_mode.verify import (
     phase_verify,
     phase_fix_tests,
     verify_and_fix,
+    detect_project_runtime,
+    TEST_COMMANDS,
 )
 from zen_mode.context import Context
 
@@ -367,3 +369,43 @@ class TestVerifyAndFixMocked:
         assert result is False
         # Should call fix MAX_FIX_ATTEMPTS times (2)
         assert mock_fix.call_count == 2
+
+
+class TestDetectProjectRuntime:
+    """Test detect_project_runtime function."""
+
+    def test_detects_go_project(self, tmp_path):
+        (tmp_path / "go.mod").write_text("module example")
+        runtime, available = detect_project_runtime(tmp_path)
+        assert runtime == "go"
+
+    def test_detects_node_project(self, tmp_path):
+        (tmp_path / "package.json").write_text("{}")
+        runtime, available = detect_project_runtime(tmp_path)
+        assert runtime == "node"
+
+    def test_detects_python_project_default(self, tmp_path):
+        runtime, available = detect_project_runtime(tmp_path)
+        assert runtime is None
+        assert available is True
+
+    def test_detects_cargo_project(self, tmp_path):
+        (tmp_path / "Cargo.toml").write_text("[package]")
+        runtime, available = detect_project_runtime(tmp_path)
+        assert runtime == "cargo"
+
+
+class TestTestCommandHints:
+    """Test TEST_COMMANDS mapping."""
+
+    def test_go_runtime_gets_go_test(self):
+        assert TEST_COMMANDS["go"] == "go test ./..."
+
+    def test_node_runtime_gets_npm_test(self):
+        assert TEST_COMMANDS["node"] == "npm test"
+
+    def test_all_detected_runtimes_have_commands(self):
+        expected = ["go", "node", "cargo", "gradle", "mvn", "dotnet",
+                    "ruby", "php", "elixir", "swift", "sbt", "dart", "zig", "cmake", "cabal"]
+        for runtime in expected:
+            assert runtime in TEST_COMMANDS, f"Missing command for {runtime}"

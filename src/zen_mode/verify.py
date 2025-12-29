@@ -33,6 +33,27 @@ from zen_mode.files import log
 # Regex constants (copied from core for independence)
 # -----------------------------------------------------------------------------
 _FAIL_STEM = re.compile(r"\bfail", re.IGNORECASE)
+
+# -----------------------------------------------------------------------------
+# Test command hints per runtime
+# -----------------------------------------------------------------------------
+TEST_COMMANDS = {
+    "go": "go test ./...",
+    "node": "npm test",
+    "cargo": "cargo test",
+    "gradle": "./gradlew test",
+    "mvn": "mvn test",
+    "dotnet": "dotnet test",
+    "ruby": "bundle exec rspec",
+    "php": "vendor/bin/phpunit",
+    "elixir": "mix test",
+    "swift": "swift test",
+    "sbt": "sbt test",
+    "dart": "dart test",
+    "zig": "zig build test",
+    "cmake": "ctest",
+    "cabal": "cabal test",
+}
 _CLAUSE_SPLIT = re.compile(r"[,;|()\[\]{}\n]")
 _DIGIT = re.compile(r"\d+")
 _FILE_LINE_PATTERN = re.compile(r'File "([^"]+)", line (\d+)')
@@ -317,6 +338,12 @@ def phase_verify(ctx: Context) -> Tuple[VerifyState, str]:
         ctx.log( f"[VERIFY] Runtime '{runtime}' not installed, skipping tests.")
         return VerifyState.RUNTIME_MISSING, f"Runtime '{runtime}' not found"
 
+    # Build runtime-specific test command hint
+    if runtime in TEST_COMMANDS:
+        test_hint = TEST_COMMANDS[runtime]
+    else:
+        test_hint = "Detect project type and use appropriate test command"
+
     # Construct test output path string for prompt
     test_output_path_str = WORK_DIR_NAME + "/test_output.txt"
 
@@ -331,7 +358,7 @@ If you need implementation context, READ .zen/plan.md for the execution plan.
 
 <actions>
 1. Run tests related to modified files (check git status)
-2. Use minimal output (e.g., pytest -q --tb=short)
+2. Run tests with: {test_hint}
 3. Focus on new or modified test files if present
 4. If unsure, run the project's minimal test suite
 5. Write test output to: {test_output_path_str}
@@ -373,8 +400,13 @@ End with exactly one of:
         return VerifyState.ERROR, ""
 
     # Size-limited read to prevent OOM from huge test output
-    with open(ctx.test_output_file, "r", encoding="utf-8", errors="replace") as f:
-        test_output = f.read(MAX_TEST_OUTPUT_RAW)
+    try:
+        with open(ctx.test_output_file, "r", encoding="utf-8") as f:
+            test_output = f.read(MAX_TEST_OUTPUT_RAW)
+    except UnicodeDecodeError:
+        ctx.log("[WARN] Test output contains non-UTF-8 bytes, using latin-1 fallback")
+        with open(ctx.test_output_file, "r", encoding="latin-1") as f:
+            test_output = f.read(MAX_TEST_OUTPUT_RAW)
 
     # Determine state from output markers and test results
     if "TESTS_NONE" in output or detect_no_tests(test_output):

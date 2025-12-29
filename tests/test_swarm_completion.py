@@ -247,19 +247,22 @@ class TestExecuteWorkerTaskCompletion:
 
     def test_subprocess_timeout_is_respected(self, tmp_path):
         """Worker should timeout if subprocess takes too long."""
-        # Create a mock that simulates a slow subprocess
-        def slow_subprocess(*args, **kwargs):
-            raise subprocess.TimeoutExpired(cmd="zen", timeout=1)
+        with patch("zen_mode.swarm.subprocess.Popen") as mock_popen:
+            mock_proc = Mock()
+            mock_proc.wait.side_effect = subprocess.TimeoutExpired(cmd="zen", timeout=1)
+            mock_proc.poll.return_value = None  # Still running
+            mock_proc.pid = 12345
+            mock_popen.return_value = mock_proc
 
-        with patch("zen_mode.swarm.subprocess.run", side_effect=slow_subprocess):
-            result = execute_worker_task(
-                task_path="task.md",
-                work_dir=".zen_test",
-                project_root=tmp_path,
-            )
+            with patch("zen_mode.swarm._kill_process_tree"):
+                result = execute_worker_task(
+                    task_path="task.md",
+                    work_dir=".zen_test",
+                    project_root=tmp_path,
+                )
 
         assert result.returncode == 124  # Timeout exit code
-        assert "timed out" in result.stderr.lower()
+        assert "timeout" in result.stderr.lower()
 
 
 # =============================================================================
@@ -282,13 +285,17 @@ TESTS_PASS
 [COST] Total: $0.05
 """
 
-        def mock_subprocess(cmd, **kwargs):
+        def mock_popen(cmd, **kwargs):
             stdout = kwargs.get("stdout")
             if stdout and hasattr(stdout, "write"):
                 stdout.write(log_content)
-            return Mock(returncode=0)
+            mock_proc = Mock()
+            mock_proc.wait.return_value = None
+            mock_proc.returncode = 0
+            mock_proc.pid = 12345
+            return mock_proc
 
-        with patch("zen_mode.swarm.subprocess.run", side_effect=mock_subprocess):
+        with patch("zen_mode.swarm.subprocess.Popen", side_effect=mock_popen):
             with patch("zen_mode.swarm._get_modified_files", return_value=["src/file.py"]):
                 result = execute_worker_task(
                     task_path="task.md",
@@ -312,13 +319,17 @@ TESTS_FAIL: 3 failures
 [COST] Total: $0.03
 """
 
-        def mock_subprocess(cmd, **kwargs):
+        def mock_popen(cmd, **kwargs):
             stdout = kwargs.get("stdout")
             if stdout and hasattr(stdout, "write"):
                 stdout.write(log_content)
-            return Mock(returncode=1)
+            mock_proc = Mock()
+            mock_proc.wait.return_value = None
+            mock_proc.returncode = 1
+            mock_proc.pid = 12345
+            return mock_proc
 
-        with patch("zen_mode.swarm.subprocess.run", side_effect=mock_subprocess):
+        with patch("zen_mode.swarm.subprocess.Popen", side_effect=mock_popen):
             with patch("zen_mode.swarm._get_modified_files", return_value=[]):
                 result = execute_worker_task(
                     task_path="task.md",
@@ -353,28 +364,16 @@ class TestSwarmDispatcherCompletion:
         )
         dispatcher = SwarmDispatcher(config)
 
-        with patch("zen_mode.swarm.run_claude") as mock_run_claude:
-            mock_run_claude.return_value = "## Targeted Files\n- `src/file.py`: test"
-            with patch("zen_mode.swarm.ProcessPoolExecutor") as mock_executor_class:
-                mock_executor = Mock()
-                mock_executor_class.return_value = mock_executor
+        # No shared scout - each worker runs its own
+        with patch("zen_mode.swarm.execute_worker_task") as mock_execute:
+            mock_execute.side_effect = [
+                WorkerResult(task_path=str(task1), work_dir=".zen_1", returncode=0),
+                WorkerResult(task_path=str(task2), work_dir=".zen_2", returncode=0),
+            ]
 
-                # Create mock futures that return successful WorkerResults
-                mock_futures = [Mock(), Mock()]
-                mock_executor.submit.side_effect = mock_futures
-                mock_futures[0].result.return_value = WorkerResult(
-                    task_path=str(task1), work_dir=".zen_1", returncode=0
-                )
-                mock_futures[1].result.return_value = WorkerResult(
-                    task_path=str(task2), work_dir=".zen_2", returncode=0
-                )
-
-                with patch("zen_mode.swarm.as_completed") as mock_as_completed:
-                    mock_as_completed.return_value = mock_futures
-
-                    start = time.time()
-                    summary = dispatcher.execute()
-                    elapsed = time.time() - start
+            start = time.time()
+            summary = dispatcher.execute()
+            elapsed = time.time() - start
 
         assert elapsed < 5.0  # Should complete quickly with mocked execution
         assert summary.total_tasks == 2
@@ -395,23 +394,13 @@ class TestSwarmDispatcherCompletion:
         )
         dispatcher = SwarmDispatcher(config)
 
-        # Mock run_claude for shared scout and ProcessPoolExecutor to raise exception
-        with patch("zen_mode.swarm.run_claude") as mock_run_claude:
-            mock_run_claude.return_value = "## Targeted Files\n- `src/file.py`: test"
-            with patch("zen_mode.swarm.ProcessPoolExecutor") as mock_executor_class:
-                mock_executor = Mock()
-                mock_executor_class.return_value = mock_executor
+        # No shared scout - each worker runs its own
+        with patch("zen_mode.swarm.execute_worker_task") as mock_execute:
+            mock_execute.side_effect = RuntimeError("Worker crashed")
 
-                mock_future = Mock()
-                mock_future.result.side_effect = RuntimeError("Worker crashed")
-                mock_executor.submit.return_value = mock_future
-
-                with patch("zen_mode.swarm.as_completed") as mock_as_completed:
-                    mock_as_completed.return_value = [mock_future]
-
-                    start = time.time()
-                    summary = dispatcher.execute()
-                    elapsed = time.time() - start
+            start = time.time()
+            summary = dispatcher.execute()
+            elapsed = time.time() - start
 
         assert elapsed < 5.0
         assert summary.failed == 1
