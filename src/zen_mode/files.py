@@ -127,18 +127,6 @@ def should_ignore_path(path_str: str) -> bool:
     return False
 
 
-def read_file(path: Path) -> str:
-    """Read file contents, returning empty string if not exists or unreadable."""
-    try:
-        return path.read_text(encoding="utf-8") if path.exists() else ""
-    except OSError as e:  # Includes PermissionError
-        logger.warning(f"Failed to read {path}: {e}")
-        return ""
-    except UnicodeDecodeError as e:
-        logger.warning(f"Encoding error in {path}: {e}")
-        return ""
-
-
 def write_file(path: Path, content: str, work_dir: Optional[Path] = None) -> None:
     """Write content to file atomically."""
     if work_dir:
@@ -258,7 +246,7 @@ def _get_full_constitution_cached(project_root_str: str, sections: Tuple[str, ..
     if not project_path.exists():
         project_path = project_root / "AGENTS.md"
 
-    project_rules = read_file(project_path) if project_path.exists() else ""
+    project_rules = project_path.read_text(encoding="utf-8") if project_path.exists() else ""
 
     if project_rules:
         return f"{zen_rules}\n\n## Project Rules\n{project_rules}"

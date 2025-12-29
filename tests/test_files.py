@@ -4,7 +4,6 @@ from pathlib import Path
 
 from zen_mode.files import (
     should_ignore_path,
-    read_file,
     write_file,
     backup_file,
     log,
@@ -80,24 +79,6 @@ class TestShouldIgnorePath:
 
     def test_ignores_zen_directory(self):
         assert should_ignore_path(".zen/scout.md") is True
-
-
-class TestReadFile:
-    """Tests for read_file() function."""
-
-    def test_reads_existing_file(self, tmp_path):
-        test_file = tmp_path / "test.txt"
-        test_file.write_text("hello world", encoding="utf-8")
-        assert read_file(test_file) == "hello world"
-
-    def test_returns_empty_for_nonexistent(self, tmp_path):
-        nonexistent = tmp_path / "does_not_exist.txt"
-        assert read_file(nonexistent) == ""
-
-    def test_reads_utf8_content(self, tmp_path):
-        test_file = tmp_path / "unicode.txt"
-        test_file.write_text("Hello 世界 🌍", encoding="utf-8")
-        assert read_file(test_file) == "Hello 世界 🌍"
 
 
 class TestWriteFile:

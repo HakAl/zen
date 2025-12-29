@@ -10,7 +10,7 @@ from zen_mode.claude import run_claude
 from zen_mode.config import MODEL_BRAIN
 from zen_mode.context import Context
 from zen_mode.exceptions import PlanError
-from zen_mode.files import read_file, write_file, get_full_constitution, log
+from zen_mode.files import write_file, get_full_constitution, log
 
 
 # Pre-compiled regex patterns for step parsing
@@ -227,7 +227,7 @@ def get_completed_steps(log_file: Path) -> Set[int]:
     if not log_file.exists():
         return set()
 
-    log_content = read_file(log_file)
+    log_content = log_file.read_text(encoding="utf-8")
     completed: Set[int] = set()
 
     # Explicit markers
@@ -258,7 +258,7 @@ def phase_plan_ctx(ctx: Context) -> None:
         return
 
     ctx.log( "\n[PLAN] Creating execution plan...")
-    scout_content = read_file(ctx.scout_file)
+    scout_content = ctx.scout_file.read_text(encoding="utf-8")
     prompt = build_plan_prompt(ctx.task_file, ctx.plan_file, scout_content, ctx.project_root)
 
     output = run_claude(
@@ -277,7 +277,7 @@ def phase_plan_ctx(ctx: Context) -> None:
             raise PlanError("Plan phase failed - no output from Claude")
         write_file(ctx.plan_file, output, ctx.work_dir)
 
-    plan_content = read_file(ctx.plan_file)
+    plan_content = ctx.plan_file.read_text(encoding="utf-8")
     steps = parse_steps(plan_content)
 
     # Validate interface-first structure
