@@ -216,21 +216,46 @@ export ZEN_MODEL_HANDS=claude-3-5-sonnet-20241022
 export ZEN_SHOW_COSTS=false
 ```
 
-### Security Considerations
+### Security & Trust Model
 
-**⚠️ Zen has full file system access within your project directory.**
+**⚠️ Zen runs Claude with `--dangerously-skip-permissions` by default.**
+
+This means Claude can read/write files without prompting. We call this "YOLO mode."
+
+#### Why YOLO by default?
+
+Zen is designed for autonomous task execution. Permission prompts would break the workflow. This is the same trust model as:
+- `make` running Makefiles
+- `npm run` executing package.json scripts
+- `docker compose` running compose files
+
+**When you run `zen task.md`, you are trusting that project** — just like running any other dev tool.
+
+#### Trust Controls
+
+| Control | Purpose |
+|---------|---------|
+| **`ZEN_SKIP_PERMISSIONS=false`** | Disable YOLO mode. Claude will prompt for file access. Use in untrusted contexts. |
+| **`ZEN_TRUST_ROOTS`** | Limit YOLO mode to specific directories. Comma-separated paths. |
+| **`--trust-local`** | Required flag to execute local `zen.py` overrides without confirmation. |
+
+```bash
+# Disable YOLO mode (Claude prompts for each file operation)
+export ZEN_SKIP_PERMISSIONS=false
+zen task.md
+
+# Limit YOLO to specific projects
+export ZEN_TRUST_ROOTS="/home/user/trusted-projects,/work/internal"
+zen task.md
+```
+
+#### Risks & Mitigations
 
 | Risk | Mitigation |
 |------|------------|
-| **Untrusted task files** | Task files are executed by an LLM with write access. Review `.md` files from external sources before running. |
-| **Local `zen.py` override** | If a `zen.py` exists in your project root, Zen executes it instead of the package. Requires `--trust-local` flag or interactive confirmation. |
-| **`ZEN_SKIP_PERMISSIONS`** | Bypasses Claude CLI's permission prompts. **Use only in trusted CI/CD environments** where tasks are pre-reviewed. Never set in interactive sessions. |
-
-```bash
-# CI/CD example - only if tasks are trusted
-export ZEN_SKIP_PERMISSIONS=true
-zen task.md
-```
+| **Cloned malicious repo** | Review task files before running. Same due diligence as any cloned code. |
+| **Local `zen.py` override** | Requires `--trust-local` flag or interactive confirmation. Blocked in CI without flag. |
+| **Task file prompt injection** | Task files go straight to Claude. No filtering exists. Review external `.md` files. |
 
 ### Judge Auto-Skip
 
