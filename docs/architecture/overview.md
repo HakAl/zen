@@ -235,10 +235,34 @@ Costs per task:
 - **Normal Flow**: $0.15-0.25
 - **Complex + Review**: $0.25-0.40
 
-## Security Considerations
+## Security & Trust Model
 
-- API keys via environment variables
+**⚠️ Zen runs Claude with `--dangerously-skip-permissions` by default.**
+
+This means Claude can read/write files without prompting. We call this "YOLO mode."
+
+### Why YOLO by default?
+
+Zen is designed for autonomous task execution. Permission prompts would break the workflow. This is the same trust model as:
+- `make` running Makefiles
+- `npm run` executing package.json scripts
+- `docker compose` running compose files
+
+**When you run `zen task.md`, you are trusting that project.**
+
+### Trust Controls
+
+| Control | Purpose |
+|---------|---------|
+| `ZEN_SKIP_PERMISSIONS=false` | Disable YOLO mode. Claude prompts for file access. |
+| `ZEN_TRUST_ROOTS` | Limit YOLO to specific directories (comma-separated paths). |
+| `--trust-local` | Required to execute local `zen.py` overrides. |
+
+### Other Security Measures
+
+- API keys via environment variables only
 - No credentials in logs
-- File backups prevent data loss
+- File backups before modification
 - Git-ignored directories filtered
 - Binary files excluded from processing
+- Env var validation with fail-fast on invalid values

@@ -67,14 +67,32 @@ Zen automatically uses "Fast Track" mode for simple changes that:
 
 Fast Track skips the Judge phase for faster iterations.
 
+## Security Note
+
+**Zen runs Claude with full file system access by default** (YOLO mode). This is required for autonomous operation — the same trust model as Makefiles or npm scripts.
+
+Only run `zen` on projects you trust. For untrusted contexts:
+
+```bash
+# Disable YOLO mode - Claude will prompt for file access
+export ZEN_SKIP_PERMISSIONS=false
+zen task.md
+```
+
+See [Security & Trust Model](../architecture/overview.md#security--trust-model) for details.
+
 ## Configuration
 
 Create `.env` (optional):
 
-```
+```bash
+# Security (YOLO mode is ON by default)
+# ZEN_SKIP_PERMISSIONS=false        # Disable YOLO mode
+# ZEN_TRUST_ROOTS=/path/to/trusted  # Limit YOLO to specific dirs
+
 # Models for each phase
-ZEN_MODEL_BRAIN=haiku      # Planning (expensive, smart)
-ZEN_MODEL_HANDS=haiku      # Implementation (balanced)
+ZEN_MODEL_BRAIN=opus       # Planning (expensive, smart)
+ZEN_MODEL_HANDS=sonnet     # Implementation (balanced)
 ZEN_MODEL_EYES=haiku       # Summarization (cheap, fast)
 ```
 
