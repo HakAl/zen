@@ -17,6 +17,36 @@ logger = logging.getLogger(__name__)
 _claude_exe: Optional[str] = None
 
 
+def is_trusted_directory(cwd: Path) -> bool:
+    """Check if cwd is within a trusted root.
+
+    If ZEN_TRUST_ROOTS is set, only directories within those roots are trusted.
+    If ZEN_TRUST_ROOTS is not set, falls back to ZEN_SKIP_PERMISSIONS behavior.
+
+    Args:
+        cwd: Current working directory to check
+
+    Returns:
+        True if directory is trusted for skip-permissions
+    """
+    trust_roots = os.getenv("ZEN_TRUST_ROOTS", "").split(os.pathsep)
+    trust_roots = [r.strip() for r in trust_roots if r.strip()]
+
+    if not trust_roots:
+        # No roots specified - fall back to ZEN_SKIP_PERMISSIONS behavior
+        return os.getenv("ZEN_SKIP_PERMISSIONS", "true").lower() != "false"
+
+    cwd_path = cwd.resolve()
+    for root in trust_roots:
+        root_path = Path(root).resolve()
+        try:
+            cwd_path.relative_to(root_path)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 def _init_claude() -> str:
     """Initialize Claude CLI path. Returns path or exits."""
     global _claude_exe
@@ -91,9 +121,9 @@ def run_claude(
     claude_exe = _init_claude()
     cmd = [claude_exe, "-p", "--model", model, "--output-format", "json"]
 
-    # Only add dangerous flag if explicitly enabled via env var
-    if os.getenv("ZEN_SKIP_PERMISSIONS", "").lower() == "true":
-        _log("[WARN] ZEN_SKIP_PERMISSIONS enabled - skipping Claude permission checks")
+    # Skip Claude permission prompts if directory is trusted
+    # Trust is determined by ZEN_TRUST_ROOTS (scope-limited) or ZEN_SKIP_PERMISSIONS (global)
+    if is_trusted_directory(project_root):
         cmd.insert(2, "--dangerously-skip-permissions")
     proc = None
     try:
@@ -134,7 +164,11 @@ def run_claude(
         except (KeyError, TypeError, ValueError) as e:
             _log(f"[WARN] Cost extraction failed: {e}")
 
-        return data.get("result")
+        result = data.get("result")
+        if result is not None and not isinstance(result, str):
+            _log(f"[ERROR] result field is {type(result).__name__}, expected str")
+            return None
+        return result
 
     except subprocess.TimeoutExpired:
         _log(f"[ERROR] Claude ({model}) timed out")

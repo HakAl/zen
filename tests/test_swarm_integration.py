@@ -166,27 +166,16 @@ class TestSwarmExecuteFlow:
         )
         dispatcher = SwarmDispatcher(config)
 
-        with patch("zen_mode.swarm.run_claude") as mock_run_claude:
-            mock_run_claude.return_value = "## Targeted Files\n- `src/file.py`: test"
-            with patch("zen_mode.swarm.ProcessPoolExecutor") as mock_executor_class:
-                mock_executor = Mock()
-                mock_executor_class.return_value = mock_executor
+        # No shared scout - each worker runs its own
+        with patch("zen_mode.swarm.execute_worker_task") as mock_execute:
+            mock_execute.side_effect = [
+                WorkerResult(task_path=str(task1), work_dir=".zen_1", returncode=0),
+                WorkerResult(task_path=str(task2), work_dir=".zen_2", returncode=0),
+            ]
 
-                mock_futures = [Mock(), Mock()]
-                mock_executor.submit.side_effect = mock_futures
-                mock_futures[0].result.return_value = WorkerResult(
-                    task_path=str(task1), work_dir=".zen_1", returncode=0
-                )
-                mock_futures[1].result.return_value = WorkerResult(
-                    task_path=str(task2), work_dir=".zen_2", returncode=0
-                )
-
-                with patch("zen_mode.swarm.as_completed") as mock_as_completed:
-                    mock_as_completed.return_value = mock_futures
-
-                    start = time.time()
-                    summary = dispatcher.execute()
-                    elapsed = time.time() - start
+            start = time.time()
+            summary = dispatcher.execute()
+            elapsed = time.time() - start
 
         assert elapsed < 5  # Should complete quickly with mocks
         assert summary.total_tasks == 2
@@ -340,18 +329,23 @@ class TestWorkerResultCollection:
         """Verify stdout/stderr are captured in WorkerResult.
 
         Note: The implementation writes both stdout and stderr to a log file,
-        then reads it back into result.stdout. result.stderr is always empty.
+        then reads it back into result.stdout. result.stderr is always empty
+        unless there was a timeout.
         """
         log_content = "Standard output here\nError output here"
 
         def write_to_log(cmd, **kwargs):
             # Write to the log file that was passed as stdout
-            log_file = kwargs.get("stdout")
-            if log_file and hasattr(log_file, "write"):
-                log_file.write(log_content)
-            return Mock(returncode=1)
+            stdout_file = kwargs.get("stdout")
+            if stdout_file and hasattr(stdout_file, "write"):
+                stdout_file.write(log_content)
+            mock_proc = Mock()
+            mock_proc.wait.return_value = None
+            mock_proc.returncode = 1
+            mock_proc.pid = 12345
+            return mock_proc
 
-        with patch("zen_mode.swarm.subprocess.run", side_effect=write_to_log):
+        with patch("zen_mode.swarm.subprocess.Popen", side_effect=write_to_log):
             with patch("zen_mode.swarm._get_modified_files", return_value=[]):
                 result = execute_worker_task(
                     task_path="task.md",

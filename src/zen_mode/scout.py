@@ -1,10 +1,13 @@
 """Scout phase: Map codebase for task execution."""
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 import sys
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 from typing import Callable, Dict, List, Optional, Set
 
 from zen_mode.claude import run_claude
@@ -76,7 +79,12 @@ def annotate_file_sizes(scout_file: Path, project_root: Path,
     if not scout_file.exists():
         return
 
-    content = scout_file.read_text(encoding='utf-8')
+    try:
+        content = scout_file.read_text(encoding='utf-8')
+    except (OSError, UnicodeDecodeError) as e:
+        logger.warning(f"Failed to read scout file {scout_file}: {e}")
+        return  # Can't annotate if we can't read
+
     lines = content.splitlines()
     modified = False
     annotated_count = 0
@@ -116,7 +124,11 @@ def annotate_file_sizes(scout_file: Path, project_root: Path,
         new_lines.append(line)
 
     if modified:
-        scout_file.write_text('\n'.join(new_lines), encoding='utf-8')
+        try:
+            scout_file.write_text('\n'.join(new_lines), encoding='utf-8')
+        except OSError as e:
+            logger.error(f"Failed to write annotated scout file: {e}")
+            return  # Don't raise - annotations are nice-to-have, not critical
         if log_fn:
             log_fn(f"[SCOUT] Annotated {annotated_count} large files")
 
@@ -284,10 +296,14 @@ def append_grep_impact_to_scout(scout_file: Path, targeted_files: List[str],
         if log_fn:
             log_fn(f"[SCOUT] Found {len(deps)} files referencing targeted files")
 
-        with scout_file.open("a", encoding="utf-8") as f:
-            f.write("\n## Grep Impact (callers/importers)\n")
-            for dep in sorted(deps):
-                f.write(f"- `{dep}`: references targeted file\n")
+        try:
+            with scout_file.open("a", encoding="utf-8") as f:
+                f.write("\n## Grep Impact (callers/importers)\n")
+                for dep in sorted(deps):
+                    f.write(f"- `{dep}`: references targeted file\n")
+        except OSError as e:
+            if log_fn:
+                log_fn(f"[SCOUT] Failed to append grep impact: {e}")
     elif log_fn:
         log_fn("[SCOUT] No additional callers/importers found")
 
@@ -412,7 +428,4 @@ def phase_scout_ctx(ctx: Context) -> None:
     )
 
     ctx.log( "[SCOUT] Done.")
-
-
-
 

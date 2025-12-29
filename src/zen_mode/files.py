@@ -204,7 +204,11 @@ def load_constitution(*sections: str) -> str:
     if not constitution_path.exists():
         return ""
 
-    content = constitution_path.read_text(encoding="utf-8")
+    try:
+        content = constitution_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        logger.error(f"Failed to load constitution from {constitution_path}: {e}")
+        return ""
     result = []
 
     for section in sections:

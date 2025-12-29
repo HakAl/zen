@@ -15,10 +15,13 @@ around, we still recognize the same violation count.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from zen_mode import linter
+
+logger = logging.getLogger(__name__)
 
 
 # Type alias for baseline: "(file, rule)" -> count
@@ -125,5 +128,6 @@ def load_baseline(baseline_file: Path) -> Baseline:
 
     try:
         return json.loads(baseline_file.read_text())
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+        logger.warning(f"Could not load baseline from {baseline_file}: {e} - treating as empty")
         return {}

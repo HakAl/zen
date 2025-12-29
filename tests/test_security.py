@@ -162,9 +162,9 @@ class TestSkipPermissionsEnvVar:
     @pytest.mark.allow_real_api
     @patch('zen_mode.claude.subprocess.Popen')
     @patch('zen_mode.claude._init_claude', return_value='/usr/bin/claude')
-    def test_skip_permissions_flag_absent_by_default(self, mock_init, mock_popen, tmp_path, monkeypatch):
-        """By default, --dangerously-skip-permissions should NOT be in command."""
-        # Ensure env var is not set
+    def test_skip_permissions_flag_present_by_default(self, mock_init, mock_popen, tmp_path, monkeypatch):
+        """By default, --dangerously-skip-permissions SHOULD be in command (zen is autonomous)."""
+        # Ensure env var is not set (defaults to true)
         monkeypatch.delenv("ZEN_SKIP_PERMISSIONS", raising=False)
 
         # Mock process
@@ -180,18 +180,18 @@ class TestSkipPermissionsEnvVar:
         from zen_mode.claude import run_claude
         run_claude("test prompt", "sonnet", project_root=tmp_path)
 
-        # Check command does NOT contain dangerous flag
+        # Check command DOES contain dangerous flag (default behavior)
         call_args = mock_popen.call_args
         cmd = call_args[0][0]
-        assert "--dangerously-skip-permissions" not in cmd
+        assert "--dangerously-skip-permissions" in cmd
 
     @pytest.mark.allow_real_api
     @patch('zen_mode.claude.subprocess.Popen')
     @patch('zen_mode.claude._init_claude', return_value='/usr/bin/claude')
-    def test_skip_permissions_flag_present_when_env_var_set(self, mock_init, mock_popen, tmp_path, monkeypatch):
-        """When ZEN_SKIP_PERMISSIONS=true, flag should be added."""
-        # Set env var
-        monkeypatch.setenv("ZEN_SKIP_PERMISSIONS", "true")
+    def test_skip_permissions_flag_absent_when_disabled(self, mock_init, mock_popen, tmp_path, monkeypatch):
+        """When ZEN_SKIP_PERMISSIONS=false, flag should NOT be added."""
+        # Set env var to false
+        monkeypatch.setenv("ZEN_SKIP_PERMISSIONS", "false")
 
         # Mock process
         mock_proc = MagicMock()
@@ -206,7 +206,128 @@ class TestSkipPermissionsEnvVar:
         from zen_mode.claude import run_claude
         run_claude("test prompt", "sonnet", project_root=tmp_path)
 
-        # Check command DOES contain dangerous flag
+        # Check command does NOT contain dangerous flag when disabled
         call_args = mock_popen.call_args
         cmd = call_args[0][0]
+        assert "--dangerously-skip-permissions" not in cmd
+
+
+class TestTrustRoots:
+    """Tests for ZEN_TRUST_ROOTS scope-limited trust."""
+
+    def test_no_trust_roots_falls_back_to_skip_permissions_default(self, tmp_path, monkeypatch):
+        """Without ZEN_TRUST_ROOTS, falls back to ZEN_SKIP_PERMISSIONS (default true)."""
+        monkeypatch.delenv("ZEN_TRUST_ROOTS", raising=False)
+        monkeypatch.delenv("ZEN_SKIP_PERMISSIONS", raising=False)
+
+        from zen_mode.claude import is_trusted_directory
+        assert is_trusted_directory(tmp_path) is True
+
+    def test_no_trust_roots_respects_skip_permissions_false(self, tmp_path, monkeypatch):
+        """Without ZEN_TRUST_ROOTS, ZEN_SKIP_PERMISSIONS=false is respected."""
+        monkeypatch.delenv("ZEN_TRUST_ROOTS", raising=False)
+        monkeypatch.setenv("ZEN_SKIP_PERMISSIONS", "false")
+
+        from zen_mode.claude import is_trusted_directory
+        assert is_trusted_directory(tmp_path) is False
+
+    def test_trust_roots_allows_exact_match(self, tmp_path, monkeypatch):
+        """Directory exactly matching a trust root is trusted."""
+        monkeypatch.setenv("ZEN_TRUST_ROOTS", str(tmp_path))
+
+        from zen_mode.claude import is_trusted_directory
+        assert is_trusted_directory(tmp_path) is True
+
+    def test_trust_roots_allows_subdirectory(self, tmp_path, monkeypatch):
+        """Subdirectory of a trust root is trusted."""
+        subdir = tmp_path / "project" / "subdir"
+        subdir.mkdir(parents=True)
+        monkeypatch.setenv("ZEN_TRUST_ROOTS", str(tmp_path))
+
+        from zen_mode.claude import is_trusted_directory
+        assert is_trusted_directory(subdir) is True
+
+    def test_trust_roots_rejects_outside_directory(self, tmp_path, monkeypatch):
+        """Directory outside all trust roots is not trusted."""
+        trusted = tmp_path / "trusted"
+        trusted.mkdir()
+        untrusted = tmp_path / "untrusted"
+        untrusted.mkdir()
+        monkeypatch.setenv("ZEN_TRUST_ROOTS", str(trusted))
+
+        from zen_mode.claude import is_trusted_directory
+        assert is_trusted_directory(untrusted) is False
+
+    def test_trust_roots_multiple_roots(self, tmp_path, monkeypatch):
+        """Multiple trust roots are all checked."""
+        root1 = tmp_path / "root1"
+        root1.mkdir()
+        root2 = tmp_path / "root2"
+        root2.mkdir()
+        untrusted = tmp_path / "untrusted"
+        untrusted.mkdir()
+
+        # Use os.pathsep for platform-appropriate separator
+        monkeypatch.setenv("ZEN_TRUST_ROOTS", f"{root1}{os.pathsep}{root2}")
+
+        from zen_mode.claude import is_trusted_directory
+        assert is_trusted_directory(root1) is True
+        assert is_trusted_directory(root2) is True
+        assert is_trusted_directory(untrusted) is False
+
+    def test_trust_roots_ignores_skip_permissions_when_set(self, tmp_path, monkeypatch):
+        """When ZEN_TRUST_ROOTS is set, ZEN_SKIP_PERMISSIONS is ignored."""
+        trusted = tmp_path / "trusted"
+        trusted.mkdir()
+        untrusted = tmp_path / "untrusted"
+        untrusted.mkdir()
+
+        # Even with SKIP_PERMISSIONS=true, untrusted dir should be rejected
+        monkeypatch.setenv("ZEN_TRUST_ROOTS", str(trusted))
+        monkeypatch.setenv("ZEN_SKIP_PERMISSIONS", "true")
+
+        from zen_mode.claude import is_trusted_directory
+        assert is_trusted_directory(trusted) is True
+        assert is_trusted_directory(untrusted) is False
+
+    @pytest.mark.allow_real_api
+    @patch('zen_mode.claude.subprocess.Popen')
+    @patch('zen_mode.claude._init_claude', return_value='/usr/bin/claude')
+    def test_trust_roots_integration_trusted_dir(self, mock_init, mock_popen, tmp_path, monkeypatch):
+        """Integration: run_claude adds flag when in trusted directory."""
+        monkeypatch.setenv("ZEN_TRUST_ROOTS", str(tmp_path))
+
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate.return_value = ('{"result": "test", "total_cost_usd": 0}', '')
+        mock_popen.return_value = mock_proc
+
+        claude._claude_exe = None
+        from zen_mode.claude import run_claude
+        run_claude("test", "sonnet", project_root=tmp_path)
+
+        cmd = mock_popen.call_args[0][0]
         assert "--dangerously-skip-permissions" in cmd
+
+    @pytest.mark.allow_real_api
+    @patch('zen_mode.claude.subprocess.Popen')
+    @patch('zen_mode.claude._init_claude', return_value='/usr/bin/claude')
+    def test_trust_roots_integration_untrusted_dir(self, mock_init, mock_popen, tmp_path, monkeypatch):
+        """Integration: run_claude omits flag when outside trust roots."""
+        trusted = tmp_path / "trusted"
+        trusted.mkdir()
+        untrusted = tmp_path / "untrusted"
+        untrusted.mkdir()
+        monkeypatch.setenv("ZEN_TRUST_ROOTS", str(trusted))
+
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate.return_value = ('{"result": "test", "total_cost_usd": 0}', '')
+        mock_popen.return_value = mock_proc
+
+        claude._claude_exe = None
+        from zen_mode.claude import run_claude
+        run_claude("test", "sonnet", project_root=untrusted)
+
+        cmd = mock_popen.call_args[0][0]
+        assert "--dangerously-skip-permissions" not in cmd

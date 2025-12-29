@@ -97,22 +97,27 @@ class TestSubprocessTimeout:
 
     def test_timeout_returns_code_124(self, tmp_path):
         """Timeout should set returncode to 124 (standard timeout code)."""
-        with patch("zen_mode.swarm.subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.TimeoutExpired("zen", 600)
+        with patch("zen_mode.swarm.subprocess.Popen") as mock_popen:
+            mock_proc = Mock()
+            mock_proc.wait.side_effect = subprocess.TimeoutExpired("zen", 600)
+            mock_proc.poll.return_value = None  # Still running
+            mock_proc.pid = 12345
+            mock_popen.return_value = mock_proc
 
-            result = execute_worker_task(
-                task_path="task.md",
-                work_dir=".zen_test",
-                project_root=tmp_path,
-            )
+            with patch("zen_mode.swarm._kill_process_tree"):
+                result = execute_worker_task(
+                    task_path="task.md",
+                    work_dir=".zen_test",
+                    project_root=tmp_path,
+                )
 
             assert result.returncode == 124
-            assert "timed out" in result.stderr.lower()
+            assert "timeout" in result.stderr.lower()
 
     def test_subprocess_oserror_handled(self, tmp_path):
         """OSError from subprocess should be caught and reported."""
-        with patch("zen_mode.swarm.subprocess.run") as mock_run:
-            mock_run.side_effect = OSError("No such file or directory: 'zen'")
+        with patch("zen_mode.swarm.subprocess.Popen") as mock_popen:
+            mock_popen.side_effect = OSError("No such file or directory: 'zen'")
 
             result = execute_worker_task(
                 task_path="task.md",
@@ -125,8 +130,8 @@ class TestSubprocessTimeout:
 
     def test_subprocess_permission_error_handled(self, tmp_path):
         """Permission denied errors should be caught and reported."""
-        with patch("zen_mode.swarm.subprocess.run") as mock_run:
-            mock_run.side_effect = PermissionError("Permission denied")
+        with patch("zen_mode.swarm.subprocess.Popen") as mock_popen:
+            mock_popen.side_effect = PermissionError("Permission denied")
 
             result = execute_worker_task(
                 task_path="task.md",
@@ -139,12 +144,13 @@ class TestSubprocessTimeout:
 
     def test_subprocess_nonzero_exit_preserved(self, tmp_path):
         """Non-zero exit codes from subprocess should be preserved."""
-        with patch("zen_mode.swarm.subprocess.run") as mock_run:
-            mock_run.return_value = Mock(
-                returncode=42,
-                stdout="Some output",
-                stderr="Some error"
-            )
+        with patch("zen_mode.swarm.subprocess.Popen") as mock_popen:
+            mock_proc = Mock()
+            mock_proc.wait.return_value = None
+            mock_proc.returncode = 42
+            mock_proc.pid = 12345
+            mock_popen.return_value = mock_proc
+
             with patch("zen_mode.swarm._get_modified_files", return_value=[]):
                 result = execute_worker_task(
                     task_path="task.md",
@@ -206,8 +212,13 @@ class TestFileSystemEdgeCases:
         """Work directory should be created with parents."""
         nested_work_dir = ".zen/deeply/nested/worker_abc"
 
-        with patch("zen_mode.swarm.subprocess.run") as mock_run:
-            mock_run.return_value = Mock(returncode=0, stdout="", stderr="")
+        with patch("zen_mode.swarm.subprocess.Popen") as mock_popen:
+            mock_proc = Mock()
+            mock_proc.wait.return_value = None
+            mock_proc.returncode = 0
+            mock_proc.pid = 12345
+            mock_popen.return_value = mock_proc
+
             with patch("zen_mode.swarm._get_modified_files", return_value=[]):
                 result = execute_worker_task(
                     task_path="task.md",
@@ -305,23 +316,15 @@ class TestWorkerExceptionHandling:
         )
         dispatcher = SwarmDispatcher(config)
 
-        with patch.object(dispatcher, "_run_shared_scout", return_value=None):
-            with patch("zen_mode.swarm.ProcessPoolExecutor") as mock_executor_class:
-                mock_executor = Mock()
-                mock_executor_class.return_value = mock_executor
+        # No shared scout - each worker runs its own
+        with patch("zen_mode.swarm.execute_worker_task") as mock_execute:
+            mock_execute.side_effect = RuntimeError("Pickle error: can't serialize")
 
-                mock_future = Mock()
-                mock_future.result.side_effect = RuntimeError("Pickle error: can't serialize")
-                mock_executor.submit.return_value = mock_future
+            summary = dispatcher.execute()
 
-                with patch("zen_mode.swarm.as_completed") as mock_as_completed:
-                    mock_as_completed.return_value = [mock_future]
-
-                    summary = dispatcher.execute()
-
-                    assert summary.failed == 1
-                    assert summary.succeeded == 0
-                    assert "Pickle error" in summary.task_results[0].stderr
+            assert summary.failed == 1
+            assert summary.succeeded == 0
+            assert "Pickle error" in summary.task_results[0].stderr
 
     def test_multiple_worker_failures(self, tmp_path):
         """Multiple worker failures should all be reported."""
@@ -332,49 +335,25 @@ class TestWorkerExceptionHandling:
         )
         dispatcher = SwarmDispatcher(config)
 
-        with patch.object(dispatcher, "_run_shared_scout", return_value=None):
-            with patch("zen_mode.swarm.ProcessPoolExecutor") as mock_executor_class:
-                mock_executor = Mock()
-                mock_executor_class.return_value = mock_executor
+        call_count = [0]
 
-                mock_futures = []
-                for i, task in enumerate(["task1.md", "task2.md", "task3.md"]):
-                    f = Mock()
-                    if i == 1:  # task2 succeeds
-                        f.result.return_value = WorkerResult(
-                            task_path=task, work_dir=f".zen_{i}", returncode=0
-                        )
-                    else:  # task1 and task3 fail
-                        f.result.side_effect = Exception(f"Error in task {i+1}")
-                    mock_futures.append(f)
+        def mock_execute_side_effect(task, work_dir, project_root, scout_context=None):
+            idx = call_count[0]
+            call_count[0] += 1
+            if idx == 1:  # task2 succeeds
+                return WorkerResult(task_path=task, work_dir=work_dir, returncode=0)
+            else:  # task1 and task3 fail
+                raise Exception(f"Error in task {idx+1}")
 
-                mock_executor.submit.side_effect = mock_futures
+        # No shared scout - each worker runs its own
+        with patch("zen_mode.swarm.execute_worker_task") as mock_execute:
+            mock_execute.side_effect = mock_execute_side_effect
 
-                # Map futures to tasks
-                futures_map = {
-                    mock_futures[i]: (task, f".zen_{i}")
-                    for i, task in enumerate(["task1.md", "task2.md", "task3.md"])
-                }
+            summary = dispatcher.execute()
 
-                with patch("zen_mode.swarm.as_completed") as mock_as_completed:
-                    mock_as_completed.return_value = mock_futures
-
-                    # We need to patch the futures dict creation
-                    original_submit = mock_executor.submit
-
-                    def patched_submit(fn, task, work_dir, *args):
-                        for f, (t, w) in futures_map.items():
-                            if t == task:
-                                return f
-                        return Mock()
-
-                    mock_executor.submit = patched_submit
-
-                    summary = dispatcher.execute()
-
-                    assert summary.total_tasks == 3
-                    assert summary.failed == 2
-                    assert summary.succeeded == 1
+            assert summary.total_tasks == 3
+            assert summary.failed == 2
+            assert summary.succeeded == 1
 
 
 # ============================================================================
@@ -531,11 +510,15 @@ class TestEnvironmentVariables:
         """ZEN_WORK_DIR should be passed to subprocess environment."""
         captured_env = {}
 
-        def capture_env(*args, **kwargs):
+        def capture_popen(cmd, **kwargs):
             captured_env.update(kwargs.get("env", {}))
-            return Mock(returncode=0, stdout="", stderr="")
+            mock_proc = Mock()
+            mock_proc.wait.return_value = None
+            mock_proc.returncode = 0
+            mock_proc.pid = 12345
+            return mock_proc
 
-        with patch("zen_mode.swarm.subprocess.run", side_effect=capture_env):
+        with patch("zen_mode.swarm.subprocess.Popen", side_effect=capture_popen):
             with patch("zen_mode.swarm._get_modified_files", return_value=[]):
                 execute_worker_task(
                     task_path="task.md",
@@ -550,14 +533,18 @@ class TestEnvironmentVariables:
         """Parent environment variables should be inherited."""
         captured_env = {}
 
-        def capture_env(*args, **kwargs):
+        def capture_popen(cmd, **kwargs):
             captured_env.update(kwargs.get("env", {}))
-            return Mock(returncode=0, stdout="", stderr="")
+            mock_proc = Mock()
+            mock_proc.wait.return_value = None
+            mock_proc.returncode = 0
+            mock_proc.pid = 12345
+            return mock_proc
 
         # Set a test env var
         os.environ["TEST_VAR_FOR_ZEN"] = "test_value"
         try:
-            with patch("zen_mode.swarm.subprocess.run", side_effect=capture_env):
+            with patch("zen_mode.swarm.subprocess.Popen", side_effect=capture_popen):
                 with patch("zen_mode.swarm._get_modified_files", return_value=[]):
                     execute_worker_task(
                         task_path="task.md",
@@ -594,35 +581,22 @@ class TestScoutContextSharing:
         )
         dispatcher = SwarmDispatcher(config)
 
-        scout_path = str(tmp_path / "scout.md")
+        # No shared scout - each worker runs its own scout with scout_context=None
+        with patch("zen_mode.swarm.execute_worker_task") as mock_execute:
+            mock_execute.side_effect = [
+                WorkerResult(task_path=str(task1), work_dir=".zen_1", returncode=0),
+                WorkerResult(task_path=str(task2), work_dir=".zen_2", returncode=0),
+            ]
 
-        with patch.object(dispatcher, "_run_shared_scout", return_value=scout_path):
-            with patch("zen_mode.swarm.ProcessPoolExecutor") as mock_executor_class:
-                mock_executor = Mock()
-                mock_executor_class.return_value = mock_executor
+            dispatcher.execute()
 
-                mock_futures = [Mock(), Mock()]
-                mock_futures[0].result.return_value = WorkerResult(
-                    task_path=str(task1), work_dir=".zen_1", returncode=0
-                )
-                mock_futures[1].result.return_value = WorkerResult(
-                    task_path=str(task2), work_dir=".zen_2", returncode=0
-                )
-                mock_executor.submit.side_effect = mock_futures
+            # Verify all workers got scout_context=None (each runs own scout)
+            for call in mock_execute.call_args_list:
+                # scout_context is 4th positional arg
+                assert call[0][3] is None
 
-                with patch("zen_mode.swarm.as_completed") as mock_as_completed:
-                    mock_as_completed.return_value = mock_futures
-
-                    dispatcher.execute()
-
-                    # Verify both workers got scout context
-                    for call in mock_executor.submit.call_args_list:
-                        args = call[0]
-                        # args[4] is scout_context parameter (after dry_run removal)
-                        assert args[4] == scout_path
-
-    def test_scout_failure_continues_without_context(self, tmp_path):
-        """If scout fails, workers should still run (without context)."""
+    def test_workers_run_with_no_shared_scout(self, tmp_path):
+        """Workers should run their own scout (scout_context=None)."""
         task = tmp_path / "task.md"
         task.write_text("Test task\n")
 
@@ -633,28 +607,20 @@ class TestScoutContextSharing:
         )
         dispatcher = SwarmDispatcher(config)
 
-        with patch.object(dispatcher, "_run_shared_scout", return_value=None):
-            with patch("zen_mode.swarm.ProcessPoolExecutor") as mock_executor_class:
-                mock_executor = Mock()
-                mock_executor_class.return_value = mock_executor
+        # No shared scout - each worker runs its own
+        with patch("zen_mode.swarm.execute_worker_task") as mock_execute:
+            mock_execute.return_value = WorkerResult(
+                task_path=str(task), work_dir=".zen_1", returncode=0
+            )
 
-                mock_future = Mock()
-                mock_future.result.return_value = WorkerResult(
-                    task_path=str(task), work_dir=".zen_1", returncode=0
-                )
-                mock_executor.submit.return_value = mock_future
+            summary = dispatcher.execute()
 
-                with patch("zen_mode.swarm.as_completed") as mock_as_completed:
-                    mock_as_completed.return_value = [mock_future]
+            # Should succeed
+            assert summary.total_tasks == 1
 
-                    summary = dispatcher.execute()
-
-                    # Should succeed even without scout
-                    assert summary.total_tasks == 1
-
-                    # Verify scout_context was None
-                    call_args = mock_executor.submit.call_args[0]
-                    assert call_args[4] is None  # scout_context (after dry_run removal)
+            # Verify scout_context was None
+            call_args = mock_execute.call_args[0]
+            assert call_args[3] is None  # scout_context
 
 
 # ============================================================================
@@ -681,7 +647,7 @@ class TestSwarmSummaryReport:
 
         # Should not crash and should truncate
         assert "..." in report
-        assert "│" in report  # Box drawing intact
+        assert "|" in report  # ASCII box drawing (Windows compatible)
 
     def test_report_handles_unicode_in_errors(self):
         """Report should handle unicode characters in error messages."""
@@ -818,11 +784,15 @@ class TestAllowedFilesHandling:
 
         captured_cmd = []
 
-        def capture_cmd(cmd, **kwargs):
+        def capture_popen(cmd, **kwargs):
             captured_cmd.extend(cmd)
-            return Mock(returncode=0, stdout="", stderr="")
+            mock_proc = Mock()
+            mock_proc.wait.return_value = None
+            mock_proc.returncode = 0
+            mock_proc.pid = 12345
+            return mock_proc
 
-        with patch("zen_mode.swarm.subprocess.run", side_effect=capture_cmd):
+        with patch("zen_mode.swarm.subprocess.Popen", side_effect=capture_popen):
             with patch("zen_mode.swarm._get_modified_files", return_value=[]):
                 execute_worker_task(
                     task_path=str(task),
@@ -845,11 +815,15 @@ class TestAllowedFilesHandling:
 
         captured_cmd = []
 
-        def capture_cmd(cmd, **kwargs):
+        def capture_popen(cmd, **kwargs):
             captured_cmd.extend(cmd)
-            return Mock(returncode=0, stdout="", stderr="")
+            mock_proc = Mock()
+            mock_proc.wait.return_value = None
+            mock_proc.returncode = 0
+            mock_proc.pid = 12345
+            return mock_proc
 
-        with patch("zen_mode.swarm.subprocess.run", side_effect=capture_cmd):
+        with patch("zen_mode.swarm.subprocess.Popen", side_effect=capture_popen):
             with patch("zen_mode.swarm._get_modified_files", return_value=[]):
                 execute_worker_task(
                     task_path=str(task),
@@ -858,3 +832,124 @@ class TestAllowedFilesHandling:
                 )
 
         assert "--allowed-files" not in captured_cmd
+
+
+# ============================================================================
+# Popen Timeout Kill Tests (Required for prototype approval)
+# ============================================================================
+class TestPopenTimeoutKill:
+    """Tests for Popen + Threading timeout/kill behavior."""
+
+    def test_process_tree_kill_called_on_timeout(self, tmp_path):
+        """Verify _kill_process_tree is called when worker times out."""
+        with patch("zen_mode.swarm._kill_process_tree") as mock_kill:
+            with patch("zen_mode.swarm.subprocess.Popen") as mock_popen:
+                mock_proc = Mock()
+                mock_proc.wait.side_effect = subprocess.TimeoutExpired("cmd", 60)
+                mock_proc.poll.return_value = None  # Still running
+                mock_proc.pid = 12345
+                mock_popen.return_value = mock_proc
+
+                from zen_mode.swarm import _run_worker_popen
+                returncode, was_killed = _run_worker_popen(
+                    cmd=["echo", "test"],
+                    cwd=tmp_path,
+                    env={},
+                    log_file=tmp_path / "log.md",
+                    timeout=1,
+                )
+
+                assert was_killed is True
+                assert returncode == 124
+                mock_kill.assert_called_once_with(mock_proc)
+
+    def test_timeout_returns_124_with_killed_flag(self, tmp_path):
+        """Verify timeout returns code 124 and was_killed=True."""
+        with patch("zen_mode.swarm._kill_process_tree"):
+            with patch("zen_mode.swarm.subprocess.Popen") as mock_popen:
+                mock_proc = Mock()
+                mock_proc.wait.side_effect = subprocess.TimeoutExpired("cmd", 60)
+                mock_proc.poll.return_value = None
+                mock_proc.pid = 12345
+                mock_popen.return_value = mock_proc
+
+                from zen_mode.swarm import _run_worker_popen
+                returncode, was_killed = _run_worker_popen(
+                    cmd=["echo"], cwd=tmp_path, env={},
+                    log_file=tmp_path / "log.md", timeout=1,
+                )
+
+                assert returncode == 124
+                assert was_killed is True
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+    def test_windows_process_group_flag(self, tmp_path):
+        """Verify CREATE_NEW_PROCESS_GROUP is set on Windows."""
+        with patch("zen_mode.swarm.subprocess.Popen") as mock_popen:
+            mock_proc = Mock()
+            mock_proc.wait.return_value = None
+            mock_proc.returncode = 0
+            mock_popen.return_value = mock_proc
+
+            from zen_mode.swarm import _run_worker_popen
+            _run_worker_popen(
+                cmd=["echo"], cwd=tmp_path, env={},
+                log_file=tmp_path / "log.md", timeout=60,
+            )
+
+            call_kwargs = mock_popen.call_args[1]
+            assert "creationflags" in call_kwargs
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix only")
+    def test_unix_start_new_session_flag(self, tmp_path):
+        """Verify start_new_session is set on Unix."""
+        with patch("zen_mode.swarm.subprocess.Popen") as mock_popen:
+            mock_proc = Mock()
+            mock_proc.wait.return_value = None
+            mock_proc.returncode = 0
+            mock_popen.return_value = mock_proc
+
+            from zen_mode.swarm import _run_worker_popen
+            _run_worker_popen(
+                cmd=["echo"], cwd=tmp_path, env={},
+                log_file=tmp_path / "log.md", timeout=60,
+            )
+
+            call_kwargs = mock_popen.call_args[1]
+            assert call_kwargs.get("start_new_session") is True
+
+    def test_semaphore_limits_concurrency(self, tmp_path):
+        """Verify semaphore limits concurrent workers."""
+        max_concurrent = 0
+        current_concurrent = 0
+        lock = threading.Lock()
+
+        call_count = [0]  # Use list for mutable closure
+
+        def track_concurrency(*args, **kwargs):
+            nonlocal max_concurrent, current_concurrent
+            with lock:
+                current_concurrent += 1
+                max_concurrent = max(max_concurrent, current_concurrent)
+            time.sleep(0.05)
+            with lock:
+                current_concurrent -= 1
+            call_count[0] += 1
+            # Return a unique work_dir inside .zen/ to avoid cleanup conflicts
+            work_dir = f".zen/worker_{call_count[0]}"
+            return WorkerResult(task_path="t.md", work_dir=work_dir, returncode=0)
+
+        # Create the .zen directory and log file
+        zen_dir = tmp_path / ".zen"
+        zen_dir.mkdir()
+        (zen_dir / "log.md").touch()  # Pre-create for append mode
+        (zen_dir / "workers").mkdir()  # Worker logs directory
+
+        # No shared scout - each worker runs its own
+        with patch("zen_mode.swarm.execute_worker_task", side_effect=track_concurrency):
+            config = SwarmConfig(tasks=["t1.md","t2.md","t3.md","t4.md"], workers=2, project_root=tmp_path)
+            for t in config.tasks:
+                (tmp_path / t).write_text("task")
+            SwarmDispatcher(config).execute()
+
+        assert max_concurrent <= 2

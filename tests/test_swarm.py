@@ -22,6 +22,8 @@ from zen_mode.swarm import (  # noqa: E402
     expand_targets,
     detect_preflight_conflicts,
     _extract_cost_from_output,
+    _partition_tasks_by_conflict,
+    _NO_TARGETS_SENTINEL,
 )
 from zen_mode.swarm import _get_modified_files
 
@@ -38,32 +40,21 @@ class TestSwarmDispatcher:
         )
         dispatcher = SwarmDispatcher(config)
 
-        # Mock worker results
+        # Mock worker results - test _build_summary directly
         mock_results = [
             WorkerResult(task_path="task1.md", work_dir=".zen_abc1", returncode=0, cost=0.01),
             WorkerResult(task_path="task2.md", work_dir=".zen_abc2", returncode=0, cost=0.02),
         ]
 
-        with patch("zen_mode.swarm.ProcessPoolExecutor") as mock_executor_class:
-            mock_executor = Mock()
-            mock_executor_class.return_value = mock_executor
+        # Manually set results and test _build_summary
+        dispatcher.results = mock_results
 
-            # Simulate futures completing
-            futures = {Mock(): task for task in ["task1.md", "task2.md"]}
-            mock_executor.submit.side_effect = list(futures.keys())
+        summary = dispatcher._build_summary()
 
-            with patch("zen_mode.swarm.as_completed") as mock_as_completed:
-                mock_as_completed.return_value = futures.keys()
-
-                # Manually set results instead of relying on mocks
-                dispatcher.results = mock_results
-
-                summary = dispatcher._build_summary()
-
-                assert summary.total_tasks == 2
-                assert summary.succeeded == 2
-                assert summary.failed == 0
-                assert summary.total_cost == 0.03
+        assert summary.total_tasks == 2
+        assert summary.succeeded == 2
+        assert summary.failed == 0
+        assert summary.total_cost == 0.03
 
     def test_execute_with_failures(self):
         """Test execution with some tasks failing."""
@@ -117,12 +108,10 @@ class TestSwarmDispatcher:
 
         report = summary.pass_fail_report()
 
-        # Verify title and box-drawing characters
+        # Verify title and box-drawing characters (ASCII for Windows compatibility)
         assert "Swarm Execution Summary" in report
-        assert "┌─" in report
-        assert "└─" in report
-        assert "├─" in report
-        assert "│" in report
+        assert "+--" in report  # ASCII box corners
+        assert "|" in report    # ASCII box sides
 
         # Verify summary stats section with correct labels
         assert "Total Tasks:" in report
@@ -135,9 +124,9 @@ class TestSwarmDispatcher:
         assert "1" in report  # Passed count
         assert "$0.0100" in report  # Cost formatted with 4 decimals
 
-        # Verify status indicators (✓ for passed, ✗ for failed)
-        assert "✓" in report
-        assert "✗" in report
+        # Verify status indicators (ASCII for Windows compatibility)
+        assert "[OK]" in report
+        assert "[X]" in report
 
         # Verify failed tasks section header and content
         assert "Failed Tasks" in report
@@ -151,30 +140,44 @@ class TestWorkerExecution:
 
     def test_execute_worker_task_timeout_error(self, tmp_path):
         """Test timeout handling for long-running tasks."""
-        with patch("zen_mode.swarm.subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.TimeoutExpired("cmd", 600)
+        with patch("zen_mode.swarm.subprocess.Popen") as mock_popen:
+            mock_proc = Mock()
+            mock_proc.wait.side_effect = subprocess.TimeoutExpired("cmd", 600)
+            mock_proc.poll.return_value = None  # Process still running
+            mock_proc.pid = 12345
+            mock_proc.returncode = None
+            mock_popen.return_value = mock_proc
 
-            result = execute_worker_task(
-                task_path="task.md",
-                work_dir=".zen_test",
-                project_root=tmp_path,
-            )
+            with patch("zen_mode.swarm._kill_process_tree"):
+                result = execute_worker_task(
+                    task_path="task.md",
+                    work_dir=".zen_test",
+                    project_root=tmp_path,
+                )
 
             assert result.returncode == 124
-            assert "timed out" in result.stderr.lower()
+            assert "timeout" in result.stderr.lower()
 
     def test_execute_worker_task_cost_extraction(self, tmp_path):
         """Test cost extraction from subprocess output."""
         log_content = "Running task...\n[COST] Total: $0.0456\nTask complete"
 
-        def write_to_log(cmd, **kwargs):
-            # Write to the log file that was passed as stdout
-            log_file = kwargs.get("stdout")
-            if log_file and hasattr(log_file, "write"):
-                log_file.write(log_content)
-            return Mock(returncode=0)
+        with patch("zen_mode.swarm.subprocess.Popen") as mock_popen:
+            mock_proc = Mock()
+            mock_proc.wait.return_value = None  # No timeout
+            mock_proc.returncode = 0
+            mock_proc.pid = 12345
+            mock_popen.return_value = mock_proc
 
-        with patch("zen_mode.swarm.subprocess.run", side_effect=write_to_log):
+            # Write log content when Popen is created (simulating stdout write)
+            def setup_popen(cmd, **kwargs):
+                stdout_file = kwargs.get("stdout")
+                if stdout_file and hasattr(stdout_file, "write"):
+                    stdout_file.write(log_content)
+                return mock_proc
+
+            mock_popen.side_effect = setup_popen
+
             with patch("zen_mode.swarm._get_modified_files") as mock_files:
                 mock_files.return_value = []
 
@@ -404,8 +407,8 @@ class TestPreflightConflictDetection:
 class TestSwarmDispatcherPreflight:
     """Tests for pre-flight conflict detection in SwarmDispatcher.execute()."""
 
-    def test_execute_aborts_on_preflight_conflicts(self, tmp_path):
-        """Test execute() raises ValueError when TARGETS conflicts detected."""
+    def test_execute_handles_conflicts_with_sequential_fallback(self, tmp_path):
+        """Test execute() runs conflicting tasks sequentially instead of failing."""
         (tmp_path / "src").mkdir()
         (tmp_path / "src" / "shared.py").touch()
 
@@ -422,8 +425,16 @@ class TestSwarmDispatcherPreflight:
         )
         dispatcher = SwarmDispatcher(config)
 
-        with pytest.raises(ValueError, match="Preflight conflict detection failed"):
-            dispatcher.execute()
+        with patch("zen_mode.swarm.execute_worker_task") as mock_execute:
+            mock_execute.side_effect = [
+                WorkerResult(task_path=str(task1), work_dir=".zen_1", returncode=0),
+                WorkerResult(task_path=str(task2), work_dir=".zen_2", returncode=0),
+            ]
+
+            # Should NOT raise - conflicts are handled via sequential fallback
+            summary = dispatcher.execute()
+            assert summary.total_tasks == 2
+            assert summary.succeeded == 2
 
     def test_execute_succeeds_with_no_preflight_conflicts(self, tmp_path):
         """Test execute() proceeds when no TARGETS conflicts exist."""
@@ -444,30 +455,17 @@ class TestSwarmDispatcherPreflight:
         )
         dispatcher = SwarmDispatcher(config)
 
-        with patch("zen_mode.swarm.run_claude") as mock_run_claude:
-            mock_run_claude.return_value = "## Targeted Files\n- `src/file.py`: test"
-            with patch("zen_mode.swarm.ProcessPoolExecutor") as mock_executor_class:
-                mock_executor = Mock()
-                mock_executor_class.return_value = mock_executor
+        # No shared scout anymore - each worker runs its own scout
+        with patch("zen_mode.swarm.execute_worker_task") as mock_execute:
+            # Mock execute_worker_task to return successful WorkerResults
+            mock_execute.side_effect = [
+                WorkerResult(task_path=str(task1), work_dir=".zen_1", returncode=0),
+                WorkerResult(task_path=str(task2), work_dir=".zen_2", returncode=0),
+            ]
 
-                # Create mock futures
-                mock_futures = [Mock(), Mock()]
-                mock_executor.submit.side_effect = mock_futures
-
-                with patch("zen_mode.swarm.as_completed") as mock_as_completed:
-                    mock_as_completed.return_value = mock_futures
-
-                    # Mock future.result() to return WorkerResults
-                    mock_futures[0].result.return_value = WorkerResult(
-                        task_path=str(task1), work_dir=".zen_1", returncode=0
-                    )
-                    mock_futures[1].result.return_value = WorkerResult(
-                        task_path=str(task2), work_dir=".zen_2", returncode=0
-                    )
-
-                    # Should not raise - preflight check passes
-                    summary = dispatcher.execute()
-                    assert summary.total_tasks == 2
+            # Should not raise - preflight check passes
+            summary = dispatcher.execute()
+            assert summary.total_tasks == 2
 
 
 class TestScoutContext:
@@ -482,12 +480,20 @@ class TestScoutContext:
         # Create scout context file
         Path(scout_context).write_text("## Targeted Files\n- src/main.py")
 
-        with patch("zen_mode.swarm.subprocess.run") as mock_run:
-            mock_run.return_value = Mock(
-                returncode=0,
-                stdout="[COST] Total: $0.01",
-                stderr=""
-            )
+        captured_cmd = []
+
+        with patch("zen_mode.swarm.subprocess.Popen") as mock_popen:
+            mock_proc = Mock()
+            mock_proc.wait.return_value = None
+            mock_proc.returncode = 0
+            mock_proc.pid = 12345
+
+            def capture_popen(cmd, **kwargs):
+                captured_cmd.extend(cmd)
+                return mock_proc
+
+            mock_popen.side_effect = capture_popen
+
             with patch("zen_mode.swarm._get_modified_files") as mock_files:
                 mock_files.return_value = []
 
@@ -499,10 +505,8 @@ class TestScoutContext:
                 )
 
                 # Verify subprocess was called with --scout-context
-                mock_run.assert_called_once()
-                cmd = mock_run.call_args[0][0]
-                assert "--scout-context" in cmd
-                assert scout_context in cmd
+                assert "--scout-context" in captured_cmd
+                assert scout_context in captured_cmd
                 assert result.returncode == 0
 
     def test_execute_worker_task_without_scout_context(self, tmp_path):
@@ -510,12 +514,20 @@ class TestScoutContext:
         task_path = "task.md"
         work_dir = ".zen_test"
 
-        with patch("zen_mode.swarm.subprocess.run") as mock_run:
-            mock_run.return_value = Mock(
-                returncode=0,
-                stdout="[COST] Total: $0.01",
-                stderr=""
-            )
+        captured_cmd = []
+
+        with patch("zen_mode.swarm.subprocess.Popen") as mock_popen:
+            mock_proc = Mock()
+            mock_proc.wait.return_value = None
+            mock_proc.returncode = 0
+            mock_proc.pid = 12345
+
+            def capture_popen(cmd, **kwargs):
+                captured_cmd.extend(cmd)
+                return mock_proc
+
+            mock_popen.side_effect = capture_popen
+
             with patch("zen_mode.swarm._get_modified_files") as mock_files:
                 mock_files.return_value = []
 
@@ -527,13 +539,11 @@ class TestScoutContext:
                 )
 
                 # Verify subprocess was called without --scout-context
-                mock_run.assert_called_once()
-                cmd = mock_run.call_args[0][0]
-                assert "--scout-context" not in cmd
+                assert "--scout-context" not in captured_cmd
                 assert result.returncode == 0
 
-    def test_swarm_dispatcher_runs_shared_scout(self, tmp_path):
-        """Test that SwarmDispatcher runs scout once and passes to workers."""
+    def test_swarm_dispatcher_no_shared_scout(self, tmp_path):
+        """Test that SwarmDispatcher passes scout_context=None so each worker runs own scout."""
         # Create task files
         task1 = tmp_path / "task1.md"
         task1.write_text("TARGETS: src/file1.py\n")
@@ -548,45 +558,26 @@ class TestScoutContext:
         )
         dispatcher = SwarmDispatcher(config)
 
-        with patch.object(dispatcher, "_run_shared_scout") as mock_scout:
-            mock_scout.return_value = str(tmp_path / ".zen_swarm_abc1" / "scout.md")
+        with patch("zen_mode.swarm.execute_worker_task") as mock_execute:
+            # Mock execute_worker_task to return successful WorkerResults
+            mock_execute.side_effect = [
+                WorkerResult(task_path=str(task1), work_dir=".zen_1", returncode=0),
+                WorkerResult(task_path=str(task2), work_dir=".zen_2", returncode=0),
+            ]
 
-            with patch("zen_mode.swarm.ProcessPoolExecutor") as mock_executor_class:
-                mock_executor = Mock()
-                mock_executor_class.return_value = mock_executor
+            summary = dispatcher.execute()
 
-                # Create mock futures
-                mock_futures = [Mock(), Mock()]
-                mock_executor.submit.side_effect = mock_futures
+            # Verify both workers were called
+            assert mock_execute.call_count == 2
 
-                with patch("zen_mode.swarm.as_completed") as mock_as_completed:
-                    mock_as_completed.return_value = mock_futures
+            # Verify scout_context=None passed to all workers (each runs own scout)
+            for call in mock_execute.call_args_list:
+                # scout_context is the 4th positional arg
+                assert call[0][3] is None
 
-                    # Mock future.result() to return WorkerResults
-                    mock_futures[0].result.return_value = WorkerResult(
-                        task_path=str(task1), work_dir=".zen_1", returncode=0
-                    )
-                    mock_futures[1].result.return_value = WorkerResult(
-                        task_path=str(task2), work_dir=".zen_2", returncode=0
-                    )
-
-                    summary = dispatcher.execute()
-
-                    # Verify scout was run once
-                    mock_scout.assert_called_once()
-
-                    # Verify both workers were submitted
-                    assert mock_executor.submit.call_count == 2
-
-                    # Verify scout context was passed to both workers
-                    for call in mock_executor.submit.call_args_list:
-                        args = call[0]
-                        # args[4] is scout_context parameter (task, work_dir, project_root, scout_context)
-                        assert args[4] == mock_scout.return_value
-
-                    # Verify summary
-                    assert summary.total_tasks == 2
-                    assert summary.succeeded == 2
+            # Verify summary
+            assert summary.total_tasks == 2
+            assert summary.succeeded == 2
 
 
 class TestKnownIssues:
@@ -624,25 +615,16 @@ class TestKnownIssues:
         )
         dispatcher = SwarmDispatcher(config)
 
-        with patch("zen_mode.swarm.run_claude") as mock_run_claude:
-            mock_run_claude.return_value = "## Targeted Files\n- `src/file.py`: test"
-            with patch("zen_mode.swarm.ProcessPoolExecutor") as mock_executor_class:
-                mock_executor = Mock()
-                mock_executor_class.return_value = mock_executor
+        # No shared scout anymore - just mock execute_worker_task
+        with patch("zen_mode.swarm.execute_worker_task") as mock_execute:
+            # Simulate worker raising exception
+            mock_execute.side_effect = RuntimeError("Worker exploded")
 
-                # Simulate worker raising exception
-                mock_future = Mock()
-                mock_future.result.side_effect = RuntimeError("Worker exploded")
-                mock_executor.submit.return_value = mock_future
-
-                with patch("zen_mode.swarm.as_completed") as mock_as_completed:
-                    mock_as_completed.return_value = [mock_future]
-
-                    # Should return a summary with failed task, not crash
-                    summary = dispatcher.execute()
-                    assert summary.failed == 1, "Should handle worker exception gracefully"
-                    assert summary.succeeded == 0
-                    assert "Worker exploded" in summary.task_results[0].stderr
+            # Should return a summary with failed task, not crash
+            summary = dispatcher.execute()
+            assert summary.failed == 1, "Should handle worker exception gracefully"
+            assert summary.succeeded == 0
+            assert "Worker exploded" in summary.task_results[0].stderr
 
 
 class TestStatusMonitorSync:
@@ -742,3 +724,206 @@ class TestStatusMonitorSync:
         assert len(completed) == 10
         for i in range(10):
             assert f"worker_{i}" in completed
+
+
+class TestPartitionTasksByConflict:
+    """Tests for task partitioning based on overlapping targets."""
+
+    def test_partition_overlapping_targets(self, tmp_path):
+        """Tasks with overlapping TARGETS go into same conflict group."""
+        # Create test files
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "shared.py").touch()
+        (tmp_path / "src" / "file1.py").touch()
+
+        # Create tasks with overlapping targets
+        task1 = tmp_path / "task1.md"
+        task1.write_text("TARGETS: src/shared.py, src/file1.py\n")
+
+        task2 = tmp_path / "task2.md"
+        task2.write_text("TARGETS: src/shared.py\n")  # overlaps with task1
+
+        conflict_groups, parallel_tasks = _partition_tasks_by_conflict(
+            [str(task1), str(task2)], tmp_path
+        )
+
+        # Both tasks should be in the same conflict group
+        assert len(conflict_groups) == 1
+        assert len(conflict_groups[0]) == 2
+        assert len(parallel_tasks) == 0
+
+    def test_partition_no_overlap(self, tmp_path):
+        """Tasks with non-overlapping TARGETS can run in parallel."""
+        # Create test files
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "file1.py").touch()
+        (tmp_path / "src" / "file2.py").touch()
+
+        task1 = tmp_path / "task1.md"
+        task1.write_text("TARGETS: src/file1.py\n")
+
+        task2 = tmp_path / "task2.md"
+        task2.write_text("TARGETS: src/file2.py\n")
+
+        conflict_groups, parallel_tasks = _partition_tasks_by_conflict(
+            [str(task1), str(task2)], tmp_path
+        )
+
+        # Both should be parallel (no conflicts)
+        assert len(conflict_groups) == 0
+        assert len(parallel_tasks) == 2
+
+    def test_partition_no_targets_uses_sentinel(self, tmp_path):
+        """Tasks without TARGETS use sentinel and conflict with each other."""
+        task1 = tmp_path / "task1.md"
+        task1.write_text("# Task 1\nNo targets header\n")
+
+        task2 = tmp_path / "task2.md"
+        task2.write_text("# Task 2\nAlso no targets\n")
+
+        conflict_groups, parallel_tasks = _partition_tasks_by_conflict(
+            [str(task1), str(task2)], tmp_path
+        )
+
+        # Both should be in same conflict group (sentinel collision)
+        assert len(conflict_groups) == 1
+        assert len(conflict_groups[0]) == 2
+        assert len(parallel_tasks) == 0
+
+    def test_partition_transitive_conflicts(self, tmp_path):
+        """Transitive conflicts: A-B overlap, B-C overlap -> A,B,C in same group."""
+        # Create test files
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "a.py").touch()
+        (tmp_path / "src" / "ab.py").touch()  # shared by A and B
+        (tmp_path / "src" / "bc.py").touch()  # shared by B and C
+        (tmp_path / "src" / "c.py").touch()
+
+        task_a = tmp_path / "task_a.md"
+        task_a.write_text("TARGETS: src/a.py, src/ab.py\n")
+
+        task_b = tmp_path / "task_b.md"
+        task_b.write_text("TARGETS: src/ab.py, src/bc.py\n")
+
+        task_c = tmp_path / "task_c.md"
+        task_c.write_text("TARGETS: src/bc.py, src/c.py\n")
+
+        conflict_groups, parallel_tasks = _partition_tasks_by_conflict(
+            [str(task_a), str(task_b), str(task_c)], tmp_path
+        )
+
+        # All three should be in same group due to transitive conflicts
+        assert len(conflict_groups) == 1
+        assert len(conflict_groups[0]) == 3
+        assert len(parallel_tasks) == 0
+
+    def test_partition_mixed_conflict_and_parallel(self, tmp_path):
+        """Mix of conflicting and non-conflicting tasks."""
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "shared.py").touch()
+        (tmp_path / "src" / "isolated.py").touch()
+
+        # task1 and task2 conflict
+        task1 = tmp_path / "task1.md"
+        task1.write_text("TARGETS: src/shared.py\n")
+
+        task2 = tmp_path / "task2.md"
+        task2.write_text("TARGETS: src/shared.py\n")
+
+        # task3 is independent
+        task3 = tmp_path / "task3.md"
+        task3.write_text("TARGETS: src/isolated.py\n")
+
+        conflict_groups, parallel_tasks = _partition_tasks_by_conflict(
+            [str(task1), str(task2), str(task3)], tmp_path
+        )
+
+        # task1+task2 in conflict group, task3 parallel
+        assert len(conflict_groups) == 1
+        assert len(conflict_groups[0]) == 2
+        assert len(parallel_tasks) == 1
+        assert "task3.md" in parallel_tasks[0]
+
+    def test_partition_empty_targets_matches_treated_as_no_targets(self, tmp_path):
+        """TARGETS header with no matching files treated as no-targets."""
+        task1 = tmp_path / "task1.md"
+        task1.write_text("TARGETS: nonexistent/*.py\n")  # No matches
+
+        task2 = tmp_path / "task2.md"
+        task2.write_text("# No targets header\n")  # No TARGETS
+
+        conflict_groups, parallel_tasks = _partition_tasks_by_conflict(
+            [str(task1), str(task2)], tmp_path
+        )
+
+        # Both should conflict via sentinel
+        assert len(conflict_groups) == 1
+        assert len(conflict_groups[0]) == 2
+
+
+class TestSwarmDispatcherSequentialFallback:
+    """Tests for sequential fallback when tasks conflict."""
+
+    def test_execute_runs_conflicting_tasks_sequentially(self, tmp_path):
+        """Conflicting tasks should run sequentially, not raise error."""
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "shared.py").touch()
+
+        task1 = tmp_path / "task1.md"
+        task1.write_text("TARGETS: src/shared.py\n")
+
+        task2 = tmp_path / "task2.md"
+        task2.write_text("TARGETS: src/shared.py\n")
+
+        config = SwarmConfig(
+            tasks=[str(task1), str(task2)],
+            workers=2,
+            project_root=tmp_path,
+        )
+        dispatcher = SwarmDispatcher(config)
+
+        # Track execution order
+        execution_order = []
+
+        def mock_execute(task_path, work_dir, project_root, scout_context=None):
+            execution_order.append(task_path)
+            return WorkerResult(task_path=task_path, work_dir=work_dir, returncode=0)
+
+        with patch("zen_mode.swarm.execute_worker_task", side_effect=mock_execute):
+            # Should NOT raise - should run sequentially instead
+            summary = dispatcher.execute()
+
+        assert summary.total_tasks == 2
+        assert summary.succeeded == 2
+        # Verify tasks ran (order may vary due to dict iteration)
+        assert len(execution_order) == 2
+
+    def test_execute_runs_non_conflicting_tasks_parallel(self, tmp_path):
+        """Non-conflicting tasks should run in parallel."""
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "file1.py").touch()
+        (tmp_path / "src" / "file2.py").touch()
+
+        task1 = tmp_path / "task1.md"
+        task1.write_text("TARGETS: src/file1.py\n")
+
+        task2 = tmp_path / "task2.md"
+        task2.write_text("TARGETS: src/file2.py\n")
+
+        config = SwarmConfig(
+            tasks=[str(task1), str(task2)],
+            workers=2,
+            project_root=tmp_path,
+        )
+        dispatcher = SwarmDispatcher(config)
+
+        with patch("zen_mode.swarm.execute_worker_task") as mock_execute:
+            mock_execute.side_effect = [
+                WorkerResult(task_path=str(task1), work_dir=".zen_1", returncode=0),
+                WorkerResult(task_path=str(task2), work_dir=".zen_2", returncode=0),
+            ]
+
+            summary = dispatcher.execute()
+
+        assert summary.total_tasks == 2
+        assert summary.succeeded == 2

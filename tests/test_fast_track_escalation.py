@@ -71,7 +71,7 @@ INSTRUCTION: Add a comment at line 10
         # Setup paths
         project_root = tmp_path
         work_dir = project_root / WORK_DIR_NAME
-        work_dir.mkdir()
+        work_dir.mkdir(parents=True, exist_ok=True)
 
         # Create task file
         task_file = project_root / "task.md"
@@ -135,7 +135,7 @@ INSTRUCTION: Add a comment at line 10
         # Setup paths
         project_root = tmp_path
         work_dir = project_root / WORK_DIR_NAME
-        work_dir.mkdir()
+        work_dir.mkdir(parents=True, exist_ok=True)
 
         task_file = project_root / "task.md"
         task_file.write_text("# Test task")
@@ -209,7 +209,7 @@ class TestFastTrackNoEscalation:
 
         project_root = tmp_path
         work_dir = project_root / WORK_DIR_NAME
-        work_dir.mkdir()
+        work_dir.mkdir(parents=True, exist_ok=True)
 
         task_file = project_root / "task.md"
         task_file.write_text("# Test task")

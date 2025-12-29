@@ -11,18 +11,34 @@ import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+import signal
+import atexit
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
-from zen_mode.claude import run_claude
-from zen_mode.config import TIMEOUT_EXEC, MODEL_EYES
+# Global tracking for atexit cleanup
+_active_workers: Dict[int, subprocess.Popen] = {}
+_active_workers_lock = threading.Lock()
+
+
+def _cleanup_workers():
+    """Kill any remaining worker processes on exit."""
+    with _active_workers_lock:
+        for pid, proc in list(_active_workers.items()):
+            try:
+                _kill_process_tree(proc, timeout=2.0)
+            except Exception:
+                pass
+
+
+atexit.register(_cleanup_workers)
+
+from zen_mode.config import TIMEOUT_EXEC
 from zen_mode.files import write_file
-from zen_mode.scout import build_scout_prompt
 
 # Configuration
 TIMEOUT_WORKER = TIMEOUT_EXEC  # Use same timeout as core
@@ -188,7 +204,7 @@ def parse_targets_header(task_path: Path) -> List[str]:
                     # Split by comma and strip whitespace from each
                     targets = [t.strip() for t in targets_str.split(",") if t.strip()]
                     return targets
-    except (FileNotFoundError, IOError):
+    except (FileNotFoundError, IOError, UnicodeDecodeError, PermissionError):
         pass
 
     return []
@@ -328,6 +344,99 @@ def detect_preflight_conflicts(task_paths: List[str], project_root: Path) -> Dic
     }
 
 
+# Sentinel for tasks without TARGETS (must run sequentially)
+_NO_TARGETS_SENTINEL = "__NO_TARGETS__"
+
+
+def _partition_tasks_by_conflict(
+    task_paths: List[str],
+    project_root: Path
+) -> Tuple[List[List[str]], List[str]]:
+    """
+    Partition tasks into conflict groups based on overlapping targets.
+
+    Uses connected components algorithm: if A overlaps B and B overlaps C,
+    then A, B, C are all in the same conflict group (transitive).
+
+    Args:
+        task_paths: List of task file paths
+        project_root: Root directory for path resolution
+
+    Returns:
+        (conflict_groups, parallel_tasks)
+        - conflict_groups: Lists of tasks that must run sequentially within group
+        - parallel_tasks: Tasks with no conflicts, can run fully parallel
+    """
+    # Build task -> files mapping
+    task_to_files: Dict[str, Set[str]] = {}
+    for task_path in task_paths:
+        targets = parse_targets_header(Path(task_path))
+        if not targets:
+            # Tasks without TARGETS use sentinel (forces sequential)
+            task_to_files[task_path] = {_NO_TARGETS_SENTINEL}
+        else:
+            # Expand targets relative to task file's directory, not project root
+            task_dir = Path(task_path).parent.resolve()
+            expanded = expand_targets(targets, task_dir)
+            # Normalize to project-relative paths for comparison
+            normalized: Set[str] = set()
+            for f in expanded:
+                try:
+                    normalized.add(str(f.resolve().relative_to(project_root.resolve())))
+                except ValueError:
+                    # File outside project root - use absolute path
+                    normalized.add(str(f.resolve()))
+            task_to_files[task_path] = normalized
+            if not task_to_files[task_path]:
+                # TARGETS specified but no files matched - treat as no targets
+                task_to_files[task_path] = {_NO_TARGETS_SENTINEL}
+
+    # Build file -> tasks mapping
+    file_to_tasks: Dict[str, List[str]] = {}
+    for task_path, files in task_to_files.items():
+        for file_path in files:
+            if file_path not in file_to_tasks:
+                file_to_tasks[file_path] = []
+            file_to_tasks[file_path].append(task_path)
+
+    # Find connected components using union-find
+    parent: Dict[str, str] = {t: t for t in task_paths}
+
+    def find(x: str) -> str:
+        if parent[x] != x:
+            parent[x] = find(parent[x])
+        return parent[x]
+
+    def union(a: str, b: str) -> None:
+        pa, pb = find(a), find(b)
+        if pa != pb:
+            parent[pa] = pb
+
+    # Union tasks that share files
+    for tasks in file_to_tasks.values():
+        for i in range(1, len(tasks)):
+            union(tasks[0], tasks[i])
+
+    # Group tasks by their root
+    groups: Dict[str, List[str]] = {}
+    for task in task_paths:
+        root = find(task)
+        if root not in groups:
+            groups[root] = []
+        groups[root].append(task)
+
+    # Separate conflict groups (size > 1) from parallel tasks (size == 1)
+    conflict_groups: List[List[str]] = []
+    parallel_tasks: List[str] = []
+    for group in groups.values():
+        if len(group) > 1:
+            conflict_groups.append(group)
+        else:
+            parallel_tasks.append(group[0])
+
+    return conflict_groups, parallel_tasks
+
+
 # ============================================================================
 # Configuration
 # ============================================================================
@@ -351,6 +460,77 @@ class SwarmConfig:
 # ============================================================================
 # Worker Execution
 # ============================================================================
+def _kill_process_tree(proc: subprocess.Popen, timeout: float = 5.0) -> None:
+    """Kill process and all children. Cross-platform."""
+    try:
+        if sys.platform == "win32":
+            # Windows: use taskkill to kill entire process tree
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True,
+                timeout=timeout,
+            )
+        else:
+            # Unix: kill entire process group
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except (ProcessLookupError, OSError):
+                pass  # Process already dead
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    pass
+        # Reap zombie
+        try:
+            proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+    except (ProcessLookupError, OSError, subprocess.TimeoutExpired):
+        pass  # Process already dead
+
+
+def _run_worker_popen(
+    cmd: List[str],
+    cwd: Path,
+    env: dict,
+    log_file: Path,
+    timeout: float,
+) -> Tuple[int, bool]:
+    """
+    Run command with Popen, kill on timeout.
+    Returns (returncode, was_killed).
+    """
+    kwargs: Dict[str, Any] = {
+        "cwd": cwd,
+        "stdin": subprocess.DEVNULL,
+        "env": env,
+    }
+    # Create process group for tree killing
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+
+    with open(log_file, "a", encoding="utf-8") as log_f:
+        kwargs["stdout"] = log_f
+        kwargs["stderr"] = log_f
+        proc = subprocess.Popen(cmd, **kwargs)
+
+        try:
+            proc.wait(timeout=timeout)
+            return (proc.returncode, False)
+        except subprocess.TimeoutExpired:
+            # Race window: process might have exited
+            if proc.poll() is not None:
+                return (proc.returncode, False)
+            logger.warning(f"[SWARM] Killing worker PID {proc.pid} after {timeout}s timeout")
+            _kill_process_tree(proc)
+            return (124, True)
+
+
 @dataclass
 class WorkerResult:
     """Result from a single task execution."""
@@ -421,20 +601,21 @@ def execute_worker_task(task_path: str, work_dir: str, project_root: Path,
         # Use file-based output to avoid pipe buffer deadlocks
         log_file = work_path / "log.md"
 
-        with open(log_file, "a", encoding="utf-8") as log_f:
-            proc = subprocess.run(
-                cmd,
-                cwd=project_root,
-                stdin=subprocess.DEVNULL,
-                stdout=log_f,
-                stderr=log_f,
-                timeout=TIMEOUT_WORKER,
-                env=env,
-            )
+        returncode, was_killed = _run_worker_popen(
+            cmd=cmd,
+            cwd=project_root,
+            env=env,
+            log_file=log_file,
+            timeout=TIMEOUT_WORKER,
+        )
+        result.returncode = returncode
+        if was_killed:
+            result.stderr = f"Task killed after timeout ({TIMEOUT_WORKER}s)"
 
-        result.returncode = proc.returncode
-        result.stdout = log_file.read_text(encoding="utf-8") if log_file.exists() else ""
-        result.stderr = ""
+        try:
+            result.stdout = log_file.read_text(encoding="utf-8", errors="replace")
+        except (OSError, FileNotFoundError):
+            result.stdout = ""
 
         # Extract cost from output
         result.cost = _extract_cost_from_output(result.stdout)
@@ -442,11 +623,6 @@ def execute_worker_task(task_path: str, work_dir: str, project_root: Path,
         # Detect modified files from work directory
         result.modified_files = _get_modified_files(work_path)
 
-    except subprocess.TimeoutExpired:
-        result.returncode = 124
-        # Read partial output from log file on timeout
-        result.stdout = log_file.read_text(encoding="utf-8") if log_file.exists() else ""
-        result.stderr = f"Task timed out ({TIMEOUT_WORKER}s)"
     except Exception as e:
         result.returncode = 1
         result.stderr = str(e)
@@ -530,6 +706,40 @@ def detect_file_conflicts(results: List[WorkerResult]) -> Dict[str, List[str]]:
     }
 
 
+def _worker_thread_target(
+    task_config: Tuple[str, Path, Path, Optional[str]],
+    results_dict: Dict[str, "WorkerResult"],
+    results_lock: threading.Lock,
+    semaphore: threading.Semaphore,
+    completed_tasks: Dict[str, bool],
+    completed_lock: threading.Lock,
+) -> None:
+    """
+    Thread target that executes a worker task.
+
+    Note: Daemon thread - will be killed on Ctrl+C. Results may be incomplete
+    on interrupt, but worker logs are preserved in .zen/worker_*/log.md
+    """
+    task, work_dir, project_root, scout_context = task_config
+
+    try:
+        with semaphore:
+            result = execute_worker_task(task, str(work_dir), project_root, scout_context)
+    except BaseException as e:
+        logger.error(f"[SWARM] Worker thread crashed: {e}")
+        result = WorkerResult(
+            task_path=task,
+            work_dir=str(work_dir),
+            returncode=1,
+            stderr=f"Worker thread crashed: {type(e).__name__}: {e}",
+        )
+
+    with results_lock:
+        results_dict[str(work_dir)] = result
+    with completed_lock:
+        completed_tasks[str(work_dir)] = True
+
+
 # ============================================================================
 # SwarmDispatcher
 # ============================================================================
@@ -544,51 +754,54 @@ class SwarmSummary:
     conflicts: Dict[str, List[str]] = field(default_factory=dict)
 
     def pass_fail_report(self) -> str:
-        """Generate pass/fail summary report with visual formatting and conflict analysis."""
+        """Generate pass/fail summary report with visual formatting and conflict analysis.
+
+        Uses ASCII characters for Windows compatibility (cp1252 can't encode Unicode box-drawing).
+        """
         lines = []
 
-        # Title with box drawing
-        lines.append("┌─ Swarm Execution Summary ─────────────────────────────┐")
-        lines.append("│                                                        │")
+        # Title with ASCII box drawing (Windows compatible)
+        lines.append("+-- Swarm Execution Summary ----------------------------+")
+        lines.append("|                                                        |")
 
         # Summary stats section with aligned columns
-        passed_symbol = "✓" if self.succeeded > 0 else "✗"
-        failed_symbol = "✗" if self.failed > 0 else "✓"
+        passed_symbol = "[OK]" if self.succeeded > 0 else "[X]"
+        failed_symbol = "[X]" if self.failed > 0 else "[OK]"
 
-        lines.append(f"│  Total Tasks:    {self.total_tasks:<35} │")
-        lines.append(f"│  {passed_symbol} Passed:        {self.succeeded:<35} │")
-        lines.append(f"│  {failed_symbol} Failed:        {self.failed:<35} │")
-        lines.append(f"│  Total Cost:     ${self.total_cost:<34.4f} │")
+        lines.append(f"|  Total Tasks:    {self.total_tasks:<35} |")
+        lines.append(f"|  {passed_symbol} Passed:      {self.succeeded:<35} |")
+        lines.append(f"|  {failed_symbol} Failed:      {self.failed:<35} |")
+        lines.append(f"|  Total Cost:     ${self.total_cost:<34.4f} |")
 
-        lines.append("│                                                        │")
+        lines.append("|                                                        |")
 
         # Failed tasks section
         if self.failed > 0:
-            lines.append("├─ Failed Tasks ────────────────────────────────────────┤")
+            lines.append("+-- Failed Tasks ---------------------------------------+")
             for result in self.task_results:
                 if not result.is_success():
-                    lines.append(f"│  ✗ {result.task_path:<44} │")
-                    lines.append(f"│    Exit Code: {result.returncode:<38} │")
+                    lines.append(f"|  [X] {result.task_path:<42} |")
+                    lines.append(f"|      Exit Code: {result.returncode:<36} |")
                     if result.stderr:
-                        error_msg = result.stderr[:46]
-                        lines.append(f"│    {error_msg:<47} │")
+                        error_msg = result.stderr[:44]
+                        lines.append(f"|      {error_msg:<45} |")
 
         # Conflicts section
         if self.conflicts:
             if self.failed > 0:
-                lines.append("├─ File Conflicts ──────────────────────────────────────┤")
+                lines.append("+-- File Conflicts -------------------------------------+")
             else:
-                lines.append("├─ File Conflicts Detected ─────────────────────────────┤")
+                lines.append("+-- File Conflicts Detected ----------------------------+")
             for file_path, tasks in sorted(self.conflicts.items()):
                 # Truncate long file paths to fit in box
                 truncated_file = file_path if len(file_path) <= 46 else file_path[:43] + "..."
-                lines.append(f"│  {truncated_file:<47} │")
+                lines.append(f"|  {truncated_file:<47} |")
                 for task in tasks:
                     truncated_task = task if len(task) <= 45 else task[:42] + "..."
-                    lines.append(f"│    → {truncated_task:<44} │")
+                    lines.append(f"|    -> {truncated_task:<43} |")
 
         # Closing box
-        lines.append("└────────────────────────────────────────────────────────┘")
+        lines.append("+--------------------------------------------------------+")
 
         return "\n".join(lines)
 
@@ -609,101 +822,113 @@ class SwarmDispatcher:
         self.config = config
         self.results: List[WorkerResult] = []
 
-    def _run_shared_scout(self, task_path: str, scout_dir: Path, scout_file: Path) -> Optional[str]:
+    def _run_tasks_parallel(
+        self,
+        tasks: List[str],
+        task_num_offset: int,
+        work_dir_map: Dict[str, Tuple[str, int]],
+        results_dict: Dict[str, WorkerResult],
+        results_lock: threading.Lock,
+        completed_tasks: Dict[str, bool],
+        completed_lock: threading.Lock,
+    ) -> List[Tuple[str, str]]:
         """
-        Run scout once for all tasks using the first task as reference.
+        Run a batch of tasks in parallel with the configured worker count.
 
-        Args:
-            task_path: Path to first task file (for context)
-            scout_dir: Directory to create for shared scout output
-            scout_file: Path where scout.md should be written
-
-        Returns:
-            Absolute path to scout context file, or None on failure
+        Returns list of (task, work_dir) tuples for tracking.
         """
-        # Create scout directory
-        scout_dir.mkdir(parents=True, exist_ok=True)
+        scout_context = None
+        task_configs = [
+            (task, f"{self.config.work_dir_base}/worker_{uuid4().hex[:8]}",
+             self.config.project_root, scout_context)
+            for task in tasks
+        ]
 
-        # Build and run scout prompt
-        prompt = build_scout_prompt(task_path, str(scout_file))
-        output = run_claude(
-            prompt,
-            model=MODEL_EYES,
-            phase="swarm_scout",
-            project_root=self.config.project_root,
-        )
-        if not output:
-            return None
+        # Update work_dir_map for status monitoring
+        for idx, (task, work_dir, _, _) in enumerate(task_configs):
+            work_dir_map[work_dir] = (task, task_num_offset + idx)
 
-        # Write output to scout file if Claude didn't
-        if not scout_file.exists():
-            write_file(scout_file, output, scout_dir)
+        # Thread-based execution with Popen
+        semaphore = threading.Semaphore(self.config.workers)
+        worker_threads: List[threading.Thread] = []
 
-        # Return absolute path to scout file
-        return str(scout_file.resolve())
+        for task_config in task_configs:
+            t = threading.Thread(
+                target=_worker_thread_target,
+                args=(task_config, results_dict, results_lock, semaphore,
+                      completed_tasks, completed_lock),
+                daemon=True,
+            )
+            t.start()
+            worker_threads.append(t)
+
+        # Wait for all threads with overall timeout
+        deadline = time.time() + TIMEOUT_WORKER + 30
+        for t in worker_threads:
+            remaining = max(0.1, deadline - time.time())
+            t.join(timeout=remaining)
+
+        # Check for stragglers
+        for idx, t in enumerate(worker_threads):
+            if t.is_alive():
+                task, work_dir, _, _ = task_configs[idx]
+                logger.error(f"[SWARM] Worker thread for {task} did not complete")
+                with results_lock:
+                    if work_dir not in results_dict:
+                        results_dict[work_dir] = WorkerResult(
+                            task_path=task,
+                            work_dir=work_dir,
+                            returncode=124,
+                            stderr="Worker thread did not complete within timeout",
+                        )
+
+        return [(tc[0], tc[1]) for tc in task_configs]
 
     def execute(self) -> SwarmSummary:
         """
-        Execute all tasks in parallel using ProcessPoolExecutor.
-        Runs scout once with the first task and shares the context.
-        Shows news ticker status updates during execution.
+        Execute all tasks with conflict-aware scheduling.
+
+        Tasks with overlapping targets run sequentially within their conflict group.
+        Tasks with no conflicts run in parallel.
+        Tasks without TARGETS run sequentially (conservative fallback).
 
         Returns:
             SwarmSummary with aggregated results and cost
         """
         self.results = []
 
-        # Pre-flight check: detect TARGETS conflicts before execution
-        conflicts = detect_preflight_conflicts(self.config.tasks, self.config.project_root)
-        if conflicts:
-            conflict_msg = "Preflight conflict detection failed:\n"
-            for file_path, tasks in sorted(conflicts.items()):
-                conflict_msg += f"[CONFLICT] {file_path} targeted by: {', '.join(tasks)}\n"
-            raise ValueError(conflict_msg.rstrip())
+        # Partition tasks by conflict
+        conflict_groups, parallel_tasks = _partition_tasks_by_conflict(
+            self.config.tasks, self.config.project_root
+        )
 
-        # Status display state (used by monitor thread via nonlocal)
+        # Log partitioning results
+        total_tasks = len(self.config.tasks)
+        if conflict_groups:
+            conflict_count = sum(len(g) for g in conflict_groups)
+            logger.info(f"[SWARM] {conflict_count} tasks have conflicts, will run sequentially in {len(conflict_groups)} group(s)")
+            for i, group in enumerate(conflict_groups):
+                task_names = [Path(t).name for t in group]
+                logger.info(f"[SWARM]   Group {i+1}: {', '.join(task_names)}")
+
+        logger.info(f"[SWARM] Starting {total_tasks} tasks with {self.config.workers} workers...")
+
+        # Status display state
         status_line_count = 0
-
-        # Show startup message
-        logger.info(f"[SWARM] Starting {len(self.config.tasks)} tasks with {self.config.workers} workers...")
-
-        # Run scout once for all tasks using the first task as reference
-        scout_context = None
-        swarm_id = uuid4().hex[:8]
-        base_dir = self.config.project_root / self.config.work_dir_base
-        swarm_scout_dir = base_dir / f"swarm_{swarm_id}"
-        scout_file = swarm_scout_dir / "scout.md"
-
-        logger.info("[SWARM] Running shared scout...")
-        first_task = self.config.tasks[0]
-        scout_context = self._run_shared_scout(first_task, swarm_scout_dir, scout_file)
-
-        # Generate unique work directories for each task (inside .zen/)
-        task_configs = [
-            (task, f"{self.config.work_dir_base}/worker_{uuid4().hex[:8]}", self.config.project_root,
-             scout_context)
-            for task in self.config.tasks
-        ]
-
-        # Track work directories for status monitoring
-        # Map: work_dir -> (task_path, task_num)
         work_dir_map: Dict[str, Tuple[str, int]] = {}
-        for idx, (task, work_dir, _, _) in enumerate(task_configs):
-            work_dir_map[work_dir] = (task, idx + 1)  # 1-indexed task numbers
-
-        # Status monitoring state - shared between main thread and monitor
         stop_monitoring = threading.Event()
         is_tty = sys.stdout.isatty()
-        completed_tasks: Dict[str, bool] = {}  # work_dir -> completed (shared state)
+        completed_tasks: Dict[str, bool] = {}
         completed_lock = threading.Lock()
-        total_tasks = len(self.config.tasks)
-        max_completed_seen = 0  # Track high-water mark to prevent backwards display
+        max_completed_seen = 0
+        results_dict: Dict[str, WorkerResult] = {}
+        results_lock = threading.Lock()
+        task_num_counter = 1
 
         def status_monitor():
             """Background thread that polls worker logs and updates status."""
             nonlocal max_completed_seen, status_line_count
             while not stop_monitoring.wait(STATUS_UPDATE_INTERVAL):
-                # Collect status from all workers
                 worker_statuses = []
                 total_cost = 0.0
 
@@ -711,23 +936,18 @@ class SwarmDispatcher:
                     completed_count = len(completed_tasks)
                     completed_set = set(completed_tasks.keys())
 
-                # Never show backwards progress (defensive fix for edge cases)
                 max_completed_seen = max(max_completed_seen, completed_count)
                 completed_count = max_completed_seen
 
                 for work_dir, (task_path, task_num) in work_dir_map.items():
-                    # Skip tasks that main thread marked as completed
                     if work_dir in completed_set:
                         continue
-
                     log_path = self.config.project_root / work_dir / "log.md"
                     phase, current, total, cost = parse_worker_log(log_path)
                     total_cost += cost
                     worker_statuses.append((task_num, phase, current, total))
 
-                # Sort by task number for consistent display
                 worker_statuses.sort(key=lambda x: x[0])
-
                 active = len(worker_statuses)
                 lines = format_status_block(
                     completed_count, total_tasks, active, total_cost, worker_statuses
@@ -740,61 +960,30 @@ class SwarmDispatcher:
             monitor_thread = threading.Thread(target=status_monitor, daemon=True)
             monitor_thread.start()
 
-        # Execute with ProcessPoolExecutor (manually managed to control shutdown)
-        executor = ProcessPoolExecutor(max_workers=self.config.workers)
-        timed_out = False
-        try:
-            # Submit all tasks
-            futures = {
-                executor.submit(execute_worker_task, task, work_dir, project_root,
-                                scout_context): (task, work_dir)
-                for task, work_dir, project_root, scout_context in task_configs
-            }
+        # Phase 1: Run conflict groups sequentially (tasks within each group run one at a time)
+        for group in conflict_groups:
+            for task in group:
+                self._run_tasks_parallel(
+                    [task], task_num_counter, work_dir_map, results_dict,
+                    results_lock, completed_tasks, completed_lock
+                )
+                task_num_counter += 1
 
-            # Collect results as they complete (with timeout to prevent infinite hang)
-            try:
-                for future in as_completed(futures, timeout=TIMEOUT_WORKER):
-                    task, work_dir = futures[future]
-                    try:
-                        result = future.result()
-                    except Exception as e:
-                        # Worker crashed - create failed result instead of crashing swarm
-                        result = WorkerResult(
-                            task_path=task,
-                            work_dir=work_dir,
-                            returncode=1,
-                            stderr=f"Worker exception: {e}",
-                        )
-                    self.results.append(result)
-                    # Mark task as completed for the monitor thread
-                    with completed_lock:
-                        completed_tasks[work_dir] = True
-            except TimeoutError:
-                # Swarm-level timeout - some workers didn't complete
-                timed_out = True
-                logger.error(f"[SWARM] Timeout after {TIMEOUT_WORKER}s waiting for workers")
-                for future, (task, work_dir) in futures.items():
-                    if not future.done():
-                        logger.error(f"  - {task} still running")
-                        future.cancel()
-                        self.results.append(WorkerResult(
-                            task_path=task,
-                            work_dir=work_dir,
-                            returncode=124,
-                            stderr=f"Swarm timeout: worker did not complete within {TIMEOUT_WORKER}s",
-                        ))
-        finally:
-            # Shutdown executor - don't wait if we timed out
-            if timed_out:
-                executor.shutdown(wait=False, cancel_futures=True)
-            else:
-                executor.shutdown(wait=True)
+        # Phase 2: Run parallel tasks (all at once, respecting worker limit)
+        if parallel_tasks:
+            self._run_tasks_parallel(
+                parallel_tasks, task_num_counter, work_dir_map, results_dict,
+                results_lock, completed_tasks, completed_lock
+            )
+
+        # Collect all results
+        with results_lock:
+            self.results = list(results_dict.values())
 
         # Stop monitoring thread
         if monitor_thread:
             stop_monitoring.set()
             monitor_thread.join(timeout=1)
-            # Print final newline to move past status line
             if is_tty:
                 logger.info("")
 
@@ -806,14 +995,11 @@ class SwarmDispatcher:
             if result.work_dir:
                 work_path = self.config.project_root / result.work_dir
                 if work_path.exists():
-                    # Copy log.md to workers/ with task name
                     src_log = work_path / "log.md"
                     if src_log.exists():
                         task_name = Path(result.task_path).stem
                         dst_log = workers_log_dir / f"{task_name}.log.md"
                         shutil.copy2(src_log, dst_log)
-
-                    # Delete work directory for successful tasks
                     if result.is_success():
                         shutil.rmtree(work_path, ignore_errors=True)
 
@@ -822,13 +1008,9 @@ class SwarmDispatcher:
         with main_log.open("a", encoding="utf-8") as f:
             f.write(f"\n[SWARM] Completed {len(self.results)} tasks\n")
             for result in self.results:
-                status = "✓" if result.is_success() else "✗"
+                status = "+" if result.is_success() else "x"
                 f.write(f"  {status} {result.task_path} (${result.cost:.4f})\n")
             f.write(f"[SWARM] Worker logs saved to {workers_log_dir}\n")
-
-        # Cleanup scout directory
-        if swarm_scout_dir.exists():
-            shutil.rmtree(swarm_scout_dir, ignore_errors=True)
 
         return self._build_summary()
 

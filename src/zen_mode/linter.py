@@ -392,7 +392,11 @@ def check_file(path: str, min_severity: str = "LOW", config: Optional[Dict] = No
         rules = [r for r in rules if r.name not in TEST_EXEMPT_RULES]
 
     try:
-        content = p.read_text(encoding="utf-8", errors="replace")
+        try:
+            content = p.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            logger.debug(f"File {p} contains non-UTF-8 bytes, using latin-1 fallback")
+            content = p.read_text(encoding="latin-1")
         lines = content.splitlines()
         ext = p.suffix.lower()
         syntax = LANG_SYNTAX.get(ext)
@@ -493,8 +497,9 @@ def check_file(path: str, min_severity: str = "LOW", config: Optional[Dict] = No
                         'content': stripped[:80]  # Shorter preview
                     })
 
-    except Exception as e:
+    except OSError as e:
         logger.error(f"Error scanning {path}: {e}")
+        return []  # Explicit return, file skipped due to I/O error
 
     return violations
 
