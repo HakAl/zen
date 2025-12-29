@@ -183,6 +183,10 @@ def main() -> None:
     verbose = "--verbose" in sys.argv or "-v" in sys.argv
     setup_logging(verbose=verbose)
 
+    # Log security-relevant config (validates env vars, fails fast on invalid)
+    from .config import log_security_config
+    log_security_config()
+
     # Check for subcommands first, before argparse sees the args
     if len(sys.argv) >= 2:
         cmd = sys.argv[1]

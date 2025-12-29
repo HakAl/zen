@@ -3,13 +3,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from zen_mode.config import get_claude_exe, is_trusted_directory
 from zen_mode.exceptions import ConfigError
 
 logger = logging.getLogger(__name__)
@@ -17,42 +16,13 @@ logger = logging.getLogger(__name__)
 _claude_exe: Optional[str] = None
 
 
-def is_trusted_directory(cwd: Path) -> bool:
-    """Check if cwd is within a trusted root.
-
-    If ZEN_TRUST_ROOTS is set, only directories within those roots are trusted.
-    If ZEN_TRUST_ROOTS is not set, falls back to ZEN_SKIP_PERMISSIONS behavior.
-
-    Args:
-        cwd: Current working directory to check
-
-    Returns:
-        True if directory is trusted for skip-permissions
-    """
-    trust_roots = os.getenv("ZEN_TRUST_ROOTS", "").split(os.pathsep)
-    trust_roots = [r.strip() for r in trust_roots if r.strip()]
-
-    if not trust_roots:
-        # No roots specified - fall back to ZEN_SKIP_PERMISSIONS behavior
-        return os.getenv("ZEN_SKIP_PERMISSIONS", "true").lower() != "false"
-
-    cwd_path = cwd.resolve()
-    for root in trust_roots:
-        root_path = Path(root).resolve()
-        try:
-            cwd_path.relative_to(root_path)
-            return True
-        except ValueError:
-            continue
-    return False
-
-
 def _init_claude() -> str:
     """Initialize Claude CLI path. Returns path or exits."""
     global _claude_exe
     if _claude_exe:
         return _claude_exe
-    _claude_exe = shutil.which("claude") or os.getenv("CLAUDE_EXE")
+    # Check config first (validated env var), then PATH
+    _claude_exe = get_claude_exe() or shutil.which("claude")
     if not _claude_exe:
         raise ConfigError(
             "'claude' CLI not found. Install: npm i -g @anthropic-ai/claude-cli"
