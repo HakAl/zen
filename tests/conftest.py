@@ -37,10 +37,10 @@ def _blocked_run_claude(*args, **kwargs):
 def block_real_api_calls(request):
     """
     Auto-applied fixture that blocks real Claude API calls.
-    Tests marked with @pytest.mark.allow_real_api skip this block.
+    Tests marked with @pytest.mark.bypass_conftest_patch skip this block.
     """
-    if request.node.get_closest_marker("allow_real_api"):
-        yield  # Don't patch - allow real API calls
+    if request.node.get_closest_marker("bypass_conftest_patch"):
+        yield  # Don't patch - test provides its own mocks
     else:
         with patch("zen_mode.claude.run_claude", side_effect=_blocked_run_claude):
             yield

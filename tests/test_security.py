@@ -156,10 +156,10 @@ class TestSkipPermissionsEnvVar:
     """Tests for ZEN_SKIP_PERMISSIONS env var gating.
 
     Note: These tests directly call the module's run_claude bypassing conftest's
-    auto-patch by using allow_real_api marker and mocking subprocess.Popen.
+    auto-patch by using bypass_conftest_patch marker and mocking subprocess.Popen.
     """
 
-    @pytest.mark.allow_real_api
+    @pytest.mark.bypass_conftest_patch
     @patch('zen_mode.claude.subprocess.Popen')
     @patch('zen_mode.claude._init_claude', return_value='/usr/bin/claude')
     def test_skip_permissions_flag_present_by_default(self, mock_init, mock_popen, tmp_path, monkeypatch):
@@ -185,7 +185,7 @@ class TestSkipPermissionsEnvVar:
         cmd = call_args[0][0]
         assert "--dangerously-skip-permissions" in cmd
 
-    @pytest.mark.allow_real_api
+    @pytest.mark.bypass_conftest_patch
     @patch('zen_mode.claude.subprocess.Popen')
     @patch('zen_mode.claude._init_claude', return_value='/usr/bin/claude')
     def test_skip_permissions_flag_absent_when_disabled(self, mock_init, mock_popen, tmp_path, monkeypatch):
@@ -290,7 +290,7 @@ class TestTrustRoots:
         assert is_trusted_directory(trusted) is True
         assert is_trusted_directory(untrusted) is False
 
-    @pytest.mark.allow_real_api
+    @pytest.mark.bypass_conftest_patch
     @patch('zen_mode.claude.subprocess.Popen')
     @patch('zen_mode.claude._init_claude', return_value='/usr/bin/claude')
     def test_trust_roots_integration_trusted_dir(self, mock_init, mock_popen, tmp_path, monkeypatch):
@@ -309,7 +309,7 @@ class TestTrustRoots:
         cmd = mock_popen.call_args[0][0]
         assert "--dangerously-skip-permissions" in cmd
 
-    @pytest.mark.allow_real_api
+    @pytest.mark.bypass_conftest_patch
     @patch('zen_mode.claude.subprocess.Popen')
     @patch('zen_mode.claude._init_claude', return_value='/usr/bin/claude')
     def test_trust_roots_integration_untrusted_dir(self, mock_init, mock_popen, tmp_path, monkeypatch):

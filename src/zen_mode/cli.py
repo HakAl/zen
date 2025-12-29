@@ -103,7 +103,13 @@ def cmd_run(args: argparse.Namespace) -> None:
         if args.allowed_files:
             cmd.append("--allowed-files")
             cmd.append(args.allowed_files)
-        sys.exit(subprocess.call(cmd))
+        try:
+            # Use run() with timeout instead of call() to prevent indefinite hangs
+            result = subprocess.run(cmd, timeout=3600)  # 1 hour timeout for local zen.py
+            sys.exit(result.returncode)
+        except subprocess.TimeoutExpired:
+            logger.error("Local zen.py timed out after 1 hour")
+            sys.exit(124)  # Standard timeout exit code
 
     # Use package core
     from . import core

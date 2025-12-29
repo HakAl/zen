@@ -46,3 +46,8 @@ include = [
     "/tests",
     "/README.md",
 ]
+
+[tool.pytest.ini_options]
+markers = [
+    "bypass_conftest_patch: skip conftest auto-patch on run_claude (test provides its own mocks)",
+]
