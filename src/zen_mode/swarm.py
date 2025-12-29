@@ -161,21 +161,25 @@ def print_status_block(lines: List[str], prev_line_count: int = 0, is_tty: bool 
     Returns:
         Number of lines printed (pass to next call as prev_line_count)
     """
-    if is_tty:
-        # Move up and clear previous lines
-        if prev_line_count > 0:
-            sys.stdout.write(f"\033[{prev_line_count}A")
+    try:
+        if is_tty:
+            # Move up and clear previous lines
+            if prev_line_count > 0:
+                sys.stdout.write(f"\033[{prev_line_count}A")
 
-        # Print new lines
-        for line in lines:
-            sys.stdout.write(f"\r{line}\033[K\n")
-        sys.stdout.flush()
+            # Print new lines
+            for line in lines:
+                sys.stdout.write(f"\r{line}\033[K\n")
+            sys.stdout.flush()
 
-        return len(lines)
-    else:
-        # Non-TTY: just print summary line
-        if lines:
-            logger.info(lines[-1])
+            return len(lines)
+        else:
+            # Non-TTY: just print summary line
+            if lines:
+                logger.info(lines[-1])
+            return 0
+    except (BrokenPipeError, OSError):
+        # Output closed (e.g., piped to head), silently stop status updates
         return 0
 
 
@@ -983,7 +987,9 @@ class SwarmDispatcher:
         # Stop monitoring thread
         if monitor_thread:
             stop_monitoring.set()
-            monitor_thread.join(timeout=1)
+            monitor_thread.join(timeout=2)
+            if monitor_thread.is_alive():
+                logger.warning("[SWARM] Monitor thread did not terminate cleanly")
             if is_tty:
                 logger.info("")
 
