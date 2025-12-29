@@ -22,7 +22,7 @@ from zen_mode.config import (
 )
 from zen_mode.context import Context
 from zen_mode.exceptions import ImplementError
-from zen_mode.files import read_file, backup_file, get_full_constitution, log
+from zen_mode.files import backup_file, get_full_constitution, log
 from zen_mode.plan import parse_steps, get_completed_steps
 
 
@@ -68,7 +68,7 @@ def backup_scout_files_ctx(ctx: Context) -> None:
     Args:
         ctx: Execution context
     """
-    scout = read_file(ctx.scout_file)
+    scout = ctx.scout_file.read_text(encoding="utf-8") if ctx.scout_file.exists() else ""
     if not scout:
         return
 
@@ -314,7 +314,7 @@ def phase_implement_ctx(ctx: Context, allowed_files: Optional[str] = None) -> No
         ctx: Execution context
         allowed_files: Optional glob pattern restricting file modifications
     """
-    plan = read_file(ctx.plan_file)
+    plan = ctx.plan_file.read_text(encoding="utf-8")
     steps = parse_steps(plan)
 
     if not steps:

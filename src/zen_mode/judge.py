@@ -22,7 +22,7 @@ from zen_mode.config import (
 )
 from zen_mode.context import Context
 from zen_mode.exceptions import JudgeError
-from zen_mode.files import read_file, write_file, get_full_constitution, log
+from zen_mode.files import write_file, get_full_constitution, log
 from zen_mode.plan import parse_steps
 from zen_mode.verify import VerifyState, phase_verify
 
@@ -169,7 +169,7 @@ def should_skip_judge_ctx(ctx: Context, log_fn: Optional[Callable[[str], None]] 
         return True
 
     # Rule D: Small refactor + simple plan
-    plan = read_file(ctx.plan_file)
+    plan = ctx.plan_file.read_text(encoding="utf-8")
     steps = parse_steps(plan)
     if len(steps) <= JUDGE_SIMPLE_PLAN_STEPS and total_changes < JUDGE_SIMPLE_PLAN_LINES and not has_new_code_files:
         _log(f"[JUDGE] Skipping: Simple ({len(steps)} steps, {total_changes} lines)")
@@ -194,9 +194,9 @@ def phase_judge_ctx(ctx: Context, non_interactive: bool = False) -> None:
     """
     ctx.log( "\n[JUDGE] Senior Architect review...")
 
-    plan = read_file(ctx.plan_file)
-    scout = read_file(ctx.scout_file)
-    test_output = read_file(ctx.test_output_file)
+    plan = ctx.plan_file.read_text(encoding="utf-8")
+    scout = ctx.scout_file.read_text(encoding="utf-8")
+    test_output = ctx.test_output_file.read_text(encoding="utf-8") if ctx.test_output_file.exists() else ""
 
     # Get full constitution: zen defaults + project CLAUDE.md (or AGENTS.md)
     constitution = get_full_constitution(ctx.project_root, "GOLDEN RULES", "ARCHITECTURE", "CODE STYLE", "TESTING")

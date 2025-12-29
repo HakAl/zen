@@ -19,7 +19,7 @@ from zen_mode.claude import run_claude
 from zen_mode.config import MODEL_EYES, WORK_DIR_NAME, PROJECT_ROOT
 from zen_mode.context import Context
 from zen_mode.exceptions import ZenError, ConfigError, VerifyError
-from zen_mode.files import read_file, write_file, log
+from zen_mode.files import write_file, log
 from zen_mode.implement import phase_implement_ctx
 from zen_mode.judge import phase_judge_ctx, should_skip_judge_ctx
 from zen_mode.plan import phase_plan_ctx
@@ -71,7 +71,7 @@ def _check_previous_completion(notes_file: Path) -> bool:
     if not notes_file.exists():
         return False
     try:
-        content = read_file(notes_file)
+        content = notes_file.read_text(encoding="utf-8")
         return "## Cost Summary" in content
     except Exception:
         return False
@@ -118,7 +118,7 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
         return
 
     if "--retry" in flags and log_file.exists():
-        lines = read_file(log_file).splitlines()
+        lines = log_file.read_text(encoding="utf-8").splitlines()
         cleaned = "\n".join(line for line in lines if "[COMPLETE] Step" not in line)
         write_file(log_file, cleaned, work_dir)
         logger.info("Cleared completion markers.")
@@ -153,7 +153,7 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
             phase_scout_ctx(ctx)
 
         # Triage check
-        scout_output = read_file(ctx.scout_file)
+        scout_output = ctx.scout_file.read_text(encoding="utf-8")
         triage = parse_triage(scout_output)
         fast_track_succeeded = False
 
@@ -180,7 +180,7 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
                 if ctx.plan_file.exists():
                     ctx.plan_file.unlink()
                 if ctx.log_file.exists():
-                    lines = read_file(ctx.log_file).splitlines()
+                    lines = ctx.log_file.read_text(encoding="utf-8").splitlines()
                     cleaned = "\n".join(line for line in lines if "[COMPLETE] Step" not in line)
                     write_file(ctx.log_file, cleaned, ctx.work_dir)
 
@@ -202,7 +202,7 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
                 _log("[JUDGE] Skipped (--skip-judge flag)")
 
         # Generate summary
-        plan = read_file(ctx.plan_file)
+        plan = ctx.plan_file.read_text(encoding="utf-8")
         summary = run_claude(
             f"Summarize the completed changes in 3-5 bullets.\n\nPlan:\n{plan}",
             model=MODEL_EYES,

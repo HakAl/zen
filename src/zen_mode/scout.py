@@ -14,7 +14,7 @@ from zen_mode.claude import run_claude
 from zen_mode.config import MODEL_EYES
 from zen_mode.context import Context
 from zen_mode.exceptions import ScoutError
-from zen_mode.files import read_file, write_file, log
+from zen_mode.files import write_file, log
 from zen_mode import ratchet
 
 
@@ -401,7 +401,7 @@ def phase_scout_ctx(ctx: Context) -> None:
         write_file(ctx.scout_file, output, ctx.work_dir)
 
     # Golden Rule: grep for callers/importers of targeted files
-    scout_content = read_file(ctx.scout_file)
+    scout_content = ctx.scout_file.read_text(encoding="utf-8")
     targeted_files = parse_targeted_files(scout_content)
     if targeted_files:
         append_grep_impact_to_scout(
