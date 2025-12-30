@@ -83,7 +83,7 @@ def capture_baseline(
         violations: List[Dict] = []
         for path in existing:
             violations.extend(linter.check_file(path, min_severity="LOW"))
-    except Exception as e:
+    except OSError as e:
         if log_fn:
             log_fn(f"[BASELINE] Linter error (continuing): {e}")
         return {}

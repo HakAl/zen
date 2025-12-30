@@ -225,6 +225,36 @@ TEST_OUTPUT_PATH_STR = WORK_DIR_NAME + "/test_output.txt"  # For prompts
 # -----------------------------------------------------------------------------
 SHOW_COSTS = _get_bool_env("ZEN_SHOW_COSTS", "true")
 
+# -----------------------------------------------------------------------------
+# Cost Budget
+# -----------------------------------------------------------------------------
+def _get_float_env(name: str, default: str, min_val: float = 0.0) -> float:
+    """Get float from env var with validation.
+
+    Args:
+        name: Environment variable name
+        default: Default value as string
+        min_val: Minimum allowed value
+
+    Returns:
+        Validated float value
+
+    Raises:
+        ConfigError: If value is not a valid float or below minimum
+    """
+    raw = os.getenv(name, default)
+    try:
+        val = float(raw)
+    except ValueError:
+        raise ConfigError(f"{name}={raw!r} is not a valid number")
+    if val < min_val:
+        raise ConfigError(f"{name}={val} must be >= {min_val}")
+    return val
+
+
+# Maximum cost per task in USD (0 = no limit)
+MAX_COST_PER_TASK = _get_float_env("ZEN_MAX_COST", "0.0", min_val=0.0)
+
 
 # -----------------------------------------------------------------------------
 # Security-Relevant Configuration

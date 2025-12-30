@@ -95,6 +95,7 @@ def run_claude(
     # Trust is determined by ZEN_TRUST_ROOTS (scope-limited) or ZEN_SKIP_PERMISSIONS (global)
     if is_trusted_directory(project_root):
         cmd.insert(2, "--dangerously-skip-permissions")
+    logger.debug(f"[CMD] {' '.join(cmd)} (cwd={project_root})")
     proc = None
     try:
         proc = subprocess.Popen(

@@ -150,6 +150,10 @@ def format_status_block(
     return lines
 
 
+# Lock for atomic status block updates (prevents interleaving with other output)
+_status_lock = threading.Lock()
+
+
 def print_status_block(lines: List[str], prev_line_count: int = 0, is_tty: bool = True) -> int:
     """Print status block, clearing previous output.
 
@@ -163,14 +167,21 @@ def print_status_block(lines: List[str], prev_line_count: int = 0, is_tty: bool 
     """
     try:
         if is_tty:
-            # Move up and clear previous lines
-            if prev_line_count > 0:
-                sys.stdout.write(f"\033[{prev_line_count}A")
+            with _status_lock:
+                # Build complete output buffer to write atomically
+                output_parts = []
 
-            # Print new lines
-            for line in lines:
-                sys.stdout.write(f"\r{line}\033[K\n")
-            sys.stdout.flush()
+                # Move up and clear previous lines
+                if prev_line_count > 0:
+                    output_parts.append(f"\033[{prev_line_count}A")
+
+                # Print new lines
+                for line in lines:
+                    output_parts.append(f"\r{line}\033[K\n")
+
+                # Write all at once and flush
+                sys.stdout.write("".join(output_parts))
+                sys.stdout.flush()
 
             return len(lines)
         else:

@@ -73,7 +73,7 @@ def _check_previous_completion(notes_file: Path) -> bool:
     try:
         content = notes_file.read_text(encoding="utf-8")
         return "## Cost Summary" in content
-    except Exception:
+    except (OSError, UnicodeDecodeError):
         return False
 
 
@@ -163,7 +163,8 @@ def run(task_file: str, flags: Optional[set] = None, scout_context: Optional[str
             # Generate synthetic plan from micro-spec
             write_file(ctx.plan_file, generate_synthetic_plan(triage), ctx.work_dir)
 
-            phase_implement_ctx(ctx, allowed_files=allowed_files)
+            # Fast track uses Haiku (MODEL_EYES) for implement phase
+            phase_implement_ctx(ctx, allowed_files=allowed_files, fast_track=True)
 
             if skip_verify:
                 _log("[VERIFY] Skipped (--skip-verify flag)")

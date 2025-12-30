@@ -152,7 +152,7 @@ INSTRUCTION: Add a comment at line 10
         # Track log content when implement is called
         log_content_when_implement_called = []
 
-        def implement_side_effect(ctx, allowed_files=None):
+        def implement_side_effect(ctx, allowed_files=None, fast_track=False):
             log_file = ctx.work_dir / "log.md"
             if log_file.exists():
                 log_content_when_implement_called.append(log_file.read_text())

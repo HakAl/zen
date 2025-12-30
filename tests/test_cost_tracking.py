@@ -150,3 +150,95 @@ class TestCostTrackingIntegration:
         stdout = '["array", "response"]'
         data = _parse_json_response(stdout)
         assert not isinstance(data, dict)
+
+
+class TestCostBudgetEnforcement:
+    """Tests for cost budget enforcement in Context."""
+
+    def test_no_budget_allows_unlimited_costs(self, tmp_path, monkeypatch):
+        """With MAX_COST_PER_TASK=0 (default), any cost is allowed."""
+        # Ensure no budget limit
+        monkeypatch.setenv("ZEN_MAX_COST", "0")
+        # Need to reimport to pick up new env var
+        import importlib
+        import zen_mode.config
+        import zen_mode.context
+        importlib.reload(zen_mode.config)
+        importlib.reload(zen_mode.context)
+
+        from zen_mode.context import Context
+
+        ctx = Context(
+            work_dir=tmp_path / ".zen",
+            task_file="task.md",
+            project_root=tmp_path,
+        )
+
+        # Should not raise even with large costs
+        ctx.record_cost("scout", 10.0, {"in": 1000, "out": 500, "cache_read": 0})
+        ctx.record_cost("plan", 50.0, {"in": 5000, "out": 2000, "cache_read": 0})
+
+        # Restore default
+        monkeypatch.setenv("ZEN_MAX_COST", "0.0")
+        importlib.reload(zen_mode.config)
+        importlib.reload(zen_mode.context)
+
+    def test_budget_exceeded_raises_error(self, tmp_path, monkeypatch):
+        """When costs exceed MAX_COST_PER_TASK, CostBudgetExceeded is raised."""
+        # Set a budget limit
+        monkeypatch.setenv("ZEN_MAX_COST", "0.10")
+        # Reimport to pick up new env var
+        import importlib
+        import zen_mode.config
+        import zen_mode.context
+        importlib.reload(zen_mode.config)
+        importlib.reload(zen_mode.context)
+
+        from zen_mode.context import Context
+        from zen_mode.exceptions import CostBudgetExceeded
+
+        ctx = Context(
+            work_dir=tmp_path / ".zen",
+            task_file="task.md",
+            project_root=tmp_path,
+        )
+
+        # First call under budget - should succeed
+        ctx.record_cost("scout", 0.05, {"in": 1000, "out": 500, "cache_read": 0})
+
+        # Second call pushes over budget - should raise
+        with pytest.raises(CostBudgetExceeded) as exc_info:
+            ctx.record_cost("plan", 0.10, {"in": 2000, "out": 1000, "cache_read": 0})
+
+        assert "0.15" in str(exc_info.value)  # Total cost
+        assert "0.10" in str(exc_info.value)  # Budget limit
+
+        # Restore default
+        monkeypatch.setenv("ZEN_MAX_COST", "0.0")
+        importlib.reload(zen_mode.config)
+        importlib.reload(zen_mode.context)
+
+    def test_budget_at_limit_does_not_raise(self, tmp_path, monkeypatch):
+        """Costs exactly at budget limit do not raise."""
+        monkeypatch.setenv("ZEN_MAX_COST", "0.10")
+        import importlib
+        import zen_mode.config
+        import zen_mode.context
+        importlib.reload(zen_mode.config)
+        importlib.reload(zen_mode.context)
+
+        from zen_mode.context import Context
+
+        ctx = Context(
+            work_dir=tmp_path / ".zen",
+            task_file="task.md",
+            project_root=tmp_path,
+        )
+
+        # Exactly at limit - should not raise
+        ctx.record_cost("scout", 0.10, {"in": 1000, "out": 500, "cache_read": 0})
+
+        # Restore default
+        monkeypatch.setenv("ZEN_MAX_COST", "0.0")
+        importlib.reload(zen_mode.config)
+        importlib.reload(zen_mode.context)

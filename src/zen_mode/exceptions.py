@@ -40,3 +40,8 @@ class ConfigError(ZenError):
     """Configuration or environment error."""
     pass
 
+
+class CostBudgetExceeded(ZenError):
+    """Task cost exceeded configured budget limit."""
+    pass
+

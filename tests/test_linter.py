@@ -38,6 +38,52 @@ class TestIgnoreDirs:
         assert "venv" in IGNORE_DIRS
 
 
+class TestCheckFileIgnoresDirs:
+    """Test that check_file skips files inside IGNORE_DIRS."""
+
+    def test_check_file_skips_node_modules(self, tmp_path):
+        """Files in node_modules should be skipped even when passed directly."""
+        # Create a file with a lintable violation inside node_modules
+        node_mods = tmp_path / "node_modules" / "some-package"
+        node_mods.mkdir(parents=True)
+        bad_file = node_mods / "index.js"
+        bad_file.write_text("const password = 'secret123';", encoding="utf-8")
+
+        # check_file should return no violations (file should be skipped)
+        violations = check_file(str(bad_file))
+        assert violations == [], f"Expected no violations for node_modules file, got {violations}"
+
+    def test_check_file_skips_dot_git(self, tmp_path):
+        """Files in .git should be skipped."""
+        git_dir = tmp_path / ".git" / "hooks"
+        git_dir.mkdir(parents=True)
+        bad_file = git_dir / "pre-commit"
+        bad_file.write_text("password = 'secret123'", encoding="utf-8")
+
+        violations = check_file(str(bad_file))
+        assert violations == [], f"Expected no violations for .git file, got {violations}"
+
+    def test_check_file_skips_venv(self, tmp_path):
+        """Files in venv should be skipped."""
+        venv_dir = tmp_path / "venv" / "lib" / "python3.9"
+        venv_dir.mkdir(parents=True)
+        bad_file = venv_dir / "site.py"
+        bad_file.write_text("SECRET_KEY = 'abc123'", encoding="utf-8")
+
+        violations = check_file(str(bad_file))
+        assert violations == [], f"Expected no violations for venv file, got {violations}"
+
+    def test_check_file_lints_normal_files(self, tmp_path):
+        """Normal files should still be linted."""
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        bad_file = src_dir / "config.py"
+        bad_file.write_text("password = 'secret123'", encoding="utf-8")
+
+        violations = check_file(str(bad_file))
+        assert len(violations) > 0, "Expected violations for normal file with hardcoded secret"
+
+
 class TestIgnoreFiles:
     """Test that IGNORE_FILES skips expected files."""
 

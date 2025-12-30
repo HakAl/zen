@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
+from zen_mode.exceptions import CostBudgetExceeded
+
 
 @dataclass
 class Context:
@@ -68,13 +70,34 @@ class Context:
         return self._baseline_file
 
     def record_cost(self, phase: str, cost: float, tokens: Dict[str, int]) -> None:
-        """Record cost and tokens for a phase."""
+        """Record cost and tokens for a phase.
+
+        Args:
+            phase: Phase name (scout, plan, implement, etc.)
+            cost: Cost in USD for this call
+            tokens: Token counts dict with 'in', 'out', 'cache_read' keys
+
+        Raises:
+            CostBudgetExceeded: If total cost exceeds MAX_COST_PER_TASK (when > 0)
+        """
         self.costs.append({
             "phase": phase,
             "cost": cost,
             "tokens": tokens,
         })
         self.tokens += tokens.get("in", 0) + tokens.get("out", 0)
+
+        # Check budget if configured (MAX_COST_PER_TASK > 0)
+        # Import dynamically to pick up any runtime changes to config
+        from zen_mode.config import MAX_COST_PER_TASK
+        if MAX_COST_PER_TASK > 0:
+            total_cost = sum(entry["cost"] for entry in self.costs)
+            if total_cost > MAX_COST_PER_TASK:
+                raise CostBudgetExceeded(
+                    f"Cost budget exceeded: ${total_cost:.4f} > ${MAX_COST_PER_TASK:.4f}\n"
+                    f"  Phase: {phase}\n"
+                    f"  Set ZEN_MAX_COST env var to increase limit or set to 0 to disable"
+                )
 
     def log(self, msg: str) -> None:
         """Log a message to the context's log file.

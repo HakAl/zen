@@ -15,6 +15,7 @@ from zen_mode import git, linter
 from zen_mode.claude import run_claude
 from zen_mode.config import (
     MODEL_BRAIN,
+    MODEL_EYES,
     MODEL_HANDS,
     TIMEOUT_EXEC,
     TIMEOUT_LINTER,
@@ -170,6 +171,33 @@ End with: STEP_COMPLETE (if verified) or STEP_BLOCKED: <reason> (if not complete
 </output>"""
 
 
+def build_fast_track_prompt(step_desc: str, plan: str) -> str:
+    """Build minimal prompt for fast track (Haiku) implementation.
+
+    Fast track tasks are simple, high-confidence changes. Keep prompt minimal
+    to avoid confusing the model with unnecessary structure.
+
+    Args:
+        step_desc: Current step description
+        plan: Full plan text with file targets
+    """
+    return f"""You are implementing a simple code change. Use the Edit tool to modify files.
+
+TASK: {step_desc}
+
+PLAN:
+{plan}
+
+INSTRUCTIONS:
+1. Read the target files listed in the plan
+2. Use the Edit tool to make the required changes
+3. Output STEP_COMPLETE when done
+
+IMPORTANT: You MUST use the Edit tool to modify files. Do not just describe what to change.
+
+Output: STEP_COMPLETE or STEP_BLOCKED: <reason>"""
+
+
 def build_implement_prompt(step_num: int, step_desc: str, plan: str,
                            project_root: Path, allowed_files: Optional[str] = None,
                            step_context: Optional[dict] = None, goal: Optional[str] = None,
@@ -307,19 +335,21 @@ Response: Added `-> dict` return type to `process_data`, done
 # -----------------------------------------------------------------------------
 # Implement Phase (Context-based API)
 # -----------------------------------------------------------------------------
-def phase_implement_ctx(ctx: Context, allowed_files: Optional[str] = None) -> None:
+def phase_implement_ctx(ctx: Context, allowed_files: Optional[str] = None,
+                        fast_track: bool = False) -> None:
     """Execute implement phase using Context object.
 
     Args:
         ctx: Execution context
         allowed_files: Optional glob pattern restricting file modifications
+        fast_track: If True, use MODEL_EYES (Haiku) for first attempts instead of MODEL_HANDS
     """
     plan = ctx.plan_file.read_text(encoding="utf-8")
     steps = parse_steps(plan)
 
     if not steps:
         ctx.log( "[IMPLEMENT] No steps found in plan.")
-        raise ImplementError("No steps found in plan")
+        raise ImplementError(f"No steps found in plan. Plan file: {ctx.plan_file}")
 
     # Extract goal for lean prompts
     goal = extract_plan_goal(plan)
@@ -364,12 +394,16 @@ def phase_implement_ctx(ctx: Context, allowed_files: Optional[str] = None) -> No
                 use_full_plan = True  # Escalation always gets full context
                 model = MODEL_BRAIN
             else:
-                model = MODEL_HANDS
+                # Fast track uses Haiku for first attempts, Sonnet for retries
+                model = MODEL_EYES if (fast_track and attempt == 1) else MODEL_HANDS
 
             # Build prompt with appropriate context level
             if is_verify_only:
                 base_prompt = build_verify_prompt(step_desc, plan, goal=goal,
                                                   include_full_plan=use_full_plan)
+            elif fast_track and attempt == 1:
+                # Simple prompt for Haiku fast track - be explicit about using Edit tool
+                base_prompt = build_fast_track_prompt(step_desc, plan)
             else:
                 base_prompt = build_implement_prompt(
                     step_num, step_desc, plan, ctx.project_root, allowed_files,
@@ -395,7 +429,12 @@ def phase_implement_ctx(ctx: Context, allowed_files: Optional[str] = None) -> No
             if last_line.startswith("STEP_BLOCKED"):
                 ctx.log( f"[BLOCKED] Step {step_num}")
                 logger.info(f"\n{output}")
-                raise ImplementError(f"Step {step_num} blocked: {last_line}")
+                raise ImplementError(
+                    f"Step {step_num} blocked: {last_line}\n"
+                    f"  Step description: {step_desc[:100]}\n"
+                    f"  Model: {model}, Attempt: {attempt}/{MAX_RETRIES}\n"
+                    f"  Log file: {ctx.log_file}"
+                )
 
             if "STEP_COMPLETE" in output:
                 passed, lint_out = run_linter_with_timeout()
@@ -418,18 +457,38 @@ def phase_implement_ctx(ctx: Context, allowed_files: Optional[str] = None) -> No
                         ctx.log( f"[FAILED] Step {step_num}: {len(seen_lint_hashes)} distinct lint failures")
                         if ctx.backup_dir.exists():
                             ctx.log( f"[RECOVERY] Backups available in: {ctx.backup_dir}")
-                        raise ImplementError(f"Step {step_num} failed: {len(seen_lint_hashes)} distinct lint failures")
+                        raise ImplementError(
+                            f"Step {step_num} failed: {len(seen_lint_hashes)} distinct lint failures\n"
+                            f"  Step description: {step_desc[:100]}\n"
+                            f"  Last lint error (truncated): {last_error_summary[:200]}\n"
+                            f"  Backup dir: {ctx.backup_dir}\n"
+                            f"  Log file: {ctx.log_file}"
+                        )
                     continue
 
                 ctx.log( f"[COMPLETE] Step {step_num}")
                 seen_lint_hashes.clear()
                 step_succeeded_on_attempt = attempt
                 break
+            else:
+                # Model didn't signal completion - log what we got for debugging
+                ctx.log(f"[NO_COMPLETE] Step {step_num} - {model} did not signal STEP_COMPLETE")
+                last_error_summary = output[:200] if output else "Empty response"
+                # Log first few lines to help debug
+                if output:
+                    for line in output.splitlines()[:3]:
+                        logger.info(f"    {line[:100]}")
         else:
             ctx.log( f"[FAILED] Step {step_num} after {MAX_RETRIES} attempts")
             if ctx.backup_dir.exists():
                 ctx.log( f"[RECOVERY] Backups available in: {ctx.backup_dir}")
-            raise ImplementError(f"Step {step_num} failed after {MAX_RETRIES} attempts")
+            raise ImplementError(
+                f"Step {step_num} failed after {MAX_RETRIES} attempts\n"
+                f"  Step description: {step_desc[:100]}\n"
+                f"  Last error: {last_error_summary[:200] if last_error_summary else 'No output'}\n"
+                f"  Backup dir: {ctx.backup_dir}\n"
+                f"  Log file: {ctx.log_file}"
+            )
 
         if step_succeeded_on_attempt > 1:
             consecutive_retry_steps += 1

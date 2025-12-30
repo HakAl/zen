@@ -363,6 +363,9 @@ def check_file(path: str, min_severity: str = "LOW", config: Optional[Dict] = No
         return []
     if p.name in IGNORE_FILES:
         return []
+    # Skip files in ignored directories (e.g., node_modules, .git, venv)
+    if any(part in IGNORE_DIRS for part in p.parts):
+        return []
     # Skip binary files (never lint)
     if p.suffix.lower() in BINARY_EXTS:
         return []
@@ -517,7 +520,7 @@ def load_config(config_path: Optional[str]) -> Optional[Dict]:
         try:
             with open(config_path) as f:
                 return json.load(f)
-        except Exception as e:
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
             logger.warning(f"Could not load config {config_path}: {e}")
 
     return None
