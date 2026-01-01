@@ -157,7 +157,8 @@ def cmd_swarm(args: argparse.Namespace) -> None:
             tasks=args.tasks,
             workers=args.workers,
             project_root=Path.cwd(),
-            verbose=getattr(args, 'verbose', False)
+            verbose=getattr(args, 'verbose', False),
+            strategy=getattr(args, 'strategy', 'auto')
         )
     except ValueError as e:
         logger.error(str(e))
@@ -194,10 +195,12 @@ def main() -> None:
             cmd_init(SimpleNamespace())
             return
         elif cmd == "swarm":
-            # zen swarm <task1.md> [task2.md ...] [--workers N] [--verbose]
+            # zen swarm <task1.md> [task2.md ...] [--workers N] [--strategy S] [--verbose]
             parser = argparse.ArgumentParser(prog="zen swarm")
             parser.add_argument("tasks", nargs="+", help="Task files to execute in parallel")
             parser.add_argument("--workers", type=int, default=None, help="Number of parallel workers (default: auto)")
+            parser.add_argument("--strategy", choices=["worktree", "sequential", "auto"], default="auto",
+                              help="Execution strategy: worktree (git worktrees), sequential (same-dir), auto (worktree with fallback)")
             parser.add_argument("--verbose", "-v", action="store_true", help="Show full logs instead of status ticker")
             args = parser.parse_args(sys.argv[2:])
 

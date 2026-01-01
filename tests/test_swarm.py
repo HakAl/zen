@@ -927,3 +927,296 @@ class TestSwarmDispatcherSequentialFallback:
 
         assert summary.total_tasks == 2
         assert summary.succeeded == 2
+
+
+# ============================================================================
+# Worktree Execution Tests
+# ============================================================================
+class TestWorktreeHelpers:
+    """Tests for worktree helper functions."""
+
+    def test_generate_branch_name_format(self):
+        """Branch names should be 'swarm/uuid8' format."""
+        from zen_mode.swarm import _generate_branch_name
+
+        name = _generate_branch_name()
+        assert name.startswith("swarm/")
+        # UUID8 = 8 hex chars after "swarm/"
+        uuid_part = name.split("/")[1]
+        assert len(uuid_part) == 8
+        assert all(c in "0123456789abcdef" for c in uuid_part)
+
+    def test_generate_branch_name_unique(self):
+        """Each call should produce a unique branch name."""
+        from zen_mode.swarm import _generate_branch_name
+
+        names = [_generate_branch_name() for _ in range(100)]
+        assert len(set(names)) == 100
+
+    def test_is_pid_running_current_process(self):
+        """Current process PID should be detected as running."""
+        from zen_mode.swarm import _is_pid_running
+
+        assert _is_pid_running(os.getpid()) is True
+
+    def test_is_pid_running_nonexistent(self):
+        """Non-existent PID should return False."""
+        from zen_mode.swarm import _is_pid_running
+
+        # Use a very high PID unlikely to exist
+        assert _is_pid_running(999999999) is False
+
+
+class TestMergeSummary:
+    """Tests for MergeSummary dataclass."""
+
+    def test_merge_summary_tracks_branches(self):
+        """MergeSummary should track branch names, not just counts."""
+        from zen_mode.swarm import MergeSummary
+
+        summary = MergeSummary()
+        summary.merged.append("swarm/abc123")
+        summary.failed.append("swarm/def456")
+        summary.conflicts["swarm/ghi789"] = "Merge conflict"
+
+        assert len(summary.merged) == 1
+        assert len(summary.failed) == 1
+        assert len(summary.conflicts) == 1
+        assert "swarm/abc123" in summary.merged
+        assert "swarm/def456" in summary.failed
+        assert "swarm/ghi789" in summary.conflicts
+
+    def test_resolution_guide_with_conflicts(self):
+        """Resolution guide should provide actionable steps for conflicts."""
+        from zen_mode.swarm import MergeSummary
+
+        summary = MergeSummary()
+        summary.conflicts["swarm/abc123"] = "Merge conflict in file.py"
+
+        guide = summary.resolution_guide()
+
+        assert "swarm/abc123" in guide
+        assert "Merge conflict in file.py" in guide
+        assert "git checkout swarm/abc123" in guide
+
+    def test_resolution_guide_with_failed(self):
+        """Resolution guide should list failed branches."""
+        from zen_mode.swarm import MergeSummary
+
+        summary = MergeSummary()
+        summary.failed.append("swarm/xyz789")
+
+        guide = summary.resolution_guide()
+
+        assert "swarm/xyz789" in guide
+        assert "Failed Tasks" in guide
+
+    def test_resolution_guide_empty_when_no_issues(self):
+        """Resolution guide should be empty when no conflicts or failures."""
+        from zen_mode.swarm import MergeSummary
+
+        summary = MergeSummary()
+        summary.merged.append("swarm/abc123")
+
+        guide = summary.resolution_guide()
+
+        assert guide == ""
+
+
+class TestSwarmProgress:
+    """Tests for SwarmProgress crash recovery manifest."""
+
+    def test_progress_serialization(self):
+        """SwarmProgress should serialize and deserialize correctly."""
+        from zen_mode.swarm import SwarmProgress
+
+        progress = SwarmProgress(
+            pid=12345,
+            started="2024-01-01T12:00:00",
+            tasks=[
+                {"task_path": "task1.md", "branch": "swarm/abc", "status": "pending"},
+                {"task_path": "task2.md", "branch": "swarm/def", "status": "complete"},
+            ]
+        )
+
+        data = progress.to_dict()
+        restored = SwarmProgress.from_dict(data)
+
+        assert restored.pid == progress.pid
+        assert restored.started == progress.started
+        assert len(restored.tasks) == 2
+        assert restored.tasks[0]["branch"] == "swarm/abc"
+
+    def test_progress_manifest_write_read(self, tmp_path):
+        """Progress manifest should be written to and read from disk."""
+        from zen_mode.swarm import (
+            SwarmProgress,
+            _write_progress_manifest,
+            _read_progress_manifest,
+            _clear_progress_manifest,
+            WORKTREE_DIR,
+        )
+
+        progress = SwarmProgress(
+            pid=os.getpid(),
+            started="2024-01-01T12:00:00",
+            tasks=[{"task_path": "task.md", "branch": "swarm/test", "status": "pending"}]
+        )
+
+        _write_progress_manifest(progress, tmp_path)
+
+        # Verify file exists
+        manifest_path = tmp_path / WORKTREE_DIR / ".swarm-progress.json"
+        assert manifest_path.exists()
+
+        # Read back
+        restored = _read_progress_manifest(tmp_path)
+        assert restored is not None
+        assert restored.started == progress.started
+
+        # Clear
+        _clear_progress_manifest(tmp_path)
+        assert not manifest_path.exists()
+
+
+class TestSwarmConfigStrategy:
+    """Tests for SwarmConfig strategy validation."""
+
+    def test_valid_strategy_worktree(self):
+        """Strategy 'worktree' should be accepted."""
+        config = SwarmConfig(tasks=["task.md"], strategy="worktree")
+        assert config.strategy == "worktree"
+
+    def test_valid_strategy_sequential(self):
+        """Strategy 'sequential' should be accepted."""
+        config = SwarmConfig(tasks=["task.md"], strategy="sequential")
+        assert config.strategy == "sequential"
+
+    def test_valid_strategy_auto(self):
+        """Strategy 'auto' should be accepted."""
+        config = SwarmConfig(tasks=["task.md"], strategy="auto")
+        assert config.strategy == "auto"
+
+    def test_invalid_strategy_rejected(self):
+        """Invalid strategy values should raise ValueError."""
+        with pytest.raises(ValueError, match="Invalid strategy"):
+            SwarmConfig(tasks=["task.md"], strategy="invalid")
+
+
+class TestPreflightChecks:
+    """Tests for worktree preflight checks."""
+
+    def test_preflight_detached_head_rejected(self, tmp_path):
+        """Preflight should fail if HEAD is detached."""
+        from zen_mode.swarm import _preflight_worktree, SwarmError
+
+        # Initialize git repo
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+
+        # Create initial commit
+        (tmp_path / "file.txt").write_text("content")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "initial"], cwd=tmp_path, capture_output=True)
+
+        # Detach HEAD
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=tmp_path, capture_output=True, text=True
+        )
+        commit_hash = result.stdout.strip()
+        subprocess.run(["git", "checkout", commit_hash], cwd=tmp_path, capture_output=True)
+
+        with pytest.raises(SwarmError, match="detached HEAD"):
+            _preflight_worktree(tmp_path)
+
+    def test_preflight_concurrent_swarm_guard(self, tmp_path):
+        """Preflight should fail if another swarm is running."""
+        from zen_mode.swarm import _preflight_worktree, SwarmError, WORKTREE_DIR, SWARM_LOCKFILE
+
+        # Initialize git repo
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+
+        # Create initial commit
+        (tmp_path / "file.txt").write_text("content")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "initial"], cwd=tmp_path, capture_output=True)
+
+        # Create lock with current PID (simulating running swarm)
+        worktrees_dir = tmp_path / WORKTREE_DIR
+        worktrees_dir.mkdir(parents=True)
+        lockfile = tmp_path / SWARM_LOCKFILE
+        lockfile.write_text(str(os.getpid()))
+
+        with pytest.raises(SwarmError, match="Another swarm"):
+            _preflight_worktree(tmp_path)
+
+    def test_preflight_stale_lock_cleaned(self, tmp_path):
+        """Preflight should clean stale locks from dead processes."""
+        from zen_mode.swarm import _preflight_worktree, WORKTREE_DIR, SWARM_LOCKFILE
+
+        # Initialize git repo
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+
+        # Create initial commit
+        (tmp_path / "file.txt").write_text("content")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "initial"], cwd=tmp_path, capture_output=True)
+
+        # Create lock with non-existent PID
+        worktrees_dir = tmp_path / WORKTREE_DIR
+        worktrees_dir.mkdir(parents=True)
+        lockfile = tmp_path / SWARM_LOCKFILE
+        lockfile.write_text("999999999")  # Non-existent PID
+
+        # Should not raise - stale lock should be cleaned
+        _preflight_worktree(tmp_path)
+
+        # Lockfile should now contain current PID
+        assert lockfile.read_text() == str(os.getpid())
+
+
+class TestOrphanCleanup:
+    """Tests for orphan branch cleanup."""
+
+    def test_cleanup_stale_branches(self, tmp_path):
+        """Stale branches without worktrees should be cleaned."""
+        from zen_mode.swarm import cleanup_stale_branches
+
+        # Initialize git repo
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+
+        # Create initial commit
+        (tmp_path / "file.txt").write_text("content")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "initial"], cwd=tmp_path, capture_output=True)
+
+        # Create orphan swarm branch
+        subprocess.run(
+            ["git", "branch", "swarm/orphan123"],
+            cwd=tmp_path, capture_output=True
+        )
+
+        # Verify branch exists
+        result = subprocess.run(
+            ["git", "branch", "--list", "swarm/*"],
+            cwd=tmp_path, capture_output=True, text=True
+        )
+        assert "swarm/orphan123" in result.stdout
+
+        # Run cleanup
+        cleanup_stale_branches(tmp_path, pattern="swarm/*")
+
+        # Verify branch is deleted
+        result = subprocess.run(
+            ["git", "branch", "--list", "swarm/*"],
+            cwd=tmp_path, capture_output=True, text=True
+        )
+        assert "swarm/orphan123" not in result.stdout

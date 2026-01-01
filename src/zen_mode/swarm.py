@@ -3,6 +3,7 @@ Zen Swarm: Parallel task execution with cost aggregation and
 conflict detection.
 """
 from __future__ import annotations
+import json
 import logging
 import os
 import re
@@ -13,7 +14,9 @@ import threading
 import time
 import signal
 import atexit
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 from uuid import uuid4
@@ -39,10 +42,173 @@ atexit.register(_cleanup_workers)
 
 from zen_mode.config import TIMEOUT_EXEC
 from zen_mode.files import write_file
+from zen_mode import git
 
 # Configuration
 TIMEOUT_WORKER = TIMEOUT_EXEC  # Use same timeout as core
 STATUS_UPDATE_INTERVAL = 5  # seconds between status line updates
+
+# Worktree configuration
+WORKTREE_DIR = ".worktrees"  # Directory for worktrees
+PROGRESS_MANIFEST = ".swarm-progress.json"  # Progress manifest filename
+PID_LOCKFILE = ".swarm.pid"  # PID lockfile in each worktree
+SWARM_LOCKFILE = ".worktrees/.swarm.lock"  # Global swarm lock
+
+
+# ============================================================================
+# Pre-flight Checks
+# ============================================================================
+class SwarmError(Exception):
+    """Error raised when swarm pre-flight checks fail."""
+    pass
+
+
+def _is_pid_running(pid: int) -> bool:
+    """Check if process with given PID is still running.
+
+    Uses os.kill with signal 0 (existence check) on Unix.
+    On Windows, handles PermissionError (process exists) vs OSError (process gone).
+    """
+    if sys.platform == "win32":
+        try:
+            os.kill(pid, 0)
+            return True
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+    else:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+
+def cleanup_stale_worktrees(project_root: Path) -> None:
+    """Remove worktrees where the owning PID is no longer running.
+
+    Checks .swarm.pid file in each worktree directory under .worktrees/.
+    """
+    worktrees_dir = project_root / WORKTREE_DIR
+    if not worktrees_dir.exists():
+        return
+
+    for entry in worktrees_dir.iterdir():
+        if not entry.is_dir():
+            continue
+        if entry.name == ".swarm.lock":
+            continue
+
+        pid_file = entry / PID_LOCKFILE
+        if not pid_file.exists():
+            continue
+
+        try:
+            pid = int(pid_file.read_text().strip())
+        except (ValueError, OSError):
+            pid = -1
+
+        if pid < 0 or not _is_pid_running(pid):
+            logger.info(f"[SWARM] Cleaning stale worktree: {entry.name}")
+            if not git.remove_worktree(entry, retry=True):
+                try:
+                    shutil.rmtree(entry, ignore_errors=True)
+                except OSError:
+                    logger.warning(f"[SWARM] Failed to remove stale worktree: {entry}")
+
+
+def cleanup_stale_branches(project_root: Path, pattern: str = "swarm/*") -> None:
+    """Remove branches matching pattern that have no associated worktree."""
+    branches = git.list_branches(project_root, pattern)
+    if not branches:
+        return
+
+    worktrees = git.list_worktrees(project_root)
+    active_branches: Set[str] = set()
+    for wt_path in worktrees:
+        wt_name = Path(wt_path).name
+        if "/" in wt_name:
+            active_branches.add(wt_name)
+        else:
+            active_branches.add(f"swarm/{wt_name}")
+
+    for branch in branches:
+        if branch not in active_branches:
+            logger.info(f"[SWARM] Cleaning stale branch: {branch}")
+            git.delete_branch(project_root, branch)
+
+
+def _preflight_worktree(project_root: Path) -> None:
+    """Run all pre-flight checks before worktree swarm execution.
+
+    Raises SwarmError with actionable message on failure.
+    """
+    worktrees_dir = project_root / WORKTREE_DIR
+    lockfile = project_root / SWARM_LOCKFILE
+
+    # 1. Concurrent swarm guard
+    if lockfile.exists():
+        try:
+            lock_pid = int(lockfile.read_text().strip())
+            if _is_pid_running(lock_pid):
+                raise SwarmError(
+                    f"Another swarm is running (PID {lock_pid}).\n"
+                    "  Wait for it to finish or kill it manually."
+                )
+            lockfile.unlink(missing_ok=True)
+        except ValueError:
+            lockfile.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    # 2. Detached HEAD guard
+    if git.is_detached_head(project_root):
+        raise SwarmError(
+            "Cannot run swarm in detached HEAD state.\n"
+            "  Checkout a branch first: git checkout <branch>"
+        )
+
+    # 3. Clean stale worktrees
+    cleanup_stale_worktrees(project_root)
+
+    # 4. Clean stale branches
+    cleanup_stale_branches(project_root)
+
+    # 5. Require clean git state
+    if not git.is_clean(project_root):
+        raise SwarmError(
+            "Git state is dirty. Commit or stash changes before running swarm.\n"
+            "  Hint: git stash && zen swarm ... && git stash pop"
+        )
+
+    # 6. Acquire lockfile
+    worktrees_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        lockfile.write_text(str(os.getpid()))
+    except OSError as e:
+        raise SwarmError(f"Failed to acquire swarm lock: {e}")
+
+    # 7. Record starting branch/commit
+    branch = git.get_current_branch(project_root)
+    commit = git.get_head_commit(project_root)
+    logger.debug(f"[SWARM] Starting from branch={branch}, commit={commit[:8] if commit else 'None'}")
+
+
+def _release_swarm_lock(project_root: Path) -> None:
+    """Release the swarm lockfile."""
+    lockfile = project_root / SWARM_LOCKFILE
+    if not lockfile.exists():
+        return
+    try:
+        lock_pid = int(lockfile.read_text().strip())
+        if lock_pid == os.getpid():
+            lockfile.unlink(missing_ok=True)
+    except (ValueError, OSError):
+        try:
+            lockfile.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 # ============================================================================
@@ -463,11 +629,14 @@ class SwarmConfig:
     project_root: Optional[Path] = None  # Project root directory
     work_dir_base: str = ".zen"  # Base directory for work folders
     verbose: bool = False  # Show full streaming logs instead of ticker
+    strategy: str = "auto"  # Execution strategy: worktree, sequential, auto
 
     def __post_init__(self):
         """Validate and normalize configuration."""
         if self.workers < 1:
             raise ValueError("workers must be >= 1")
+        if self.strategy not in ("worktree", "sequential", "auto"):
+            raise ValueError(f"Invalid strategy: {self.strategy}. Must be worktree, sequential, or auto")
         if not self.project_root:
             self.project_root = Path.cwd()
 
@@ -900,8 +1069,34 @@ class SwarmDispatcher:
         return [(tc[0], tc[1]) for tc in task_configs]
 
     def execute(self) -> SwarmSummary:
+        """Execute tasks using configured strategy.
+
+        Strategy options:
+        - worktree: Use git worktrees for true parallel execution
+        - sequential: Use same-dir execution with conflict detection
+        - auto: Try worktree first, fallback to sequential on failure
+
+        Returns:
+            SwarmSummary with aggregated results and cost
         """
-        Execute all tasks with conflict-aware scheduling.
+        strategy = self.config.strategy
+
+        if strategy == "sequential":
+            return self._execute_sequential()
+        elif strategy == "worktree":
+            return self._execute_worktree()
+        else:  # auto
+            try:
+                _preflight_worktree(self.config.project_root)
+                return self._execute_worktree()
+            except SwarmError as e:
+                logger.warning(f"[SWARM] Worktree mode failed: {e}")
+                logger.info("[SWARM] Falling back to sequential mode")
+                return self._execute_sequential()
+
+    def _execute_sequential(self) -> SwarmSummary:
+        """
+        Execute all tasks with conflict-aware scheduling (sequential mode).
 
         Tasks with overlapping targets run sequentially within their conflict group.
         Tasks with no conflicts run in parallel.
@@ -1046,3 +1241,373 @@ class SwarmDispatcher:
             task_results=self.results,
             conflicts=conflicts
         )
+
+    def _execute_worktree(self) -> SwarmSummary:
+        """Execute tasks using git worktrees for true parallel isolation.
+
+        Each task runs in its own worktree on a unique branch. Results are
+        merged back to main branch in submission order.
+
+        Returns:
+            SwarmSummary with aggregated results and cost
+        """
+        self.results = []
+        project_root = self.config.project_root
+        total_tasks = len(self.config.tasks)
+
+        logger.info(f"[SWARM] Starting {total_tasks} tasks in worktree mode...")
+
+        # Run preflight if not already done (e.g., direct worktree strategy)
+        if self.config.strategy == "worktree":
+            _preflight_worktree(project_root)
+
+        # Setup worktrees
+        worktree_tasks = _setup_worktrees(self.config.tasks, project_root)
+
+        # Write progress manifest for crash recovery
+        progress = SwarmProgress(
+            pid=os.getpid(),
+            started=datetime.now().isoformat(),
+            tasks=[{
+                "task_path": str(t.task_path),
+                "branch": t.branch_name,
+                "worktree_path": str(t.worktree_path),
+                "status": "pending" if t.result is None else "failed"
+            } for t in worktree_tasks]
+        )
+        _write_progress_manifest(progress, project_root)
+
+        # Check for setup failures
+        setup_failures = [t for t in worktree_tasks if t.result is not None]
+        if len(setup_failures) == total_tasks:
+            logger.error("[SWARM] All worktree setups failed")
+            self.results = [t.result for t in worktree_tasks]
+            _clear_progress_manifest(project_root)
+            return self._build_summary()
+
+        # Run tasks in parallel
+        logger.info(f"[SWARM] Executing {total_tasks - len(setup_failures)} tasks in parallel...")
+        completed_tasks = _run_in_worktrees(worktree_tasks, self.config)
+
+        # Merge results back to main branch
+        logger.info("[SWARM] Merging completed tasks...")
+        merge_summary = _merge_in_order(completed_tasks, project_root)
+
+        # Log merge results
+        if merge_summary.merged:
+            logger.info(f"[SWARM] Merged {len(merge_summary.merged)} branches")
+        if merge_summary.skipped:
+            logger.warning(f"[SWARM] Skipped {len(merge_summary.skipped)} branches (no result)")
+        if merge_summary.conflicts:
+            logger.warning(f"[SWARM] {len(merge_summary.conflicts)} branches have conflicts")
+            for branch, reason in merge_summary.conflicts.items():
+                logger.warning(f"[SWARM]   {branch}: {reason}")
+        if merge_summary.failed:
+            logger.error(f"[SWARM] {len(merge_summary.failed)} tasks failed execution")
+
+        # Collect results for summary
+        for task in completed_tasks:
+            if task.result:
+                self.results.append(task.result)
+
+        # Cleanup worktrees (preserve branches for conflicts and failures)
+        preserve_branches = set(merge_summary.conflicts.keys()) | set(merge_summary.failed)
+        _cleanup_worktrees(completed_tasks, project_root, preserve_branches)
+
+        # Print resolution guidance if there are issues
+        if merge_summary.conflicts or merge_summary.failed:
+            print(merge_summary.resolution_guide())
+
+        # Release swarm lock and clear manifest
+        _release_swarm_lock(project_root)
+        _clear_progress_manifest(project_root)
+
+        return self._build_summary()
+
+
+# ============================================================================
+# Worktree Execution Pipeline
+# ============================================================================
+@dataclass
+class WorktreeTask:
+    """A task assigned to a worktree for parallel execution."""
+    task_path: str
+    worktree_path: Path
+    branch_name: str  # UUID-only: "swarm/abc12345"
+    result: Optional[WorkerResult] = None
+
+
+@dataclass
+class SwarmProgress:
+    """Crash recovery manifest for worktree-based execution."""
+    pid: int
+    started: str  # ISO format timestamp
+    tasks: List[Dict]  # task_path, branch, worktree_path, status
+
+    def to_dict(self) -> Dict:
+        return {"pid": self.pid, "started": self.started, "tasks": self.tasks}
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "SwarmProgress":
+        return cls(pid=data["pid"], started=data["started"], tasks=data["tasks"])
+
+
+@dataclass
+class MergeSummary:
+    """Summary of merge operations with branch tracking."""
+    merged: List[str] = field(default_factory=list)  # Branches successfully merged
+    skipped: List[str] = field(default_factory=list)  # Branches skipped (no result)
+    failed: List[str] = field(default_factory=list)  # Branches that failed execution
+    conflicts: Dict[str, str] = field(default_factory=dict)  # branch -> conflict reason
+
+    def resolution_guide(self) -> str:
+        """Generate actionable resolution guidance for conflicts."""
+        lines = []
+        if self.conflicts:
+            lines.append("\n=== Conflict Resolution Guide ===")
+            lines.append("The following branches have merge conflicts:")
+            for branch, reason in self.conflicts.items():
+                lines.append(f"\n  Branch: {branch}")
+                lines.append(f"  Issue: {reason}")
+                lines.append(f"  To resolve:")
+                lines.append(f"    1. git checkout {branch}")
+                lines.append(f"    2. Review and fix conflicts")
+                lines.append(f"    3. git merge main --no-edit")
+                lines.append(f"    4. git checkout main && git merge {branch}")
+        if self.failed:
+            lines.append("\n=== Failed Tasks ===")
+            lines.append("These tasks failed during execution (branches preserved):")
+            for branch in self.failed:
+                lines.append(f"  - {branch}")
+                lines.append(f"    To inspect: git checkout {branch}")
+        return "\n".join(lines)
+
+
+def _generate_branch_name() -> str:
+    """Generate UUID-only branch name like 'swarm/abc12345'."""
+    return f"swarm/{uuid4().hex[:8]}"
+
+
+def _write_progress_manifest(progress: SwarmProgress, project_root: Path) -> None:
+    """Write progress manifest to .worktrees/.swarm-progress.json."""
+    worktrees_dir = project_root / WORKTREE_DIR
+    worktrees_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = worktrees_dir / PROGRESS_MANIFEST
+    try:
+        manifest_path.write_text(json.dumps(progress.to_dict(), indent=2), encoding="utf-8")
+    except (IOError, OSError) as e:
+        logger.warning(f"[SWARM] Failed to write progress manifest: {e}")
+
+
+def _read_progress_manifest(project_root: Path) -> Optional[SwarmProgress]:
+    """Read progress manifest if exists."""
+    manifest_path = project_root / WORKTREE_DIR / PROGRESS_MANIFEST
+    if not manifest_path.exists():
+        return None
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        return SwarmProgress.from_dict(data)
+    except (IOError, OSError, json.JSONDecodeError, KeyError) as e:
+        logger.warning(f"[SWARM] Failed to read progress manifest: {e}")
+        return None
+
+
+def _clear_progress_manifest(project_root: Path) -> None:
+    """Remove progress manifest after successful completion."""
+    manifest_path = project_root / WORKTREE_DIR / PROGRESS_MANIFEST
+    try:
+        if manifest_path.exists():
+            manifest_path.unlink()
+    except (IOError, OSError) as e:
+        logger.warning(f"[SWARM] Failed to clear progress manifest: {e}")
+
+
+def _write_pid_lockfile(worktree_path: Path) -> None:
+    """Write PID lockfile to worktree directory."""
+    pid_file = worktree_path / PID_LOCKFILE
+    try:
+        pid_file.write_text(str(os.getpid()), encoding="utf-8")
+    except (IOError, OSError) as e:
+        logger.warning(f"[SWARM] Failed to write PID lockfile: {e}")
+
+
+def _copy_env_file(project_root: Path, worktree_path: Path) -> None:
+    """Copy .env file to worktree if it exists in project root."""
+    env_src = project_root / ".env"
+    if env_src.exists():
+        try:
+            shutil.copy2(env_src, worktree_path / ".env")
+        except (IOError, OSError) as e:
+            logger.warning(f"[SWARM] Failed to copy .env to worktree: {e}")
+
+
+def _setup_worktrees(tasks: List[str], project_root: Path) -> List[WorktreeTask]:
+    """Create worktree + branch for each task."""
+    worktrees_dir = project_root / WORKTREE_DIR
+    worktrees_dir.mkdir(parents=True, exist_ok=True)
+    worktree_tasks: List[WorktreeTask] = []
+
+    for task_path in tasks:
+        branch_name = _generate_branch_name()
+        uuid_part = branch_name.split("/")[1]
+        worktree_path = worktrees_dir / uuid_part
+        success = git.create_worktree(project_root, worktree_path, branch_name)
+
+        if success:
+            _write_pid_lockfile(worktree_path)
+            _copy_env_file(project_root, worktree_path)
+            worktree_tasks.append(WorktreeTask(
+                task_path=task_path, worktree_path=worktree_path, branch_name=branch_name
+            ))
+            logger.debug(f"[SWARM] Created worktree {worktree_path} on branch {branch_name}")
+        else:
+            logger.error(f"[SWARM] Failed to create worktree for task {task_path}")
+            worktree_tasks.append(WorktreeTask(
+                task_path=task_path, worktree_path=worktree_path, branch_name=branch_name,
+                result=WorkerResult(task_path=task_path, work_dir=str(worktree_path),
+                                   returncode=1, stderr="Failed to create worktree")
+            ))
+
+    return worktree_tasks
+
+
+def _execute_in_worktree(worktree_task: WorktreeTask, config: SwarmConfig) -> WorktreeTask:
+    """Execute a zen task in a worktree."""
+    if worktree_task.result is not None:
+        return worktree_task
+
+    task_path = worktree_task.task_path
+    worktree_path = worktree_task.worktree_path
+    cmd = ["zen", task_path]
+
+    targets = parse_targets_header(Path(task_path))
+    if targets:
+        expanded = expand_targets(targets, worktree_path)
+        if expanded:
+            rel_paths = [str(f.relative_to(worktree_path)) for f in expanded]
+            cmd.extend(["--allowed-files", ",".join(rel_paths)])
+
+    env = {**os.environ}
+    work_dir = worktree_path / ".zen"
+    env["ZEN_WORK_DIR"] = str(work_dir)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    log_file = work_dir / "log.md"
+
+    try:
+        returncode, was_killed = _run_worker_popen(
+            cmd=cmd, cwd=worktree_path, env=env, log_file=log_file, timeout=TIMEOUT_WORKER
+        )
+        stdout = ""
+        try:
+            stdout = log_file.read_text(encoding="utf-8", errors="replace")
+        except (OSError, FileNotFoundError):
+            pass
+        stderr = f"Task killed after timeout ({TIMEOUT_WORKER}s)" if was_killed else ""
+        worktree_task.result = WorkerResult(
+            task_path=task_path, work_dir=str(work_dir), returncode=returncode,
+            cost=_extract_cost_from_output(stdout), stdout=stdout, stderr=stderr,
+            modified_files=_get_modified_files(work_dir)
+        )
+    except Exception as e:
+        worktree_task.result = WorkerResult(
+            task_path=task_path, work_dir=str(work_dir), returncode=1, stderr=str(e)
+        )
+
+    return worktree_task
+
+
+def _run_in_worktrees(worktree_tasks: List[WorktreeTask], config: SwarmConfig) -> List[WorktreeTask]:
+    """Run zen task in each worktree in parallel using ThreadPoolExecutor."""
+    tasks_to_run = [t for t in worktree_tasks if t.result is None]
+    failed_tasks = [t for t in worktree_tasks if t.result is not None]
+
+    if not tasks_to_run:
+        return worktree_tasks
+
+    completed: List[WorktreeTask] = list(failed_tasks)
+    with ThreadPoolExecutor(max_workers=config.workers) as executor:
+        future_to_task = {executor.submit(_execute_in_worktree, t, config): t for t in tasks_to_run}
+        for future in as_completed(future_to_task):
+            try:
+                completed.append(future.result())
+            except Exception as e:
+                task = future_to_task[future]
+                task.result = WorkerResult(
+                    task_path=task.task_path, work_dir=str(task.worktree_path / ".zen"),
+                    returncode=1, stderr=f"Executor exception: {e}"
+                )
+                completed.append(task)
+
+    return completed
+
+
+def _merge_in_order(worktree_tasks: List[WorktreeTask], project_root: Path) -> MergeSummary:
+    """Merge completed tasks in submission order."""
+    summary = MergeSummary()
+
+    for task in worktree_tasks:
+        if task.result is None:
+            summary.skipped.append(task.branch_name)
+            continue
+        if not task.result.is_success():
+            summary.failed.append(task.branch_name)
+            logger.warning(f"[SWARM] Skipping merge for failed task: {task.task_path}")
+            continue
+
+        success, message = git.merge_squash(project_root, task.branch_name)
+        if success:
+            try:
+                commit_msg = f"[swarm] {Path(task.task_path).stem}"
+                result = subprocess.run(
+                    ["git", "commit", "-m", commit_msg],
+                    capture_output=True, text=True, cwd=project_root, timeout=30
+                )
+                if result.returncode == 0:
+                    summary.merged.append(task.branch_name)
+                    logger.info(f"[SWARM] Merged: {task.task_path}")
+                elif "nothing to commit" in result.stdout or "nothing to commit" in result.stderr:
+                    summary.merged.append(task.branch_name)
+                    logger.info(f"[SWARM] No changes to merge: {task.task_path}")
+                else:
+                    summary.conflicts[task.branch_name] = f"Commit failed: {result.stderr.strip()}"
+                    logger.error(f"[SWARM] Commit failed for {task.task_path}: {result.stderr}")
+            except subprocess.TimeoutExpired:
+                summary.conflicts[task.branch_name] = "Commit timed out"
+                logger.error(f"[SWARM] Commit timed out for {task.task_path}")
+        else:
+            summary.conflicts[task.branch_name] = f"Merge failed: {message}"
+            logger.error(f"[SWARM] Merge failed for {task.task_path}: {message}")
+            git.abort_merge(project_root)
+
+    return summary
+
+
+def _cleanup_worktrees(worktree_tasks: List[WorktreeTask], project_root: Path,
+                       preserve_branches: Optional[set] = None) -> None:
+    """Remove worktrees and optionally their branches.
+
+    Args:
+        worktree_tasks: List of worktree tasks to clean up
+        project_root: Project root directory
+        preserve_branches: Set of branch names to preserve (for conflict resolution)
+    """
+    preserve_branches = preserve_branches or set()
+
+    for task in worktree_tasks:
+        # Always remove worktree directory (can be recreated from branch)
+        if task.worktree_path.exists():
+            success = git.remove_worktree(task.worktree_path)
+            if not success:
+                logger.warning(f"[SWARM] Failed to remove worktree: {task.worktree_path}")
+                try:
+                    shutil.rmtree(task.worktree_path, ignore_errors=True)
+                except Exception:
+                    pass
+
+        # Only delete branch if not in preserve set
+        if task.branch_name not in preserve_branches:
+            success = git.delete_branch(project_root, task.branch_name)
+            if not success:
+                logger.warning(f"[SWARM] Failed to delete branch: {task.branch_name}")
+        else:
+            logger.info(f"[SWARM] Preserved branch for resolution: {task.branch_name}")

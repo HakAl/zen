@@ -628,3 +628,445 @@ class TestGitModuleGrep:
         files = grep_files("pattern", tmp_path, extensions=[".py"])
         assert "file.py" in files
         assert "file.js" not in files
+
+
+# =============================================================================
+# Fixture for temp git repos with initial commit
+# =============================================================================
+
+@pytest.fixture
+def temp_git_repo(tmp_path):
+    """Create a temporary git repo with initial commit."""
+    import subprocess
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, capture_output=True)
+    (repo / "README.md").write_text("# Test")
+    subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "Initial"], cwd=repo, capture_output=True)
+    return repo
+
+
+# =============================================================================
+# Tests for is_clean, get_current_branch, is_detached_head
+# =============================================================================
+
+class TestGitRepoStateExtended:
+    """Tests for extended repository state functions."""
+
+    def test_is_clean_true_after_commit(self, temp_git_repo):
+        """is_clean() returns True when no uncommitted changes."""
+        from zen_mode.git import is_clean
+
+        assert is_clean(temp_git_repo) is True
+
+    def test_is_clean_false_with_unstaged(self, temp_git_repo):
+        """is_clean() returns False with unstaged changes."""
+        from zen_mode.git import is_clean
+
+        (temp_git_repo / "README.md").write_text("# Modified")
+        assert is_clean(temp_git_repo) is False
+
+    def test_is_clean_false_with_staged(self, temp_git_repo):
+        """is_clean() returns False with staged changes."""
+        import subprocess
+        from zen_mode.git import is_clean
+
+        (temp_git_repo / "new_file.txt").write_text("content")
+        subprocess.run(["git", "add", "new_file.txt"], cwd=temp_git_repo, capture_output=True)
+        assert is_clean(temp_git_repo) is False
+
+    def test_is_clean_false_with_untracked(self, temp_git_repo):
+        """is_clean() returns False with untracked files."""
+        from zen_mode.git import is_clean
+
+        (temp_git_repo / "untracked.txt").write_text("content")
+        assert is_clean(temp_git_repo) is False
+
+    @patch('zen_mode.git.subprocess.run')
+    def test_is_clean_returns_false_on_error(self, mock_run, temp_git_repo):
+        """is_clean() returns False when git fails."""
+        from zen_mode.git import is_clean
+
+        mock_run.side_effect = OSError("git not found")
+        assert is_clean(temp_git_repo) is False
+
+    def test_get_current_branch_returns_branch_name(self, temp_git_repo):
+        """get_current_branch() returns the current branch name."""
+        from zen_mode.git import get_current_branch
+
+        branch = get_current_branch(temp_git_repo)
+        # Default branch could be 'main' or 'master' depending on git config
+        assert branch in ("main", "master")
+
+    def test_get_current_branch_returns_none_for_non_repo(self, tmp_path):
+        """get_current_branch() returns None for non-git directory."""
+        from zen_mode.git import get_current_branch
+
+        assert get_current_branch(tmp_path) is None
+
+    def test_get_current_branch_after_checkout(self, temp_git_repo):
+        """get_current_branch() returns correct branch after checkout."""
+        import subprocess
+        from zen_mode.git import get_current_branch
+
+        subprocess.run(["git", "checkout", "-b", "feature-branch"], cwd=temp_git_repo, capture_output=True)
+        assert get_current_branch(temp_git_repo) == "feature-branch"
+
+    def test_is_detached_head_false_on_branch(self, temp_git_repo):
+        """is_detached_head() returns False when on a branch."""
+        from zen_mode.git import is_detached_head
+
+        assert is_detached_head(temp_git_repo) is False
+
+    def test_is_detached_head_true_when_detached(self, temp_git_repo):
+        """is_detached_head() returns True when HEAD is detached."""
+        import subprocess
+        from zen_mode.git import is_detached_head, get_head_commit
+
+        commit = get_head_commit(temp_git_repo)
+        subprocess.run(["git", "checkout", commit], cwd=temp_git_repo, capture_output=True)
+        assert is_detached_head(temp_git_repo) is True
+
+    def test_is_detached_head_false_for_non_repo(self, tmp_path):
+        """is_detached_head() returns False for non-git directory."""
+        from zen_mode.git import is_detached_head
+
+        assert is_detached_head(tmp_path) is False
+
+
+# =============================================================================
+# Tests for worktree operations
+# =============================================================================
+
+class TestGitWorktreeOperations:
+    """Tests for git worktree functions."""
+
+    def test_create_worktree_success(self, temp_git_repo, tmp_path):
+        """create_worktree() creates a new worktree."""
+        from zen_mode.git import create_worktree, list_worktrees
+
+        worktree_path = tmp_path / "worktree"
+        result = create_worktree(temp_git_repo, worktree_path, "feature-branch")
+
+        assert result is True
+        assert worktree_path.exists()
+        assert (worktree_path / "README.md").exists()
+
+    def test_create_worktree_failure_existing_branch(self, temp_git_repo, tmp_path):
+        """create_worktree() fails if branch already exists."""
+        import subprocess
+        from zen_mode.git import create_worktree
+
+        # Create a branch first
+        subprocess.run(["git", "branch", "existing-branch"], cwd=temp_git_repo, capture_output=True)
+
+        worktree_path = tmp_path / "worktree"
+        result = create_worktree(temp_git_repo, worktree_path, "existing-branch")
+
+        assert result is False
+
+    @patch('zen_mode.git.subprocess.run')
+    def test_create_worktree_returns_false_on_error(self, mock_run, temp_git_repo, tmp_path):
+        """create_worktree() returns False when git fails."""
+        from zen_mode.git import create_worktree
+
+        mock_run.side_effect = OSError("git not found")
+        worktree_path = tmp_path / "worktree"
+        assert create_worktree(temp_git_repo, worktree_path, "branch") is False
+
+    def test_list_worktrees_includes_main_and_created(self, temp_git_repo, tmp_path):
+        """list_worktrees() returns all worktree paths."""
+        from zen_mode.git import create_worktree, list_worktrees
+
+        # Initially just the main worktree
+        worktrees = list_worktrees(temp_git_repo)
+        assert len(worktrees) >= 1
+        assert str(temp_git_repo) in worktrees[0] or temp_git_repo.name in worktrees[0]
+
+        # Add a worktree
+        worktree_path = tmp_path / "worktree"
+        create_worktree(temp_git_repo, worktree_path, "feature-branch")
+
+        worktrees = list_worktrees(temp_git_repo)
+        assert len(worktrees) >= 2
+
+    def test_list_worktrees_empty_for_non_repo(self, tmp_path):
+        """list_worktrees() returns empty list for non-git directory."""
+        from zen_mode.git import list_worktrees
+
+        assert list_worktrees(tmp_path) == []
+
+    def test_remove_worktree_success(self, temp_git_repo, tmp_path):
+        """remove_worktree() removes a worktree."""
+        from zen_mode.git import create_worktree, remove_worktree, list_worktrees
+        import sys
+
+        worktree_path = tmp_path / "worktree"
+        create_worktree(temp_git_repo, worktree_path, "feature-branch")
+
+        initial_count = len(list_worktrees(temp_git_repo))
+        # Use retry=True on Windows since file locks can prevent immediate removal
+        result = remove_worktree(worktree_path, retry=True)
+
+        # On Windows, worktree removal can fail due to file locks even with retry
+        # This is a known limitation in test environments
+        if result:
+            assert len(list_worktrees(temp_git_repo)) < initial_count
+        elif sys.platform == "win32":
+            # Expected on Windows - file locks can prevent removal
+            pass
+        else:
+            assert result is True  # Should succeed on non-Windows
+
+    def test_remove_worktree_no_retry(self, temp_git_repo, tmp_path):
+        """remove_worktree() with retry=False does not retry on failure."""
+        from zen_mode.git import create_worktree, remove_worktree
+        import sys
+
+        worktree_path = tmp_path / "worktree"
+        create_worktree(temp_git_repo, worktree_path, "feature-branch")
+
+        # With retry=False, only one attempt is made
+        result = remove_worktree(worktree_path, retry=False)
+        # On Windows with file locks, this may fail - that's expected
+        # The test verifies the function runs without crashing
+        if sys.platform != "win32":
+            assert result is True
+
+    @patch('zen_mode.git.subprocess.run')
+    def test_remove_worktree_returns_false_on_error(self, mock_run, tmp_path):
+        """remove_worktree() returns False when git fails."""
+        from zen_mode.git import remove_worktree
+
+        mock_run.side_effect = OSError("git not found")
+        result = remove_worktree(tmp_path / "nonexistent", retry=False)
+        assert result is False
+
+    @patch('zen_mode.git.time.sleep')
+    @patch('zen_mode.git.subprocess.run')
+    def test_remove_worktree_retry_attempts(self, mock_run, mock_sleep, tmp_path):
+        """remove_worktree() retries with exponential backoff on failure."""
+        from zen_mode.git import remove_worktree
+
+        # Mock failure on all attempts
+        mock_run.return_value = Mock(returncode=1, stderr="Permission denied")
+
+        result = remove_worktree(tmp_path / "worktree", retry=True)
+
+        assert result is False
+        # Should have 3 attempts
+        assert mock_run.call_count == 3
+        # Sleep called between attempts (2 times: after 1st and 2nd attempt)
+        assert mock_sleep.call_count == 2
+        # Delays: 0.5s after first attempt, 1.0s after second attempt
+        mock_sleep.assert_any_call(0.5)
+        mock_sleep.assert_any_call(1.0)
+
+    @patch('zen_mode.git.time.sleep')
+    @patch('zen_mode.git.subprocess.run')
+    def test_remove_worktree_succeeds_on_second_attempt(self, mock_run, mock_sleep, tmp_path):
+        """remove_worktree() succeeds if a retry works."""
+        from zen_mode.git import remove_worktree
+
+        # First call fails, second succeeds
+        mock_run.side_effect = [
+            Mock(returncode=1, stderr="Permission denied"),
+            Mock(returncode=0, stdout=""),
+        ]
+
+        result = remove_worktree(tmp_path / "worktree", retry=True)
+
+        assert result is True
+        assert mock_run.call_count == 2
+        # Sleep between first and second attempt (0.5s)
+        mock_sleep.assert_called_once_with(0.5)
+
+
+# =============================================================================
+# Tests for merge operations
+# =============================================================================
+
+class TestGitMergeOperations:
+    """Tests for git merge functions."""
+
+    def test_merge_squash_success(self, temp_git_repo):
+        """merge_squash() successfully merges a branch."""
+        import subprocess
+        from zen_mode.git import merge_squash
+
+        # Create and checkout a feature branch, make a commit
+        subprocess.run(["git", "checkout", "-b", "feature"], cwd=temp_git_repo, capture_output=True)
+        (temp_git_repo / "feature.txt").write_text("feature content")
+        subprocess.run(["git", "add", "."], cwd=temp_git_repo, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Feature commit"], cwd=temp_git_repo, capture_output=True)
+
+        # Go back to main/master and merge
+        subprocess.run(["git", "checkout", "-"], cwd=temp_git_repo, capture_output=True)
+
+        success, message = merge_squash(temp_git_repo, "feature")
+        assert success is True
+
+    def test_merge_squash_nonexistent_branch(self, temp_git_repo):
+        """merge_squash() fails for non-existent branch."""
+        from zen_mode.git import merge_squash
+
+        success, message = merge_squash(temp_git_repo, "nonexistent-branch")
+        assert success is False
+        assert message != ""
+
+    @patch('zen_mode.git.subprocess.run')
+    def test_merge_squash_returns_error_on_exception(self, mock_run, temp_git_repo):
+        """merge_squash() returns error tuple on exception."""
+        from zen_mode.git import merge_squash
+
+        mock_run.side_effect = OSError("git not found")
+        success, message = merge_squash(temp_git_repo, "branch")
+        assert success is False
+        assert "git not found" in message
+
+    def test_has_merge_conflicts_false_normally(self, temp_git_repo):
+        """has_merge_conflicts() returns False when no conflicts."""
+        from zen_mode.git import has_merge_conflicts
+
+        assert has_merge_conflicts(temp_git_repo) is False
+
+    def test_has_merge_conflicts_true_with_conflict(self, temp_git_repo):
+        """has_merge_conflicts() returns True during conflict."""
+        import subprocess
+        from zen_mode.git import has_merge_conflicts
+
+        # Create a conflict scenario
+        # Branch 1: modify file
+        subprocess.run(["git", "checkout", "-b", "branch1"], cwd=temp_git_repo, capture_output=True)
+        (temp_git_repo / "README.md").write_text("# Branch 1 content")
+        subprocess.run(["git", "add", "."], cwd=temp_git_repo, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Branch 1"], cwd=temp_git_repo, capture_output=True)
+
+        # Branch 2 from initial: modify same file differently
+        subprocess.run(["git", "checkout", "-b", "branch2", "HEAD~1"], cwd=temp_git_repo, capture_output=True)
+        (temp_git_repo / "README.md").write_text("# Branch 2 content")
+        subprocess.run(["git", "add", "."], cwd=temp_git_repo, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Branch 2"], cwd=temp_git_repo, capture_output=True)
+
+        # Try to merge branch1 into branch2 (should conflict)
+        subprocess.run(["git", "merge", "branch1"], cwd=temp_git_repo, capture_output=True)
+
+        assert has_merge_conflicts(temp_git_repo) is True
+
+    def test_abort_merge_success(self, temp_git_repo):
+        """abort_merge() aborts an in-progress merge."""
+        import subprocess
+        from zen_mode.git import abort_merge, has_merge_conflicts
+
+        # Create a conflict scenario
+        subprocess.run(["git", "checkout", "-b", "branch1"], cwd=temp_git_repo, capture_output=True)
+        (temp_git_repo / "README.md").write_text("# Branch 1 content")
+        subprocess.run(["git", "add", "."], cwd=temp_git_repo, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Branch 1"], cwd=temp_git_repo, capture_output=True)
+
+        subprocess.run(["git", "checkout", "-b", "branch2", "HEAD~1"], cwd=temp_git_repo, capture_output=True)
+        (temp_git_repo / "README.md").write_text("# Branch 2 content")
+        subprocess.run(["git", "add", "."], cwd=temp_git_repo, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Branch 2"], cwd=temp_git_repo, capture_output=True)
+
+        subprocess.run(["git", "merge", "branch1"], cwd=temp_git_repo, capture_output=True)
+
+        # Abort the merge
+        result = abort_merge(temp_git_repo)
+        assert result is True
+        assert has_merge_conflicts(temp_git_repo) is False
+
+    def test_abort_merge_false_when_no_merge(self, temp_git_repo):
+        """abort_merge() returns False when no merge in progress."""
+        from zen_mode.git import abort_merge
+
+        # No merge in progress - should fail
+        result = abort_merge(temp_git_repo)
+        assert result is False
+
+
+# =============================================================================
+# Tests for branch operations
+# =============================================================================
+
+class TestGitBranchOperations:
+    """Tests for git branch functions."""
+
+    def test_delete_branch_success(self, temp_git_repo):
+        """delete_branch() deletes a branch."""
+        import subprocess
+        from zen_mode.git import delete_branch, list_branches
+
+        subprocess.run(["git", "branch", "to-delete"], cwd=temp_git_repo, capture_output=True)
+        assert "to-delete" in list_branches(temp_git_repo)
+
+        result = delete_branch(temp_git_repo, "to-delete")
+        assert result is True
+        assert "to-delete" not in list_branches(temp_git_repo)
+
+    def test_delete_branch_nonexistent(self, temp_git_repo):
+        """delete_branch() returns False for non-existent branch."""
+        from zen_mode.git import delete_branch
+
+        result = delete_branch(temp_git_repo, "nonexistent")
+        assert result is False
+
+    def test_delete_branch_cannot_delete_current(self, temp_git_repo):
+        """delete_branch() fails when trying to delete current branch."""
+        from zen_mode.git import delete_branch, get_current_branch
+
+        current = get_current_branch(temp_git_repo)
+        result = delete_branch(temp_git_repo, current)
+        assert result is False
+
+    @patch('zen_mode.git.subprocess.run')
+    def test_delete_branch_returns_false_on_error(self, mock_run, temp_git_repo):
+        """delete_branch() returns False when git fails."""
+        from zen_mode.git import delete_branch
+
+        mock_run.side_effect = OSError("git not found")
+        assert delete_branch(temp_git_repo, "branch") is False
+
+    def test_list_branches_includes_all(self, temp_git_repo):
+        """list_branches() returns all local branches."""
+        import subprocess
+        from zen_mode.git import list_branches
+
+        subprocess.run(["git", "branch", "branch-a"], cwd=temp_git_repo, capture_output=True)
+        subprocess.run(["git", "branch", "branch-b"], cwd=temp_git_repo, capture_output=True)
+        subprocess.run(["git", "branch", "feature-x"], cwd=temp_git_repo, capture_output=True)
+
+        branches = list_branches(temp_git_repo)
+        assert "branch-a" in branches
+        assert "branch-b" in branches
+        assert "feature-x" in branches
+
+    def test_list_branches_with_pattern(self, temp_git_repo):
+        """list_branches() filters by pattern."""
+        import subprocess
+        from zen_mode.git import list_branches
+
+        subprocess.run(["git", "branch", "zen-task-1"], cwd=temp_git_repo, capture_output=True)
+        subprocess.run(["git", "branch", "zen-task-2"], cwd=temp_git_repo, capture_output=True)
+        subprocess.run(["git", "branch", "feature-x"], cwd=temp_git_repo, capture_output=True)
+
+        branches = list_branches(temp_git_repo, pattern="zen-*")
+        assert "zen-task-1" in branches
+        assert "zen-task-2" in branches
+        assert "feature-x" not in branches
+
+    def test_list_branches_empty_for_non_repo(self, tmp_path):
+        """list_branches() returns empty list for non-git directory."""
+        from zen_mode.git import list_branches
+
+        assert list_branches(tmp_path) == []
+
+    def test_list_branches_no_pattern_match(self, temp_git_repo):
+        """list_branches() returns empty list when pattern matches nothing."""
+        from zen_mode.git import list_branches
+
+        branches = list_branches(temp_git_repo, pattern="nonexistent-*")
+        assert branches == []
