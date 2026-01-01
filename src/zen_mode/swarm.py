@@ -1560,7 +1560,8 @@ def _merge_in_order(worktree_tasks: List[WorktreeTask], project_root: Path) -> M
                 commit_msg = f"[swarm] {Path(task.task_path).stem}"
                 result = subprocess.run(
                     ["git", "commit", "-m", commit_msg],
-                    capture_output=True, text=True, cwd=project_root, timeout=30
+                    capture_output=True, text=True, encoding='utf-8', errors='replace',
+                    cwd=project_root, timeout=30
                 )
                 if result.returncode == 0:
                     summary.merged.append(task.branch_name)

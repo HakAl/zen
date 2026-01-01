@@ -63,7 +63,7 @@ def get_head_commit(project_root: Path) -> Optional[str]:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             cwd=project_root,
             timeout=5
         )
@@ -84,7 +84,7 @@ def get_staged_files(project_root: Path) -> List[str]:
             result = subprocess.run(
                 ["git", "diff", "--name-only", "--cached", "HEAD"],
                 capture_output=True,
-                text=True,
+                text=True, encoding='utf-8', errors='replace',
                 cwd=project_root,
                 timeout=30
             )
@@ -93,7 +93,7 @@ def get_staged_files(project_root: Path) -> List[str]:
             result = subprocess.run(
                 ["git", "diff", "--name-only", "--cached"],
                 capture_output=True,
-                text=True,
+                text=True, encoding='utf-8', errors='replace',
                 cwd=project_root,
                 timeout=30
             )
@@ -112,7 +112,7 @@ def get_unstaged_files(project_root: Path) -> List[str]:
         result = subprocess.run(
             ["git", "diff", "--name-only"],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             cwd=project_root,
             timeout=30
         )
@@ -129,7 +129,7 @@ def get_untracked_files(project_root: Path) -> List[str]:
         result = subprocess.run(
             ["git", "ls-files", "--others", "--exclude-standard"],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             cwd=project_root,
             timeout=30
         )
@@ -207,7 +207,7 @@ def get_diff_stats(project_root: Path) -> DiffStats:
             result = subprocess.run(
                 ["git", "diff", "--numstat", "HEAD"],
                 capture_output=True,
-                text=True,
+                text=True, encoding='utf-8', errors='replace',
                 cwd=project_root,
                 timeout=30
             )
@@ -215,7 +215,7 @@ def get_diff_stats(project_root: Path) -> DiffStats:
             result = subprocess.run(
                 ["git", "diff", "--cached", "--numstat"],
                 capture_output=True,
-                text=True,
+                text=True, encoding='utf-8', errors='replace',
                 cwd=project_root,
                 timeout=30
             )
@@ -274,7 +274,7 @@ def grep_files(
         result = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             cwd=project_root,
             timeout=timeout
         )
@@ -349,7 +349,7 @@ def is_clean(project_root: Path) -> bool:
         result = subprocess.run(
             ["git", "status", "--porcelain"],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             cwd=project_root,
             timeout=10
         )
@@ -373,7 +373,7 @@ def get_current_branch(project_root: Path) -> Optional[str]:
         result = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             cwd=project_root,
             timeout=5
         )
@@ -396,7 +396,7 @@ def is_detached_head(project_root: Path) -> bool:
         result = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             cwd=project_root,
             timeout=5
         )
@@ -426,7 +426,7 @@ def create_worktree(project_root: Path, worktree_path: Path, branch_name: str) -
         result = subprocess.run(
             ["git", "worktree", "add", "-b", branch_name, str(worktree_path)],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             cwd=project_root,
             timeout=30
         )
@@ -459,7 +459,7 @@ def remove_worktree(worktree_path: Path, retry: bool = True) -> bool:
             result = subprocess.run(
                 ["git", "worktree", "remove", "--force", str(worktree_path)],
                 capture_output=True,
-                text=True,
+                text=True, encoding='utf-8', errors='replace',
                 cwd=worktree_path if worktree_path.exists() else worktree_path.parent,
                 timeout=30
             )
@@ -486,7 +486,7 @@ def list_worktrees(project_root: Path) -> List[str]:
         result = subprocess.run(
             ["git", "worktree", "list", "--porcelain"],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             cwd=project_root,
             timeout=10
         )
@@ -518,7 +518,7 @@ def merge_squash(project_root: Path, branch_name: str) -> Tuple[bool, str]:
         result = subprocess.run(
             ["git", "merge", "--squash", branch_name],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             cwd=project_root,
             timeout=60
         )
@@ -540,7 +540,7 @@ def has_merge_conflicts(project_root: Path) -> bool:
         result = subprocess.run(
             ["git", "diff", "--name-only", "--diff-filter=U"],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             cwd=project_root,
             timeout=10
         )
@@ -562,7 +562,7 @@ def abort_merge(project_root: Path) -> bool:
         result = subprocess.run(
             ["git", "merge", "--abort"],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             cwd=project_root,
             timeout=10
         )
@@ -591,7 +591,7 @@ def delete_branch(project_root: Path, branch_name: str) -> bool:
         result = subprocess.run(
             ["git", "branch", "-D", branch_name],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             cwd=project_root,
             timeout=10
         )
@@ -619,7 +619,7 @@ def list_branches(project_root: Path, pattern: str = "") -> List[str]:
         result = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             cwd=project_root,
             timeout=10
         )
