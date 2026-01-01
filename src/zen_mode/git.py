@@ -42,6 +42,31 @@ def is_repo(project_root: Path) -> bool:
         return False
 
 
+def get_repo_root(project_root: Path) -> Optional[Path]:
+    """Get the root directory of the git repository.
+
+    Args:
+        project_root: Any path inside the git repository
+
+    Returns:
+        Path to repository root, or None if not in a git repo.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True, encoding='utf-8', errors='replace',
+            cwd=project_root,
+            timeout=5
+        )
+        if result.returncode == 0:
+            return Path(result.stdout.strip())
+        return None
+    except _GIT_ERRORS as e:
+        _logger.debug("get_repo_root failed: %s", e)
+        return None
+
+
 def has_head(project_root: Path) -> bool:
     """Check if git repo has at least one commit (HEAD exists)."""
     try:

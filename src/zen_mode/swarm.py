@@ -1479,24 +1479,38 @@ def _execute_in_worktree(worktree_task: WorktreeTask, config: SwarmConfig) -> Wo
 
     task_path = worktree_task.task_path
     worktree_path = worktree_task.worktree_path
+
+    # Calculate the effective cwd within the worktree
+    # Git worktrees are created at repo level, so if we're running from a subdirectory,
+    # we need to cd into the equivalent subdirectory within the worktree
+    repo_root = git.get_repo_root(config.project_root)
+    if repo_root and config.project_root.resolve() != repo_root.resolve():
+        try:
+            subdir = config.project_root.resolve().relative_to(repo_root.resolve())
+            effective_cwd = worktree_path / subdir
+        except ValueError:
+            effective_cwd = worktree_path
+    else:
+        effective_cwd = worktree_path
+
     cmd = ["zen", task_path]
 
     targets = parse_targets_header(Path(task_path))
     if targets:
-        expanded = expand_targets(targets, worktree_path)
+        expanded = expand_targets(targets, effective_cwd)
         if expanded:
-            rel_paths = [str(f.relative_to(worktree_path)) for f in expanded]
+            rel_paths = [str(f.relative_to(effective_cwd)) for f in expanded]
             cmd.extend(["--allowed-files", ",".join(rel_paths)])
 
     env = {**os.environ}
-    work_dir = worktree_path / ".zen"
+    work_dir = effective_cwd / ".zen"
     env["ZEN_WORK_DIR"] = ".zen"  # Just the dir name, cwd handles the path
     work_dir.mkdir(parents=True, exist_ok=True)
     log_file = work_dir / "log.md"
 
     try:
         returncode, was_killed = _run_worker_popen(
-            cmd=cmd, cwd=worktree_path, env=env, log_file=log_file, timeout=TIMEOUT_WORKER
+            cmd=cmd, cwd=effective_cwd, env=env, log_file=log_file, timeout=TIMEOUT_WORKER
         )
         stdout = ""
         try:
