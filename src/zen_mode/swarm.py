@@ -1023,7 +1023,7 @@ class SwarmDispatcher:
         """
         scout_context = None
         task_configs = [
-            (task, f"{self.config.work_dir_base}/worker_{uuid4().hex[:8]}",
+            (task, f"{self.config.work_dir_base}_{uuid4().hex[:8]}",
              self.config.project_root, scout_context)
             for task in tasks
         ]
