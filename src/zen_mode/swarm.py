@@ -49,10 +49,10 @@ TIMEOUT_WORKER = TIMEOUT_EXEC  # Use same timeout as core
 STATUS_UPDATE_INTERVAL = 5  # seconds between status line updates
 
 # Worktree configuration
-WORKTREE_DIR = ".worktrees"  # Directory for worktrees
+WORKTREE_DIR = ".zen/worktrees"  # Directory for worktrees (inside .zen/)
 PROGRESS_MANIFEST = ".swarm-progress.json"  # Progress manifest filename
 PID_LOCKFILE = ".swarm.pid"  # PID lockfile in each worktree
-SWARM_LOCKFILE = ".worktrees/.swarm.lock"  # Global swarm lock
+SWARM_LOCKFILE = ".zen/worktrees/.swarm.lock"  # Global swarm lock
 
 
 # ============================================================================
@@ -838,6 +838,7 @@ def _get_modified_files(work_dir: Path) -> List[str]:
     EXCLUDED_FILES = {
         "log.md", "plan.md", "scout.md", "final_notes.md",
         "test_output.txt", "test_output_1.txt", "test_output_2.txt",
+        "lint_baseline.json",  # Ratchet system
     }
     EXCLUDED_DIRS = {"backup"}
 
@@ -1489,7 +1490,7 @@ def _execute_in_worktree(worktree_task: WorktreeTask, config: SwarmConfig) -> Wo
 
     env = {**os.environ}
     work_dir = worktree_path / ".zen"
-    env["ZEN_WORK_DIR"] = str(work_dir)
+    env["ZEN_WORK_DIR"] = ".zen"  # Just the dir name, cwd handles the path
     work_dir.mkdir(parents=True, exist_ok=True)
     log_file = work_dir / "log.md"
 
