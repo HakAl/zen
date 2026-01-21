@@ -448,13 +448,17 @@ def create_worktree(project_root: Path, worktree_path: Path, branch_name: str) -
         True if worktree was created successfully, False otherwise.
     """
     try:
+        cmd = ["git", "worktree", "add", "-b", branch_name, str(worktree_path)]
+        _logger.debug("create_worktree: cmd=%s cwd=%s", cmd, project_root)
         result = subprocess.run(
-            ["git", "worktree", "add", "-b", branch_name, str(worktree_path)],
+            cmd,
             capture_output=True,
             text=True, encoding='utf-8', errors='replace',
             cwd=project_root,
             timeout=30
         )
+        if result.returncode != 0:
+            _logger.debug("create_worktree failed: stdout=%s stderr=%s", result.stdout, result.stderr)
         return result.returncode == 0
     except _GIT_ERRORS as e:
         _logger.debug("create_worktree failed: %s", e)
