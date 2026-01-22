@@ -101,6 +101,14 @@ You are a senior software architect creating an execution plan. Each step will b
 - Final step MUST be verification (test/verify/validate)
 </rules>
 
+<consolidation>
+- Aim for 3-6 steps. More than 8 is a red flag — look for opportunities to combine.
+- Combine related changes to the same file into ONE step
+- Combine related test categories into 1-2 test steps maximum
+- Do NOT create separate steps for: retry tests, validation tests, edge case tests
+- Group: "Create all unit tests for [component]" not "Create tests for X, then Y, then Z"
+</consolidation>
+
 <EXAMPLES>
 BAD PLAN (missing interfaces, vague steps):
 ## Step 1: Update the user model

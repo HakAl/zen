@@ -47,6 +47,14 @@ You are a senior software architect creating an execution plan. Each step will b
 - Final step MUST be verification (test/verify/validate)
 </rules>
 
+<consolidation>
+- Aim for fewer steps. Look for opportunities to combine.
+- Combine related changes to the same file into ONE step
+- Do NOT create separate steps for: retry tests, validation tests, edge case tests
+- Group: "Create all unit tests for [component]" not "Create tests for X, then Y, then Z"
+- Use "targeted tests covering key behavior" not "comprehensive tests covering X, Y, Z"
+</consolidation>
+
 <EXAMPLES>
 BAD PLAN (missing interfaces, vague steps):
 ## Step 1: Update the user model

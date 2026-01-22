@@ -1,4 +1,4 @@
-# Zen Mode 🧘
+# Zen
 
 A minimalist, file-based autonomous agent runner.
 Orchestrates `claude` to scout, plan, code, and verify tasks using the file system as memory.

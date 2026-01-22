@@ -34,9 +34,9 @@ Contributing to Zen development:
 
 Historical design documents and research findings:
 
-- **[Research Findings](archive/research_findings.md)** - Performance analysis
-- **[Plan Optimizations](archive/plan_optimizations_caching.md)** - Caching experiments
-- **[Prompt Improvements](archive/prompt_improvements.md)** - Historical prompt iterations
+- **[Research Findings](../.docs/archive/research_findings.md)** - Performance analysis
+- **[Plan Optimizations](../.docs/archive/plan_optimizations_caching.md)** - Caching experiments
+- **[Prompt Improvements](../.docs/archive/prompt_improvements.md)** - Historical prompt iterations
 
 ---
 

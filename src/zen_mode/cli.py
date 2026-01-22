@@ -195,14 +195,23 @@ def main() -> None:
             cmd_init(SimpleNamespace())
             return
         elif cmd == "swarm":
-            # zen swarm <task1.md> [task2.md ...] [--workers N] [--strategy S] [--verbose]
+            # zen swarm <task1.md> [task2.md ...] [--workers N] [--strategy S] [--verbose] [--experimental]
             parser = argparse.ArgumentParser(prog="zen swarm")
             parser.add_argument("tasks", nargs="+", help="Task files to execute in parallel")
             parser.add_argument("--workers", type=int, default=None, help="Number of parallel workers (default: auto)")
             parser.add_argument("--strategy", choices=["worktree", "sequential", "auto"], default="auto",
                               help="Execution strategy: worktree (git worktrees), sequential (same-dir), auto (worktree with fallback)")
             parser.add_argument("--verbose", "-v", action="store_true", help="Show full logs instead of status ticker")
+            parser.add_argument("--experimental", action="store_true", help="Acknowledge swarm is experimental")
             args = parser.parse_args(sys.argv[2:])
+
+            # Gate: require --experimental flag
+            if not args.experimental:
+                logger.error("Swarm is experimental and may produce unexpected results.")
+                logger.error("Known issues: merge conflicts, worktree cleanup, cross-platform edge cases.")
+                logger.error("")
+                logger.error("Use 'zen swarm --experimental <tasks...>' to proceed anyway.")
+                sys.exit(1)
 
             # Auto-calculate workers if not specified: min(tasks, cpu_count, 8)
             if args.workers is None:
@@ -236,8 +245,7 @@ def main() -> None:
 
 Usage:
   zen init                    Initialize .zen/ directory
-  zen <task.md>               Run the 4-phase workflow
-  zen swarm <task1.md> ...    Execute multiple tasks in parallel
+  zen <task.md>               Run the 5-phase workflow
 
 Options:
   --reset                     Reset work directory and start fresh
@@ -245,7 +253,6 @@ Options:
   --skip-judge                Skip Judge phase review (Opus architectural review)
   --skip-verify               Skip Verify phase (for infra-only tasks)
   --trust-local               Trust local zen.py without confirmation
-  --workers N                 Number of parallel workers for swarm (default: auto)
   --verbose, -v               Enable verbose/debug output
 
 Examples:
@@ -253,8 +260,9 @@ Examples:
   zen task.md
   zen task.md --reset
   zen task.md --skip-judge
-  zen swarm task1.md task2.md --workers 4
-  zen swarm task1.md task2.md --verbose
+
+Experimental:
+  zen swarm --experimental <task1.md> ...   (parallel execution, use with caution)
 """)
 
 
