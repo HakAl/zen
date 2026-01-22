@@ -41,7 +41,7 @@ IGNORE_DIRS: Set[str] = {
     ".gradle", ".cargo", ".stack-work", "Pods", "Carthage",
     "DerivedData", "vendor", "deps", "elm-stuff",
     # Misc
-    "tmp", "temp", "cache", ".cache", "logs",
+    "temp", "cache", ".cache", "logs",
 }
 
 # Files to ignore during linting and file scanning
