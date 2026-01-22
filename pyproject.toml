@@ -50,4 +50,5 @@ include = [
 [tool.pytest.ini_options]
 markers = [
     "bypass_conftest_patch: skip conftest auto-patch on run_claude (test provides its own mocks)",
+    "integration: slow integration tests requiring external runtimes (skipped in CI)",
 ]

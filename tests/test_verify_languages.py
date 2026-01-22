@@ -5,6 +5,9 @@ Tests that phase_verify() correctly detects pass/fail/none states
 across different build systems and test runners.
 
 Fixtures: tests/fixtures/{node,go,java,csharp}_project/
+
+NOTE: These are slow integration tests that require external runtimes.
+Skipped in CI via pytest marker. Run locally with: pytest -m integration
 """
 from __future__ import annotations
 
@@ -15,6 +18,9 @@ import tempfile
 from pathlib import Path
 
 import pytest
+
+# Skip all tests in this module in CI (too slow, requires external runtimes)
+pytestmark = pytest.mark.integration
 
 # Path to fixtures directory
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
